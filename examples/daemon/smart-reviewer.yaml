@@ -1,0 +1,82 @@
+# Smart Reviewer — LLM ゲート付き定期レビュー daemon
+# 5 分ごとに「レビューすべきか」をシェルで判定し、
+# 新しいコミットがあるときだけワークフローを実行する
+#
+# 起動: bun run src/daemon/cli.ts examples/daemon/smart-reviewer.yaml --verbose
+name: smart-reviewer
+version: "1"
+description: "新しいコミットがあるときだけコードレビューを実行する daemon"
+
+workspace: "/tmp/agentcore-daemon-reviewer"
+state_dir: "/tmp/agentcore-daemon-reviewer/.daemon-state"
+max_concurrent_workflows: 1
+
+events:
+  periodic:
+    type: cron
+    schedule: "*/5 * * * *"
+
+triggers:
+  code-review:
+    on: periodic
+    workflow: ./workflows/code-review.yaml
+    cooldown: "5m"
+
+    # --- 実行ゲート ---
+    # シェルで「新しいコミットがあるか」を判定
+    # exit 0 = 実行する / exit 1 = スキップ
+    evaluate:
+      worker: CUSTOM
+      instructions: |
+        cd {{workspace}} 2>/dev/null || exit 1
+
+        # git リポジトリでなければスキップ
+        git rev-parse --git-dir > /dev/null 2>&1 || exit 1
+
+        # 前回レビュー時刻を記録するファイル
+        MARKER=".daemon-state/.last-review-commit"
+
+        CURRENT=$(git rev-parse HEAD 2>/dev/null || echo "none")
+        LAST=$(cat "$MARKER" 2>/dev/null || echo "")
+
+        if [ "$CURRENT" = "$LAST" ]; then
+          echo "skip: no new commits since last review"
+          exit 1
+        else
+          echo "run: new commits detected ($LAST → $CURRENT)"
+          mkdir -p .daemon-state
+          echo "$CURRENT" > "$MARKER"
+          exit 0
+        fi
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "15s"
+
+    context:
+      last_result: true
+
+    # --- 結果分析 ---
+    # レビュー結果のサマリーを生成する
+    analyze:
+      worker: CUSTOM
+      instructions: |
+        CONTEXT="{{context_dir}}"
+        echo "=== Review Summary ===" > summary.md
+        echo "Status: {{workflow_status}}" >> summary.md
+        echo "Time: $(date)" >> summary.md
+        echo "" >> summary.md
+        if [ -d "$CONTEXT" ]; then
+          echo "## Step Results" >> summary.md
+          for d in "$CONTEXT"/*/; do
+            STEP=$(basename "$d")
+            [ "$STEP" = "_workflow.json" ] && continue
+            if [ -f "$d/_meta.json" ]; then
+              echo "- $STEP: $(cat "$d/_meta.json" 2>/dev/null | head -1)" >> summary.md
+            fi
+          done
+        fi
+        cat summary.md
+      capabilities: [READ, EDIT]
+      timeout: "30s"
+      outputs:
+        - name: review-summary
+          path: summary.md

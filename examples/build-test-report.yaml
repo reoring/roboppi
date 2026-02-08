@@ -1,0 +1,97 @@
+# Build → Test → Report ワークフロー
+# 並列実行と合流を実演する3ステップの例
+name: build-test-report
+version: "1"
+description: "コードをビルドし、テストを走らせ、レポートを作成する"
+timeout: "5m"
+concurrency: 2
+
+steps:
+  build:
+    description: "ソースコードをビルドする"
+    worker: CUSTOM
+    instructions: |
+      mkdir -p dist
+      echo 'export function add(a, b) { return a + b; }' > dist/math.js
+      echo 'export function greet(name) { return "Hello, " + name; }' > dist/greet.js
+      echo "Build complete: 2 modules"
+    capabilities: [EDIT]
+    timeout: "1m"
+    outputs:
+      - name: build-output
+        path: "dist"
+        type: code
+
+  test-math:
+    description: "math モジュールのテストを実行"
+    worker: CUSTOM
+    depends_on: [build]
+    instructions: |
+      echo "=== Math Tests ===" > test-math-result.txt
+      echo "PASS: add(1, 2) === 3" >> test-math-result.txt
+      echo "PASS: add(-1, 1) === 0" >> test-math-result.txt
+      echo "2 tests passed, 0 failed" >> test-math-result.txt
+      cat test-math-result.txt
+    capabilities: [READ, RUN_TESTS]
+    inputs:
+      - from: build
+        artifact: build-output
+    timeout: "1m"
+    on_failure: continue
+    outputs:
+      - name: math-results
+        path: "test-math-result.txt"
+        type: test-report
+
+  test-greet:
+    description: "greet モジュールのテストを実行"
+    worker: CUSTOM
+    depends_on: [build]
+    instructions: |
+      echo "=== Greet Tests ===" > test-greet-result.txt
+      echo "PASS: greet('World') === 'Hello, World'" >> test-greet-result.txt
+      echo "1 test passed, 0 failed" >> test-greet-result.txt
+      cat test-greet-result.txt
+    capabilities: [READ, RUN_TESTS]
+    inputs:
+      - from: build
+        artifact: build-output
+    timeout: "1m"
+    on_failure: continue
+    outputs:
+      - name: greet-results
+        path: "test-greet-result.txt"
+        type: test-report
+
+  report:
+    description: "テスト結果を集約してレポートを生成"
+    worker: CUSTOM
+    depends_on: [test-math, test-greet]
+    instructions: |
+      echo "# Test Report" > report.md
+      echo "" >> report.md
+      echo "## Summary" >> report.md
+      echo "" >> report.md
+      if [ -f math-results/test-math-result.txt ]; then
+        echo "### Math Module" >> report.md
+        cat math-results/test-math-result.txt >> report.md
+      fi
+      echo "" >> report.md
+      if [ -f greet-results/test-greet-result.txt ]; then
+        echo "### Greet Module" >> report.md
+        cat greet-results/test-greet-result.txt >> report.md
+      fi
+      echo "" >> report.md
+      echo "Generated at: $(date)" >> report.md
+      cat report.md
+    capabilities: [READ, EDIT]
+    inputs:
+      - from: test-math
+        artifact: math-results
+      - from: test-greet
+        artifact: greet-results
+    timeout: "1m"
+    outputs:
+      - name: final-report
+        path: "report.md"
+        type: review

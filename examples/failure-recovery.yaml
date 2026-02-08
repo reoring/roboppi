@@ -1,0 +1,83 @@
+# Failure Recovery — エラーハンドリングの動作確認
+# retry / continue / abort の各ポリシーの挙動を実演する
+name: failure-recovery
+version: "1"
+description: "on_failure ポリシーの動作を確認する"
+timeout: "3m"
+concurrency: 2
+
+steps:
+  # このステップは最初の試行で失敗し、リトライで成功する
+  flaky-step:
+    description: "不安定なステップ（1回目失敗、2回目成功）"
+    worker: CUSTOM
+    instructions: |
+      ATTEMPT_FILE=".flaky-attempt"
+      if [ ! -f "$ATTEMPT_FILE" ]; then
+        echo "1" > "$ATTEMPT_FILE"
+        echo "First attempt — simulating failure"
+        exit 1
+      fi
+      ATTEMPT=$(cat "$ATTEMPT_FILE")
+      echo "Attempt $((ATTEMPT + 1)) — succeeding this time"
+      echo "Flaky step output" > flaky-result.txt
+      rm "$ATTEMPT_FILE"
+    capabilities: [EDIT, RUN_COMMANDS]
+    timeout: "30s"
+    max_retries: 2
+    on_failure: retry
+    outputs:
+      - name: flaky-output
+        path: "flaky-result.txt"
+
+  # このステップは必ず失敗するが、continue で後続に影響させない
+  optional-lint:
+    description: "Lint チェック（失敗しても続行）"
+    worker: CUSTOM
+    instructions: |
+      echo "Running lint..."
+      echo "WARNING: 3 lint issues found" > lint-result.txt
+      echo "Lint failed (non-critical)"
+      exit 1
+    capabilities: [READ]
+    timeout: "30s"
+    on_failure: continue
+    outputs:
+      - name: lint-report
+        path: "lint-result.txt"
+
+  # flaky-step と optional-lint の両方に依存
+  # flaky-step はリトライで成功、optional-lint は失敗(continue)
+  summary:
+    description: "結果をまとめる"
+    worker: CUSTOM
+    depends_on: [flaky-step, optional-lint]
+    instructions: |
+      echo "# Summary" > summary.md
+      echo "" >> summary.md
+      if [ -f flaky-output/flaky-result.txt ]; then
+        echo "## Flaky Step: RECOVERED" >> summary.md
+        cat flaky-output/flaky-result.txt >> summary.md
+      else
+        echo "## Flaky Step: no output" >> summary.md
+      fi
+      echo "" >> summary.md
+      if [ -f lint-report/lint-result.txt ]; then
+        echo "## Lint: FAILED (continued)" >> summary.md
+        cat lint-report/lint-result.txt >> summary.md
+      else
+        echo "## Lint: no output (failed)" >> summary.md
+      fi
+      echo "" >> summary.md
+      echo "Workflow completed with partial failures." >> summary.md
+      cat summary.md
+    capabilities: [READ, EDIT]
+    inputs:
+      - from: flaky-step
+        artifact: flaky-output
+      - from: optional-lint
+        artifact: lint-report
+    timeout: "30s"
+    outputs:
+      - name: final-summary
+        path: "summary.md"

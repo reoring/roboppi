@@ -1,0 +1,61 @@
+# コードレビュー — git diff を分析してレポートを生成
+name: code-review
+version: "1"
+description: "直近のコミットの diff を取得し、レビューレポートを作成する"
+timeout: "3m"
+
+steps:
+  collect-diff:
+    description: "直近 5 コミットの diff を収集"
+    worker: CUSTOM
+    instructions: |
+      echo "=== Code Review Diff ===" > diff.txt
+      echo "Date: $(date)" >> diff.txt
+      echo "" >> diff.txt
+      if git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "## Recent Commits" >> diff.txt
+        git log --oneline -5 >> diff.txt 2>/dev/null || echo "(no commits)" >> diff.txt
+        echo "" >> diff.txt
+        echo "## Diff (last commit)" >> diff.txt
+        git diff HEAD~1 --stat >> diff.txt 2>/dev/null || echo "(no diff)" >> diff.txt
+      else
+        echo "(not a git repository)" >> diff.txt
+      fi
+      cat diff.txt
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "1m"
+    outputs:
+      - name: diff-output
+        path: "diff.txt"
+
+  generate-report:
+    description: "diff を元にレビューレポートを作成"
+    worker: CUSTOM
+    depends_on: [collect-diff]
+    instructions: |
+      echo "# Code Review Report" > review.md
+      echo "" >> review.md
+      echo "Generated: $(date)" >> review.md
+      echo "" >> review.md
+
+      if [ -f diff-output/diff.txt ]; then
+        echo "## Changes" >> review.md
+        echo '```' >> review.md
+        cat diff-output/diff.txt >> review.md
+        echo '```' >> review.md
+      else
+        echo "No diff available." >> review.md
+      fi
+
+      echo "" >> review.md
+      echo "## Status: OK" >> review.md
+      cat review.md
+    capabilities: [READ, EDIT]
+    inputs:
+      - from: collect-diff
+        artifact: diff-output
+    timeout: "1m"
+    outputs:
+      - name: review-report
+        path: "review.md"
+        type: review

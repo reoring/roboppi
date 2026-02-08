@@ -1,0 +1,121 @@
+# Todo Loop — completion_check によるループ実行
+# todo.txt の全項目を完了するまで繰り返す例
+name: todo-loop
+version: "1"
+description: "タスクリストの項目を1つずつ処理し、全完了まで繰り返す"
+timeout: "5m"
+
+steps:
+  setup:
+    description: "タスクリストを初期化する"
+    worker: CUSTOM
+    instructions: |
+      cat > todo.txt << 'TASKS'
+      - [ ] Create src directory
+      - [ ] Write hello.ts
+      - [ ] Write goodbye.ts
+      TASKS
+      echo "Created todo.txt with 3 tasks"
+      cat todo.txt
+    capabilities: [EDIT]
+    timeout: "30s"
+    outputs:
+      - name: todo-file
+        path: "todo.txt"
+
+  process-tasks:
+    description: "未完了タスクを1つずつ処理する"
+    worker: CUSTOM
+    depends_on: [setup]
+    instructions: |
+      # 最初の未完了タスクを見つけて処理する
+      TASK=$(grep -m1 '^\- \[ \]' todo.txt || true)
+      if [ -z "$TASK" ]; then
+        echo "All tasks complete!"
+        exit 0
+      fi
+      echo "Processing: $TASK"
+
+      # タスクに応じて作業を実行
+      case "$TASK" in
+        *"Create src directory"*)
+          mkdir -p src
+          echo "Created src/"
+          ;;
+        *"Write hello.ts"*)
+          echo 'export const hello = "Hello!";' > src/hello.ts
+          echo "Wrote src/hello.ts"
+          ;;
+        *"Write goodbye.ts"*)
+          echo 'export const goodbye = "Goodbye!";' > src/goodbye.ts
+          echo "Wrote src/goodbye.ts"
+          ;;
+      esac
+
+      # 完了マークを付ける
+      ESCAPED=$(echo "$TASK" | sed 's/[[\]/\\&]/\\&/g')
+      DONE=$(echo "$TASK" | sed 's/\- \[ \]/- [x]/')
+      sed -i "s|${TASK}|${DONE}|" todo.txt
+      echo "Updated todo.txt:"
+      cat todo.txt
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "1m"
+    max_retries: 1
+    on_failure: retry
+
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        echo "Checking todo.txt for remaining tasks..."
+        REMAINING=$(grep -c '^\- \[ \]' todo.txt || true)
+        echo "Remaining: $REMAINING"
+        if [ "$REMAINING" -eq 0 ]; then
+          echo "CHECK: All tasks complete!"
+          exit 0
+        else
+          echo "CHECK: $REMAINING tasks remaining"
+          exit 1
+        fi
+      capabilities: [READ]
+      timeout: "30s"
+
+    max_iterations: 10
+    on_iterations_exhausted: abort
+
+    outputs:
+      - name: completed-todo
+        path: "todo.txt"
+      - name: source-files
+        path: "src"
+        type: code
+
+  verify:
+    description: "全成果物が存在するか検証する"
+    worker: CUSTOM
+    depends_on: [process-tasks]
+    instructions: |
+      echo "=== Verification ==="
+      echo ""
+      echo "1. todo.txt:"
+      cat todo.txt
+      echo ""
+      echo "2. Source files:"
+      ls -la src/
+      echo ""
+      echo "3. Content check:"
+      for f in src/*.ts; do
+        echo "--- $f ---"
+        cat "$f"
+      done
+      echo ""
+      echo "Verification complete!"
+    capabilities: [READ]
+    inputs:
+      - from: process-tasks
+        artifact: completed-todo
+      - from: process-tasks
+        artifact: source-files
+    timeout: "30s"
+    outputs:
+      - name: verification
+        path: "verify-result.txt"

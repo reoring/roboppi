@@ -1,0 +1,28 @@
+# ヘルスチェック — システム状態を確認する 1 ステップワークフロー
+name: health-check
+version: "1"
+description: "ディスク・メモリ・プロセス状態を確認する"
+timeout: "1m"
+
+steps:
+  check:
+    description: "システムリソースの状態をチェック"
+    worker: CUSTOM
+    instructions: |
+      echo "=== Health Check $(date) ==="
+      echo ""
+      echo "--- Disk Usage ---"
+      df -h / | tail -1
+      echo ""
+      echo "--- Memory ---"
+      free -h 2>/dev/null || vm_stat 2>/dev/null || echo "N/A"
+      echo ""
+      echo "--- Load Average ---"
+      uptime
+      echo ""
+      echo "Health check complete."
+    capabilities: [RUN_COMMANDS]
+    timeout: "30s"
+    outputs:
+      - name: health-report
+        path: "health.txt"

@@ -1,0 +1,88 @@
+# テストスイート — ビルド＋テスト実行ワークフロー
+name: test-suite
+version: "1"
+description: "プロジェクトのテストを実行し、結果をレポートする"
+timeout: "5m"
+concurrency: 2
+
+steps:
+  lint:
+    description: "型チェックを実行"
+    worker: CUSTOM
+    instructions: |
+      echo "=== Type Check ===" > lint-result.txt
+      if command -v bunx > /dev/null 2>&1 && [ -f tsconfig.json ]; then
+        bunx tsc --noEmit 2>&1 | tee -a lint-result.txt
+        echo "" >> lint-result.txt
+        echo "Exit: $?" >> lint-result.txt
+      else
+        echo "TypeScript not configured, skipping." >> lint-result.txt
+      fi
+      cat lint-result.txt
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "2m"
+    on_failure: continue
+    outputs:
+      - name: lint-result
+        path: "lint-result.txt"
+
+  test:
+    description: "ユニットテストを実行"
+    worker: CUSTOM
+    instructions: |
+      echo "=== Test Run ===" > test-result.txt
+      if command -v bun > /dev/null 2>&1 && [ -d test ]; then
+        bun test 2>&1 | tee -a test-result.txt
+      else
+        echo "No test runner configured, skipping." >> test-result.txt
+      fi
+      cat test-result.txt
+    capabilities: [READ, RUN_TESTS]
+    timeout: "3m"
+    max_retries: 1
+    on_failure: retry
+    outputs:
+      - name: test-result
+        path: "test-result.txt"
+        type: test-report
+
+  report:
+    description: "テスト結果を統合レポートにまとめる"
+    worker: CUSTOM
+    depends_on: [lint, test]
+    instructions: |
+      echo "# Test Report" > report.md
+      echo "Date: $(date)" >> report.md
+      echo "" >> report.md
+
+      echo "## Lint" >> report.md
+      if [ -f lint-result/lint-result.txt ]; then
+        echo '```' >> report.md
+        cat lint-result/lint-result.txt >> report.md
+        echo '```' >> report.md
+      else
+        echo "_(skipped)_" >> report.md
+      fi
+      echo "" >> report.md
+
+      echo "## Tests" >> report.md
+      if [ -f test-result/test-result.txt ]; then
+        echo '```' >> report.md
+        tail -5 test-result/test-result.txt >> report.md
+        echo '```' >> report.md
+      else
+        echo "_(skipped)_" >> report.md
+      fi
+
+      cat report.md
+    capabilities: [READ, EDIT]
+    inputs:
+      - from: lint
+        artifact: lint-result
+      - from: test
+        artifact: test-result
+    timeout: "1m"
+    outputs:
+      - name: report
+        path: "report.md"
+        type: review

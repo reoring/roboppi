@@ -1,0 +1,26 @@
+{
+  "name": "agentcore",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "agentcore": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dev": "bun run src/index.ts",
+    "dev:scheduler": "bun run src/scheduler/index.ts",
+    "test": "bun test",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun test test/integration",
+    "test:at": "bun test tests/at",
+    "typecheck": "bun x tsc --noEmit",
+    "build": "bun build --compile src/cli.ts --outfile agentcore"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2"
+  }
+}
