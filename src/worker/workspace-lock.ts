@@ -3,20 +3,49 @@ import type { UUID } from "../types/index.js";
 interface LockEntry {
   holder: UUID;
   acquiredAt: number;
+  maxLockDurationMs: number;
 }
 
 const DEFAULT_WAIT_TIMEOUT_MS = 30000;
+const DEFAULT_MAX_LOCK_DURATION_MS = 300000; // 5 minutes
 
 export class WorkspaceLock {
   private locks = new Map<string, LockEntry>();
   private waitTimes = new Map<string, number>();
   private waiters = new Map<string, Array<() => void>>();
+  private readonly defaultMaxLockDurationMs: number;
 
-  acquire(workspaceRef: string, taskId: UUID): boolean {
-    if (this.locks.has(workspaceRef)) {
+  constructor(options?: { maxLockDurationMs?: number }) {
+    this.defaultMaxLockDurationMs = options?.maxLockDurationMs ?? DEFAULT_MAX_LOCK_DURATION_MS;
+  }
+
+  acquire(workspaceRef: string, taskId: UUID, maxLockDurationMs?: number): boolean {
+    const existing = this.locks.get(workspaceRef);
+    if (existing) {
+      // Check if the existing lock has expired (TTL exceeded)
+      if (existing.acquiredAt + existing.maxLockDurationMs < Date.now()) {
+        // Auto-release expired lock and notify waiters
+        this.locks.delete(workspaceRef);
+        this.notifyWaiters(workspaceRef);
+      } else {
+        return false;
+      }
+    }
+    this.locks.set(workspaceRef, {
+      holder: taskId,
+      acquiredAt: Date.now(),
+      maxLockDurationMs: maxLockDurationMs ?? this.defaultMaxLockDurationMs,
+    });
+    return true;
+  }
+
+  forceRelease(workspaceRef: string): boolean {
+    const entry = this.locks.get(workspaceRef);
+    if (!entry) {
       return false;
     }
-    this.locks.set(workspaceRef, { holder: taskId, acquiredAt: Date.now() });
+    this.locks.delete(workspaceRef);
+    this.notifyWaiters(workspaceRef);
     return true;
   }
 
@@ -26,8 +55,11 @@ export class WorkspaceLock {
       return false;
     }
     this.locks.delete(workspaceRef);
+    this.notifyWaiters(workspaceRef);
+    return true;
+  }
 
-    // Notify the next waiter in queue
+  private notifyWaiters(workspaceRef: string): void {
     const queue = this.waiters.get(workspaceRef);
     if (queue && queue.length > 0) {
       const next = queue.shift()!;
@@ -36,12 +68,18 @@ export class WorkspaceLock {
       }
       next();
     }
-
-    return true;
   }
 
   isLocked(workspaceRef: string): boolean {
-    return this.locks.has(workspaceRef);
+    const entry = this.locks.get(workspaceRef);
+    if (!entry) return false;
+    // Check if expired
+    if (entry.acquiredAt + entry.maxLockDurationMs < Date.now()) {
+      this.locks.delete(workspaceRef);
+      this.notifyWaiters(workspaceRef);
+      return false;
+    }
+    return true;
   }
 
   async waitForLock(

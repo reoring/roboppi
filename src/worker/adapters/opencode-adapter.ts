@@ -1,25 +1,14 @@
-import { generateId, now } from "../../types/index.js";
-import { WorkerKind, WorkerStatus } from "../../types/index.js";
+import { WorkerKind } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
-import type { WorkerResult, Artifact, Observation } from "../../types/index.js";
-import type {
-  WorkerAdapter,
-  WorkerHandle,
-  WorkerEvent,
-} from "../worker-adapter.js";
-import type { ProcessManager, ManagedProcess } from "../process-manager.js";
+import type { Artifact, Observation } from "../../types/index.js";
+import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
+import type { ProcessManager } from "../process-manager.js";
+import { BaseProcessAdapter } from "./base-process-adapter.js";
 
 export interface OpenCodeAdapterConfig {
   openCodeCommand?: string;
   defaultArgs?: string[];
   gracePeriodMs?: number;
-}
-
-interface ActiveProcess {
-  managed: ManagedProcess;
-  startedAt: number;
-  collectedStdout: string[];
-  streamConsumed: boolean;
 }
 
 export function buildArgs(
@@ -33,15 +22,13 @@ export function buildArgs(
   return args;
 }
 
-export class OpenCodeAdapter implements WorkerAdapter {
+export class OpenCodeAdapter extends BaseProcessAdapter {
   readonly kind = WorkerKind.OPENCODE;
 
   private readonly config: Required<OpenCodeAdapterConfig>;
-  private readonly processManager: ProcessManager;
-  private readonly activeProcesses = new Map<string, ActiveProcess>();
 
   constructor(processManager: ProcessManager, config: OpenCodeAdapterConfig = {}) {
-    this.processManager = processManager;
+    super(processManager, config.gracePeriodMs ?? 5000);
     this.config = {
       openCodeCommand: config.openCodeCommand ?? "opencode",
       defaultArgs: config.defaultArgs ?? [],
@@ -49,37 +36,17 @@ export class OpenCodeAdapter implements WorkerAdapter {
     };
   }
 
-  async startTask(task: WorkerTask): Promise<WorkerHandle> {
+  buildCommand(task: WorkerTask): string[] {
     const args = buildArgs(task, this.config);
-    const command = [this.config.openCodeCommand, ...args];
+    return [this.config.openCodeCommand, ...args];
+  }
 
-    // Convert deadline to timeout for ProcessManager
-    const currentTime = Date.now();
-    const timeoutMs = task.budget.deadlineAt > currentTime
-      ? task.budget.deadlineAt - currentTime
-      : undefined;
+  async cancel(handle: WorkerHandle): Promise<void> {
+    const active = this.activeProcesses.get(handle.handleId);
+    if (!active) return;
 
-    const managed = this.processManager.spawn({
-      command,
-      cwd: task.workspaceRef,
-      abortSignal: task.abortSignal,
-      timeoutMs,
-    });
-
-    const handle: WorkerHandle = {
-      handleId: generateId(),
-      workerKind: WorkerKind.OPENCODE,
-      abortSignal: task.abortSignal,
-    };
-
-    this.activeProcesses.set(handle.handleId, {
-      managed,
-      startedAt: now(),
-      collectedStdout: [],
-      streamConsumed: false,
-    });
-
-    return handle;
+    await this.processManager.gracefulShutdown(active.managed.pid, this.gracePeriodMs);
+    this.activeProcesses.delete(handle.handleId);
   }
 
   async *streamEvents(handle: WorkerHandle): AsyncIterable<WorkerEvent> {
@@ -164,78 +131,7 @@ export class OpenCodeAdapter implements WorkerAdapter {
     }
   }
 
-  async cancel(handle: WorkerHandle): Promise<void> {
-    const active = this.activeProcesses.get(handle.handleId);
-    if (!active) return;
-
-    await this.processManager.gracefulShutdown(active.managed.pid, this.config.gracePeriodMs);
-    this.activeProcesses.delete(handle.handleId);
-  }
-
-  async awaitResult(handle: WorkerHandle): Promise<WorkerResult> {
-    const active = this.activeProcesses.get(handle.handleId);
-    if (!active) {
-      return {
-        status: WorkerStatus.FAILED,
-        artifacts: [],
-        observations: [],
-        cost: { wallTimeMs: 0 },
-        durationMs: 0,
-      };
-    }
-
-    // Get stdout: from collected data if streamEvents consumed the stream, otherwise read directly
-    let stdout = "";
-    if (active.streamConsumed) {
-      stdout = active.collectedStdout.join("\n");
-    } else {
-      const decoder = new TextDecoder();
-      const reader = active.managed.stdout.getReader();
-      const chunks: string[] = [];
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(decoder.decode(value, { stream: true }));
-        }
-      } catch {
-        // Stream may be closed
-      } finally {
-        reader.releaseLock();
-      }
-      stdout = chunks.join("");
-    }
-
-    const exitCode = await active.managed.exitPromise;
-    const startTime = active.startedAt;
-    const wallTimeMs = now() - startTime;
-
-    this.activeProcesses.delete(handle.handleId);
-
-    if (handle.abortSignal.aborted) {
-      return {
-        status: WorkerStatus.CANCELLED,
-        artifacts: [],
-        observations: [],
-        cost: { wallTimeMs },
-        durationMs: wallTimeMs,
-      };
-    }
-
-    const status = exitCode === 0 ? WorkerStatus.SUCCEEDED : WorkerStatus.FAILED;
-    const artifacts = this.parseArtifacts(stdout);
-    const observations = this.parseObservations(stdout);
-
-    return {
-      status,
-      artifacts,
-      observations,
-      cost: { wallTimeMs },
-      durationMs: wallTimeMs,
-    };
-  }
-
-  private parseArtifacts(stdout: string): Artifact[] {
+  protected parseArtifacts(stdout: string): Artifact[] {
     const artifacts: Artifact[] = [];
 
     for (const line of stdout.split("\n")) {
@@ -264,7 +160,7 @@ export class OpenCodeAdapter implements WorkerAdapter {
     return artifacts;
   }
 
-  private parseObservations(stdout: string): Observation[] {
+  protected parseObservations(stdout: string): Observation[] {
     const observations: Observation[] = [];
 
     for (const line of stdout.split("\n")) {

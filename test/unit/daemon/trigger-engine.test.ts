@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TriggerEngine } from "../../../src/daemon/trigger-engine.js";
+import { TriggerEngine, WorkflowQueuedError } from "../../../src/daemon/trigger-engine.js";
 import { DaemonStateStore } from "../../../src/daemon/state-store.js";
 import type {
   DaemonConfig,
@@ -469,6 +469,154 @@ describe("TriggerEngine", () => {
       if (actions[0]!.action === "executed") {
         expect(actions[0]!.result.status).toBe(WorkflowStatus.FAILED);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Workflow queueing (WorkflowQueuedError)
+  // -------------------------------------------------------------------------
+
+  describe("workflow queueing", () => {
+    it("returns queued action when onExecute throws WorkflowQueuedError", async () => {
+      const config = makeConfig({
+        t1: { on: "cron-1", workflow: "wf.yaml" },
+      });
+      const engine = new TriggerEngine(config, store, async () => {
+        throw new WorkflowQueuedError();
+      });
+      const actions = await engine.handleEvent(makeEvent("cron-1", Date.now()));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]!.action).toBe("queued");
+      if (actions[0]!.action === "queued") {
+        expect(actions[0]!.triggerId).toBe("t1");
+      }
+    });
+
+    it("does not update trigger state when workflow is queued", async () => {
+      const config = makeConfig({
+        t1: { on: "cron-1", workflow: "wf.yaml" },
+      });
+      const engine = new TriggerEngine(config, store, async () => {
+        throw new WorkflowQueuedError();
+      });
+      await engine.handleEvent(makeEvent("cron-1", 5000));
+      const state = await store.getTriggerState("t1");
+      // State should be at defaults (no updates applied)
+      expect(state.executionCount).toBe(0);
+      expect(state.lastFiredAt).toBeNull();
+    });
+
+    it("still treats non-queued errors as failed workflow", async () => {
+      const config = makeConfig({
+        t1: { on: "cron-1", workflow: "wf.yaml" },
+      });
+      const engine = new TriggerEngine(config, store, async () => {
+        throw new Error("some other error");
+      });
+      const actions = await engine.handleEvent(makeEvent("cron-1", Date.now()));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]!.action).toBe("executed");
+      if (actions[0]!.action === "executed") {
+        expect(actions[0]!.result.status).toBe(WorkflowStatus.FAILED);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ReDoS protection
+  // -------------------------------------------------------------------------
+
+  describe("ReDoS protection", () => {
+    it("rejects patterns exceeding max length", async () => {
+      const longPattern = "a".repeat(1001);
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.value": { pattern: longPattern } },
+        },
+      });
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { value: "test" }),
+      );
+      expect(actions[0]!.action).toBe("filtered");
+    });
+
+    it("rejects nested quantifier patterns like (a+)+", async () => {
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.value": { pattern: "(a+)+" } },
+        },
+      });
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { value: "aaa" }),
+      );
+      expect(actions[0]!.action).toBe("filtered");
+    });
+
+    it("rejects overlapping alternation patterns like (a|a)*", async () => {
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.value": { pattern: "(a|a)*" } },
+        },
+      });
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { value: "aaa" }),
+      );
+      expect(actions[0]!.action).toBe("filtered");
+    });
+
+    it("rejects invalid regex patterns gracefully", async () => {
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.value": { pattern: "[invalid" } },
+        },
+      });
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { value: "test" }),
+      );
+      expect(actions[0]!.action).toBe("filtered");
+    });
+
+    it("rejects input strings exceeding max length", async () => {
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.value": { pattern: "^test$" } },
+        },
+      });
+      const longInput = "a".repeat(10001);
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { value: longInput }),
+      );
+      expect(actions[0]!.action).toBe("filtered");
+    });
+
+    it("allows safe patterns within limits", async () => {
+      const config = makeConfig({
+        t1: {
+          on: "webhook-1",
+          workflow: "wf.yaml",
+          filter: { "payload.body.branch": { pattern: "^main$|^develop$" } },
+        },
+      });
+      const engine = new TriggerEngine(config, store, async () => makeSuccessResult());
+      const actions = await engine.handleEvent(
+        makeWebhookEvent("webhook-1", Date.now(), { branch: "main" }),
+      );
+      expect(actions[0]!.action).toBe("executed");
     });
   });
 });

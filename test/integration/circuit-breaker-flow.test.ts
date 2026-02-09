@@ -93,21 +93,21 @@ describe("Circuit breaker flow integration", () => {
     permitGate = components.permitGate;
     cbRegistry = components.cbRegistry;
 
-    // Trip CB to OPEN
-    const cb = cbRegistry.getOrCreate("worker:claude-code");
+    // Trip CB to OPEN for CLAUDE_CODE provider
+    const cb = cbRegistry.getOrCreate("CLAUDE_CODE");
     for (let i = 0; i < 3; i++) {
       cb.recordFailure();
     }
     expect(cb.getState()).toBe(CircuitState.OPEN);
 
-    // Request permit - should be rejected
-    const job = createTestJob();
+    // Request permit with a WORKER_TASK job that has workerKind: CLAUDE_CODE
+    const job = createTestJob({ payload: { workerKind: "CLAUDE_CODE" } });
     const result = permitGate.requestPermit(job, 0);
 
     expect(isRejection(result)).toBe(true);
     if (isRejection(result)) {
       expect(result.reason).toBe(PermitRejectionReason.CIRCUIT_OPEN);
-      expect(result.detail).toContain("worker:claude-code");
+      expect(result.detail).toContain("CLAUDE_CODE");
     }
   });
 
@@ -204,11 +204,11 @@ describe("Circuit breaker flow integration", () => {
     });
     workerGateway.registerAdapter(WorkerKind.CLAUDE_CODE, failingAdapter);
 
-    const cb = cbRegistry.getOrCreate("worker:claude-code");
+    const cb = cbRegistry.getOrCreate("CLAUDE_CODE");
 
     // Phase 1: Worker failures accumulate and trip the CB
     for (let i = 0; i < 3; i++) {
-      const job = createTestJob({ jobId: `job-fail-${i}` });
+      const job = createTestJob({ jobId: `job-fail-${i}`, payload: { workerKind: "CLAUDE_CODE" } });
       const permitResult = permitGate.requestPermit(job, 0);
       expect(isPermit(permitResult)).toBe(true);
       if (!isPermit(permitResult)) continue;
@@ -224,8 +224,8 @@ describe("Circuit breaker flow integration", () => {
 
     expect(cb.getState()).toBe(CircuitState.OPEN);
 
-    // Phase 2: Subsequent permit requests are rejected
-    const rejectedJob = createTestJob({ jobId: "job-rejected" });
+    // Phase 2: Subsequent permit requests are rejected (same workerKind)
+    const rejectedJob = createTestJob({ jobId: "job-rejected", payload: { workerKind: "CLAUDE_CODE" } });
     const rejectedResult = permitGate.requestPermit(rejectedJob, 0);
     expect(isRejection(rejectedResult)).toBe(true);
     if (isRejection(rejectedResult)) {
@@ -243,7 +243,7 @@ describe("Circuit breaker flow integration", () => {
     });
     workerGateway.registerAdapter(WorkerKind.CLAUDE_CODE, succeedingAdapter);
 
-    const probeJob = createTestJob({ jobId: "job-probe" });
+    const probeJob = createTestJob({ jobId: "job-probe", payload: { workerKind: "CLAUDE_CODE" } });
     const probePermitResult = permitGate.requestPermit(probeJob, 0);
     expect(isPermit(probePermitResult)).toBe(true);
     if (!isPermit(probePermitResult)) return;
@@ -282,32 +282,36 @@ describe("Circuit breaker flow integration", () => {
       new MockWorkerAdapter(WorkerKind.CODEX_CLI),
     );
 
-    // Trip CB for "worker:claude-code" only
-    const claudeCb = cbRegistry.getOrCreate("worker:claude-code");
+    // Trip CB for CLAUDE_CODE only
+    const claudeCb = cbRegistry.getOrCreate("CLAUDE_CODE");
     for (let i = 0; i < 3; i++) {
       claudeCb.recordFailure();
     }
     expect(claudeCb.getState()).toBe(CircuitState.OPEN);
 
     // The codex CB should not exist or be CLOSED
-    const codexCb = cbRegistry.get("worker:codex-cli");
+    const codexCb = cbRegistry.get("CODEX_CLI");
     expect(codexCb).toBeUndefined();
 
-    // PermitGate checks ALL CBs in the registry snapshot.
-    // When ANY CB is OPEN, permits are rejected regardless of the target worker kind.
-    // This verifies the current design: CB acts as a global safety valve.
-    const job = createTestJob({ jobId: "job-codex" });
-    const result = permitGate.requestPermit(job, 0);
-
-    // The permit is rejected because PermitGate sees "worker:claude-code" is OPEN
-    expect(isRejection(result)).toBe(true);
-    if (isRejection(result)) {
-      expect(result.reason).toBe(PermitRejectionReason.CIRCUIT_OPEN);
-      expect(result.detail).toContain("worker:claude-code");
+    // Provider-specific CB: CLAUDE_CODE jobs are rejected
+    const claudeJob = createTestJob({ jobId: "job-claude", payload: { workerKind: "CLAUDE_CODE" } });
+    const claudeResult = permitGate.requestPermit(claudeJob, 0);
+    expect(isRejection(claudeResult)).toBe(true);
+    if (isRejection(claudeResult)) {
+      expect(claudeResult.reason).toBe(PermitRejectionReason.CIRCUIT_OPEN);
+      expect(claudeResult.detail).toContain("CLAUDE_CODE");
     }
 
-    // However, the CB for codex-cli is independently tracked and is not OPEN
-    const codexCbCreated = cbRegistry.getOrCreate("worker:codex-cli");
+    // But CODEX_CLI jobs are allowed — provider-specific isolation
+    const codexJob = createTestJob({ jobId: "job-codex", payload: { workerKind: "CODEX_CLI" } });
+    const codexResult = permitGate.requestPermit(codexJob, 0);
+    expect(isPermit(codexResult)).toBe(true);
+    if (isPermit(codexResult)) {
+      permitGate.completePermit(codexResult.permitId);
+    }
+
+    // The CB for codex-cli is independently tracked and is not OPEN
+    const codexCbCreated = cbRegistry.getOrCreate("CODEX_CLI");
     expect(codexCbCreated.getState()).toBe(CircuitState.CLOSED);
     expect(codexCbCreated.isOpen()).toBe(false);
   });

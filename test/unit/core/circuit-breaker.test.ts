@@ -178,6 +178,86 @@ describe("CircuitBreaker concurrent scenarios", () => {
   });
 });
 
+describe("CircuitBreaker HALF_OPEN single probe", () => {
+  let breaker: CircuitBreaker;
+
+  afterEach(() => {
+    breaker?.dispose();
+  });
+
+  test("shouldReject returns true when OPEN", () => {
+    breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 60000, halfOpenMaxAttempts: 2 });
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
+    expect(breaker.shouldReject()).toBe(true);
+  });
+
+  test("shouldReject returns false for CLOSED", () => {
+    breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 60000, halfOpenMaxAttempts: 2 });
+    expect(breaker.shouldReject()).toBe(false);
+  });
+
+  test("HALF_OPEN allows first probe then rejects subsequent", async () => {
+    breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 50, halfOpenMaxAttempts: 2 });
+    breaker.recordFailure();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+    // First request: allowed (probe)
+    expect(breaker.shouldReject()).toBe(false);
+    // Second request while probe is in progress: rejected
+    expect(breaker.shouldReject()).toBe(true);
+  });
+
+  test("HALF_OPEN resets probe flag on success, allowing new requests", async () => {
+    breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 50, halfOpenMaxAttempts: 2 });
+    breaker.recordFailure();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+    expect(breaker.shouldReject()).toBe(false); // probe allowed
+    expect(breaker.shouldReject()).toBe(true);  // blocked
+
+    breaker.recordSuccess(); // probe succeeded → CLOSED
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+    expect(breaker.shouldReject()).toBe(false); // CLOSED allows
+  });
+
+  test("HALF_OPEN resets probe flag on failure, allowing next probe", async () => {
+    breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 50, halfOpenMaxAttempts: 3 });
+    breaker.recordFailure();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+    expect(breaker.shouldReject()).toBe(false); // first probe
+    breaker.recordFailure(); // probe failed, but still HALF_OPEN (attempts=1 < max=3)
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+    // After failure, another probe should be allowed
+    expect(breaker.shouldReject()).toBe(false);
+  });
+
+  test("transition from OPEN to HALF_OPEN resets probe flag", async () => {
+    breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 50, halfOpenMaxAttempts: 1 });
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+    // First probe: allowed
+    expect(breaker.shouldReject()).toBe(false);
+    // Probe fails → trips back to OPEN
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
+
+    // After reset timeout, should allow a new probe
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+    expect(breaker.shouldReject()).toBe(false);
+  });
+});
+
 describe("CircuitBreakerRegistry global safety valve", () => {
   let registry: CircuitBreakerRegistry;
 

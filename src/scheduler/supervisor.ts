@@ -3,6 +3,7 @@ import { JsonLinesTransport, IpcProtocol } from "../ipc/index.js";
 import type { IpcProtocolOptions } from "../ipc/index.js";
 import { HealthChecker } from "./health-check.js";
 import type { HealthCheckerConfig } from "./health-check.js";
+import { Logger } from "../core/observability.js";
 
 export interface SupervisorConfig {
   coreEntryPoint: string;
@@ -20,6 +21,7 @@ const DEFAULT_CONFIG: SupervisorConfig = {
 
 export class Supervisor {
   private readonly config: SupervisorConfig;
+  private readonly logger: Logger;
   private proc: Subprocess<"pipe", "pipe", "inherit"> | null = null;
   private ipc: IpcProtocol | null = null;
   private healthChecker: HealthChecker | null = null;
@@ -29,8 +31,9 @@ export class Supervisor {
   private restarting = false;
   private restartTimestamps: number[] = [];
 
-  constructor(config?: Partial<SupervisorConfig>) {
+  constructor(config?: Partial<SupervisorConfig>, logger?: Logger) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.logger = logger ?? new Logger("supervisor");
   }
 
   getIpc(): IpcProtocol | null {
@@ -118,8 +121,9 @@ export class Supervisor {
     );
 
     if (this.restartTimestamps.length >= maxRestarts) {
-      console.error(
-        `Supervisor: restart limit reached (${maxRestarts} restarts within ${windowMs}ms). Not restarting.`,
+      this.logger.error(
+        "Restart limit reached, not restarting",
+        { maxRestarts, windowMs },
       );
       this.restartLimitCallback?.();
       throw new Error(

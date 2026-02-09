@@ -5,7 +5,7 @@ import type {
   EscalationEvent,
   UUID,
 } from "../types/index.js";
-import { JobType, ErrorClass, PermitRejectionReason } from "../types/index.js";
+import { JobType, ErrorClass, PermitRejectionReason, now } from "../types/index.js";
 import { WorkerStatus } from "../types/index.js";
 import type { IpcProtocol } from "../ipc/protocol.js";
 import { CancellationManager } from "./cancellation.js";
@@ -61,7 +61,6 @@ export class AgentCore {
   private readonly workerGateway: WorkerDelegationGateway;
 
   private readonly jobs = new Map<UUID, Job>();
-  private readonly permitToJob = new Map<UUID, UUID>();
   private readonly activePermitsByJob = new Map<UUID, UUID>(); // jobId → permitId
   private started = false;
 
@@ -113,12 +112,8 @@ export class AgentCore {
         return;
       }
       this.cancellation.cancelByJobId(jobId, reason);
-      // Clean up permitToJob and activePermitsByJob entries for this job
-      const cancelledPermitId = this.activePermitsByJob.get(jobId);
-      if (cancelledPermitId !== undefined) {
-        this.permitToJob.delete(cancelledPermitId);
-        this.activePermitsByJob.delete(jobId);
-      }
+      // Clean up activePermitsByJob entries for this job
+      this.activePermitsByJob.delete(jobId);
       this.jobs.delete(jobId);
       logger.info("Job cancelled", { jobId, reason });
       this.protocol.sendJobCancelled(jobId, reason, requestId).catch((err: unknown) => {
@@ -159,7 +154,6 @@ export class AgentCore {
       // Permit granted
       const permit = result;
       this.cancellation.createController(permit.permitId, job.jobId);
-      this.permitToJob.set(permit.permitId, job.jobId);
       this.activePermitsByJob.set(job.jobId, permit.permitId);
 
       // Send the serializable permit (without abortController)
@@ -184,6 +178,12 @@ export class AgentCore {
       logger.debug("Queue metrics updated", {
         queueDepth: msg.queueDepth,
         backlogCount: msg.backlogCount,
+      });
+    });
+
+    this.protocol.onMessage("heartbeat", (_msg) => {
+      this.protocol.sendHeartbeatAck(now()).catch((err: unknown) => {
+        logger.error("Failed to send heartbeat_ack", { error: err });
       });
     });
   }
@@ -269,7 +269,6 @@ export class AgentCore {
       .then((result) => {
         this.permitGate.completePermit(permit.permitId);
         this.cancellation.removeController(permit.permitId);
-        this.permitToJob.delete(permit.permitId);
         this.activePermitsByJob.delete(job.jobId);
         this.jobs.delete(job.jobId);
 
@@ -289,7 +288,6 @@ export class AgentCore {
       .catch((err: unknown) => {
         this.permitGate.completePermit(permit.permitId);
         this.cancellation.removeController(permit.permitId);
-        this.permitToJob.delete(permit.permitId);
         this.activePermitsByJob.delete(job.jobId);
         this.jobs.delete(job.jobId);
 

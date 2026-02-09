@@ -69,11 +69,11 @@ export class ProcessManager {
     return managed;
   }
 
-  kill(pid: number, signal: string = "SIGTERM"): void {
+  kill(pid: number, signal: number | NodeJS.Signals = "SIGTERM"): void {
     for (const proc of this.processes) {
       if (proc.pid === pid) {
         try {
-          process.kill(pid, signal);
+          proc.subprocess.kill(signal);
         } catch {
           // Process may have already exited
         }
@@ -123,7 +123,7 @@ export class ProcessManager {
     const exitPromises: Promise<number>[] = [];
     for (const proc of this.processes) {
       try {
-        process.kill(proc.pid, "SIGKILL");
+        proc.subprocess.kill("SIGKILL");
       } catch {
         // Process may have already exited
       }

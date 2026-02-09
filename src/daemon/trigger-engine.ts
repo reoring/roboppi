@@ -17,6 +17,18 @@ export type OnExecuteFn = (
   event: DaemonEvent,
 ) => Promise<WorkflowState>;
 
+/**
+ * Thrown by the onExecute callback when a workflow is queued instead of
+ * executed immediately (due to max concurrent limit). The trigger engine
+ * catches this and returns a "queued" action without updating trigger state.
+ */
+export class WorkflowQueuedError extends Error {
+  constructor() {
+    super("Workflow queued");
+    this.name = "WorkflowQueuedError";
+  }
+}
+
 export class TriggerEngine {
   private readonly config: DaemonConfig;
   private readonly stateStore: DaemonStateStore;
@@ -80,6 +92,10 @@ export class TriggerEngine {
     try {
       result = await this.onExecute(triggerId, trigger, event);
     } catch (err) {
+      // WorkflowQueuedError signals the workflow was queued, not executed
+      if (err instanceof WorkflowQueuedError) {
+        return { action: "queued", triggerId };
+      }
       // Treat execution error as a failed workflow
       result = {
         workflowId: `${triggerId}-error-${startedAt}`,
@@ -160,12 +176,40 @@ function resolveField(dotPath: string, obj: unknown): unknown {
   return current;
 }
 
+const MAX_PATTERN_LENGTH = 1000;
+const MAX_INPUT_LENGTH = 10000;
+
+/**
+ * Detect common ReDoS-vulnerable patterns:
+ * - Nested quantifiers like (a+)+, (a*)+, (a+)*, (a|a)+
+ * - Overlapping alternations with quantifiers like (a|a)*
+ */
+function hasRedosRisk(pattern: string): boolean {
+  // Nested quantifiers: group with quantifier inside, followed by quantifier outside
+  // e.g. (a+)+, (a+)*, (a*)+, (a*)*
+  if (/\([^)]*[+*]\)[+*{]/.test(pattern)) return true;
+  // Overlapping alternation with outer quantifier: e.g. (a|a)+
+  if (/\([^)]*\|[^)]*\)[+*{]/.test(pattern)) return true;
+  return false;
+}
+
 function matchValue(actual: unknown, expected: FilterValue): boolean {
   if (typeof expected === "object" && expected !== null) {
     if ("pattern" in expected) {
       if (typeof actual !== "string") return false;
-      const regex = new RegExp(expected.pattern);
-      return regex.test(actual);
+      // Pattern length limit
+      if (expected.pattern.length > MAX_PATTERN_LENGTH) return false;
+      // ReDoS risk detection
+      if (hasRedosRisk(expected.pattern)) return false;
+      // Input string length limit
+      if (actual.length > MAX_INPUT_LENGTH) return false;
+      try {
+        const regex = new RegExp(expected.pattern);
+        return regex.test(actual);
+      } catch {
+        // Invalid regex pattern
+        return false;
+      }
     }
     if ("in" in expected) {
       return expected.in.some((v) => v === actual);

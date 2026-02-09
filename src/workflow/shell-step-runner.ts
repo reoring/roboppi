@@ -17,12 +17,13 @@ export class ShellStepRunner implements StepRunner {
     step: StepDefinition,
     workspaceDir: string,
     abortSignal: AbortSignal,
+    env?: Record<string, string>,
   ): Promise<StepRunResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m Running...\n`);
     }
 
-    const result = await this.execShell(step.instructions, workspaceDir, abortSignal);
+    const result = await this.execShell(step.instructions, workspaceDir, abortSignal, env);
 
     if (this.verbose && result.stdout) {
       for (const line of result.stdout.split("\n").filter(Boolean)) {
@@ -52,12 +53,13 @@ export class ShellStepRunner implements StepRunner {
     check: CompletionCheckDef,
     workspaceDir: string,
     abortSignal: AbortSignal,
+    env?: Record<string, string>,
   ): Promise<CheckResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m Running completion check...\n`);
     }
 
-    const result = await this.execShell(check.instructions, workspaceDir, abortSignal);
+    const result = await this.execShell(check.instructions, workspaceDir, abortSignal, env);
 
     if (this.verbose && result.stdout) {
       for (const line of result.stdout.split("\n").filter(Boolean)) {
@@ -83,12 +85,18 @@ export class ShellStepRunner implements StepRunner {
     script: string,
     cwd: string,
     abortSignal: AbortSignal,
+    env?: Record<string, string>,
   ): Promise<{ exitCode: number; stdout: string; stderr: string; cancelled: boolean }> {
     return new Promise((resolve) => {
       const proc = spawn("bash", ["-e", "-c", script], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env },
+        env: {
+          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+          HOME: process.env.HOME ?? "",
+          SHELL: process.env.SHELL ?? "/bin/sh",
+          ...env,
+        },
       });
 
       let stdout = "";

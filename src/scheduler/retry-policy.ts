@@ -45,7 +45,9 @@ export class RetryPolicy {
   private isRetryable(errorClass: ErrorClass): boolean {
     return (
       errorClass === ErrorClass.RETRYABLE_TRANSIENT ||
-      errorClass === ErrorClass.RETRYABLE_RATE_LIMIT
+      errorClass === ErrorClass.RETRYABLE_RATE_LIMIT ||
+      errorClass === ErrorClass.RETRYABLE_NETWORK ||
+      errorClass === ErrorClass.RETRYABLE_SERVICE
     );
   }
 }

@@ -90,17 +90,30 @@ describe("PermitGate", () => {
     }
   });
 
-  test("rejects when circuit breaker is OPEN", () => {
+  test("rejects when circuit breaker is OPEN for the job's provider", () => {
     const { registry: reg } = createGate({
       cbConfig: { failureThreshold: 1, resetTimeoutMs: 60000, halfOpenMaxAttempts: 1 },
     });
-    reg.getOrCreate("openai").recordFailure();
+    // LLM job resolves to provider "LLM"
+    reg.getOrCreate("LLM").recordFailure();
 
     const result = gate.requestPermit(makeJob(), 0);
     expect(isRejection(result)).toBe(true);
     if (isRejection(result)) {
       expect(result.reason).toBe(PermitRejectionReason.CIRCUIT_OPEN);
     }
+  });
+
+  test("does not reject when unrelated provider CB is OPEN", () => {
+    const { registry: reg } = createGate({
+      cbConfig: { failureThreshold: 1, resetTimeoutMs: 60000, halfOpenMaxAttempts: 1 },
+    });
+    // Trip a CB for a different provider than the job's
+    reg.getOrCreate("openai").recordFailure();
+
+    // LLM job resolves to provider "LLM", not "openai"
+    const result = gate.requestPermit(makeJob(), 0);
+    expect(isPermit(result)).toBe(true);
   });
 
   test("rejects when attempts exhausted", () => {
@@ -253,7 +266,12 @@ describe("PermitGate", () => {
       });
       reg.getOrCreate("anthropic").recordFailure();
 
-      const result = gate.requestPermit(makeJob(), 0);
+      // Use a WORKER_TASK job with workerKind "anthropic" to match the CB provider
+      const job = makeJob({
+        type: "WORKER_TASK" as Job["type"],
+        payload: { workerKind: "anthropic" },
+      });
+      const result = gate.requestPermit(job, 0);
       expect(isRejection(result)).toBe(true);
       if (isRejection(result)) {
         expect(result.reason).toBe(PermitRejectionReason.CIRCUIT_OPEN);

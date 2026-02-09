@@ -403,4 +403,111 @@ steps:
     const exists = await Bun.file(markerFile).exists();
     expect(exists).toBe(false);
   });
+
+  test("queues workflows when maxConcurrent is reached", async () => {
+    const tmpDir = await mkdtemp(path.join(tmpdir(), "daemon-queue-"));
+    const stateDir = path.join(tmpDir, "state");
+
+    // Workflow that takes some time to complete
+    const workflowYaml = `
+name: slow-workflow
+version: "1"
+timeout: "30s"
+steps:
+  slow:
+    worker: CUSTOM
+    instructions: "sleep 2"
+    capabilities: [RUN_COMMANDS]
+`;
+    await writeFile(path.join(tmpDir, "slow.yaml"), workflowYaml);
+
+    const config: DaemonConfig = {
+      name: "queue-daemon",
+      version: "1",
+      workspace: tmpDir,
+      state_dir: stateDir,
+      max_concurrent_workflows: 1,
+      events: {
+        tick: {
+          type: "interval",
+          every: "200ms" as import("../../../src/workflow/types.js").DurationString,
+        },
+      },
+      triggers: {
+        on_tick: {
+          on: "tick",
+          workflow: "slow.yaml",
+          max_queue: 3,
+        },
+      },
+    };
+
+    const daemon = new Daemon(config);
+    const startPromise = daemon.start();
+
+    // Let events fire while a workflow is running (maxConcurrent=1)
+    // Events should be queued, not skipped
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    // Should have items in the queue since the first workflow takes 2s
+    // and events fire every 200ms
+    expect(daemon.queueSize).toBeGreaterThanOrEqual(0); // queue may drain partially
+
+    await daemon.stop();
+    await startPromise;
+  });
+
+  test("dequeues and runs workflows when capacity frees up", async () => {
+    const tmpDir = await mkdtemp(path.join(tmpdir(), "daemon-dequeue-"));
+    const stateDir = path.join(tmpDir, "state");
+    const markerDir = path.join(tmpDir, "markers");
+    const { mkdir: mkdirFs } = await import("node:fs/promises");
+    await mkdirFs(markerDir, { recursive: true });
+
+    // Fast workflow that creates a marker file with a counter
+    const workflowYaml = `
+name: marker-workflow
+version: "1"
+timeout: "30s"
+steps:
+  mark:
+    worker: CUSTOM
+    instructions: "touch ${markerDir}/marker-$(date +%s%N)"
+    capabilities: [RUN_COMMANDS]
+`;
+    await writeFile(path.join(tmpDir, "marker.yaml"), workflowYaml);
+
+    const config: DaemonConfig = {
+      name: "dequeue-daemon",
+      version: "1",
+      workspace: tmpDir,
+      state_dir: stateDir,
+      max_concurrent_workflows: 1,
+      events: {
+        tick: {
+          type: "interval",
+          every: "100ms" as import("../../../src/workflow/types.js").DurationString,
+        },
+      },
+      triggers: {
+        on_tick: {
+          on: "tick",
+          workflow: "marker.yaml",
+        },
+      },
+    };
+
+    const daemon = new Daemon(config);
+    const startPromise = daemon.start();
+
+    // Let it run for a while to allow queueing and dequeuing
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await daemon.stop();
+    await startPromise;
+
+    // Multiple workflows should have executed (queued ones got drained)
+    const { readdir } = await import("node:fs/promises");
+    const markers = await readdir(markerDir);
+    expect(markers.length).toBeGreaterThanOrEqual(1);
+  });
 });

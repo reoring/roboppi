@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { JsonLinesTransport } from "../../../src/ipc/json-lines-transport.js";
-import { IpcProtocol } from "../../../src/ipc/protocol.js";
+import { IpcProtocol, validateMessage } from "../../../src/ipc/protocol.js";
 import { IpcTimeoutError } from "../../../src/ipc/errors.js";
 import type {
   SubmitJobMessage,
@@ -754,6 +754,166 @@ describe("IpcProtocol", () => {
       await closeInput();
       await protocol.stop();
       await protocol.stop(); // should not throw
+    });
+  });
+
+  describe("message schema validation", () => {
+    describe("validateMessage()", () => {
+      test("submit_job requires requestId and job", () => {
+        expect(validateMessage({ type: "submit_job", requestId: "r1", job: {} })).toBeNull();
+        expect(validateMessage({ type: "submit_job", job: {} })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "submit_job", requestId: "r1" })).toBe("missing required field 'job'");
+        expect(validateMessage({ type: "submit_job", requestId: "r1", job: null })).toBe("missing required field 'job'");
+      });
+
+      test("cancel_job requires requestId, jobId, and reason", () => {
+        expect(validateMessage({ type: "cancel_job", requestId: "r1", jobId: "j1", reason: "test" })).toBeNull();
+        expect(validateMessage({ type: "cancel_job", jobId: "j1", reason: "test" })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "cancel_job", requestId: "r1", reason: "test" })).toBe("missing required field 'jobId'");
+        expect(validateMessage({ type: "cancel_job", requestId: "r1", jobId: "j1" })).toBe("missing required field 'reason'");
+      });
+
+      test("request_permit requires requestId, job, and attemptIndex", () => {
+        expect(validateMessage({ type: "request_permit", requestId: "r1", job: {}, attemptIndex: 0 })).toBeNull();
+        expect(validateMessage({ type: "request_permit", job: {}, attemptIndex: 0 })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "request_permit", requestId: "r1", attemptIndex: 0 })).toBe("missing required field 'job'");
+        expect(validateMessage({ type: "request_permit", requestId: "r1", job: {} })).toBe("missing required field 'attemptIndex'");
+      });
+
+      test("report_queue_metrics requires requestId, queueDepth, oldestJobAgeMs, backlogCount", () => {
+        expect(validateMessage({ type: "report_queue_metrics", requestId: "r1", queueDepth: 5, oldestJobAgeMs: 100, backlogCount: 2 })).toBeNull();
+        expect(validateMessage({ type: "report_queue_metrics", queueDepth: 5, oldestJobAgeMs: 100, backlogCount: 2 })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "report_queue_metrics", requestId: "r1", oldestJobAgeMs: 100, backlogCount: 2 })).toBe("missing required field 'queueDepth'");
+        expect(validateMessage({ type: "report_queue_metrics", requestId: "r1", queueDepth: 5, backlogCount: 2 })).toBe("missing required field 'oldestJobAgeMs'");
+        expect(validateMessage({ type: "report_queue_metrics", requestId: "r1", queueDepth: 5, oldestJobAgeMs: 100 })).toBe("missing required field 'backlogCount'");
+      });
+
+      test("ack requires requestId and jobId", () => {
+        expect(validateMessage({ type: "ack", requestId: "r1", jobId: "j1" })).toBeNull();
+        expect(validateMessage({ type: "ack", jobId: "j1" })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "ack", requestId: "r1" })).toBe("missing required field 'jobId'");
+      });
+
+      test("permit_granted requires requestId and permit", () => {
+        expect(validateMessage({ type: "permit_granted", requestId: "r1", permit: {} })).toBeNull();
+        expect(validateMessage({ type: "permit_granted", permit: {} })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "permit_granted", requestId: "r1" })).toBe("missing required field 'permit'");
+      });
+
+      test("permit_rejected requires requestId and rejection", () => {
+        expect(validateMessage({ type: "permit_rejected", requestId: "r1", rejection: {} })).toBeNull();
+        expect(validateMessage({ type: "permit_rejected", rejection: {} })).toBe("missing required field 'requestId'");
+        expect(validateMessage({ type: "permit_rejected", requestId: "r1" })).toBe("missing required field 'rejection'");
+      });
+
+      test("job_completed requires jobId and outcome", () => {
+        expect(validateMessage({ type: "job_completed", jobId: "j1", outcome: "succeeded" })).toBeNull();
+        expect(validateMessage({ type: "job_completed", outcome: "succeeded" })).toBe("missing required field 'jobId'");
+        expect(validateMessage({ type: "job_completed", jobId: "j1" })).toBe("missing required field 'outcome'");
+      });
+
+      test("job_cancelled requires jobId and reason", () => {
+        expect(validateMessage({ type: "job_cancelled", jobId: "j1", reason: "test" })).toBeNull();
+        expect(validateMessage({ type: "job_cancelled", reason: "test" })).toBe("missing required field 'jobId'");
+        expect(validateMessage({ type: "job_cancelled", jobId: "j1" })).toBe("missing required field 'reason'");
+      });
+
+      test("escalation requires event", () => {
+        expect(validateMessage({ type: "escalation", event: {} })).toBeNull();
+        expect(validateMessage({ type: "escalation" })).toBe("missing required field 'event'");
+      });
+
+      test("heartbeat requires timestamp", () => {
+        expect(validateMessage({ type: "heartbeat", timestamp: 12345 })).toBeNull();
+        expect(validateMessage({ type: "heartbeat" })).toBe("missing required field 'timestamp'");
+      });
+
+      test("error requires code and message", () => {
+        expect(validateMessage({ type: "error", code: "ERR", message: "test" })).toBeNull();
+        expect(validateMessage({ type: "error", message: "test" })).toBe("missing required field 'code'");
+        expect(validateMessage({ type: "error", code: "ERR" })).toBe("missing required field 'message'");
+      });
+
+      test("unknown message types pass validation", () => {
+        expect(validateMessage({ type: "unknown_type", foo: "bar" })).toBeNull();
+      });
+    });
+
+    describe("dispatch drops invalid messages", () => {
+      test("submit_job without requestId is dropped", async () => {
+        const { protocol, feedInput, closeInput } = createTestProtocol();
+        let received = false;
+
+        protocol.onMessage("submit_job", () => {
+          received = true;
+        });
+        protocol.start();
+
+        await feedInput(JSON.stringify({
+          type: "submit_job",
+          job: makeTestJob(),
+          // missing requestId
+        }) + "\n");
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(received).toBe(false);
+
+        await closeInput();
+        await protocol.stop();
+      });
+
+      test("cancel_job without reason is dropped", async () => {
+        const { protocol, feedInput, closeInput } = createTestProtocol();
+        let received = false;
+
+        protocol.onMessage("cancel_job", () => {
+          received = true;
+        });
+        protocol.start();
+
+        await feedInput(JSON.stringify({
+          type: "cancel_job",
+          requestId: "r1",
+          jobId: "j1",
+          // missing reason
+        }) + "\n");
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(received).toBe(false);
+
+        await closeInput();
+        await protocol.stop();
+      });
+
+      test("valid messages still pass through after invalid ones", async () => {
+        const { protocol, feedInput, closeInput } = createTestProtocol();
+        let received: unknown = null;
+
+        protocol.onMessage("submit_job", (msg) => {
+          received = msg;
+        });
+        protocol.start();
+
+        // Invalid: missing requestId
+        await feedInput(JSON.stringify({
+          type: "submit_job",
+          job: makeTestJob(),
+        }) + "\n");
+        await new Promise((r) => setTimeout(r, 50));
+        expect(received).toBeNull();
+
+        // Valid message
+        await feedInput(JSON.stringify({
+          type: "submit_job",
+          requestId: "req-valid",
+          job: makeTestJob(),
+        }) + "\n");
+        await new Promise((r) => setTimeout(r, 50));
+        expect(received).not.toBeNull();
+
+        await closeInput();
+        await protocol.stop();
+      });
     });
   });
 });

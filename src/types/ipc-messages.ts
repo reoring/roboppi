@@ -38,7 +38,8 @@ export type InboundMessage =
   | SubmitJobMessage
   | CancelJobMessage
   | RequestPermitMessage
-  | ReportQueueMetricsMessage;
+  | ReportQueueMetricsMessage
+  | HeartbeatMessage;
 
 // --- Core → Scheduler ---
 
@@ -86,6 +87,11 @@ export interface HeartbeatMessage {
   timestamp: Timestamp;
 }
 
+export interface HeartbeatAckMessage {
+  type: "heartbeat_ack";
+  timestamp: Timestamp;
+}
+
 export interface ErrorMessage {
   type: "error";
   requestId?: string;
@@ -101,6 +107,7 @@ export type OutboundMessage =
   | JobCancelledMessage
   | EscalationMessage
   | HeartbeatMessage
+  | HeartbeatAckMessage
   | ErrorMessage;
 
 export type IpcMessage = InboundMessage | OutboundMessage;

@@ -1,27 +1,16 @@
-import { generateId, WorkerStatus } from "../../types/index.js";
-import type { WorkerTask, WorkerResult } from "../../types/index.js";
+import { WorkerStatus, ErrorClass } from "../../types/index.js";
 import { WorkerKind, WorkerCapability } from "../../types/index.js";
-import type {
-  WorkerAdapter,
-  WorkerHandle,
-  WorkerEvent,
-} from "../worker-adapter.js";
+import type { WorkerTask } from "../../types/index.js";
+import type { WorkerResult, Artifact, Observation } from "../../types/index.js";
+import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
 import { ProcessManager } from "../process-manager.js";
-import type { ManagedProcess } from "../process-manager.js";
+import { BaseProcessAdapter } from "./base-process-adapter.js";
 
 export interface ClaudeCodeAdapterConfig {
   claudeCommand?: string;
   defaultArgs?: string[];
   gracePeriodMs?: number;
   outputFormat?: "json" | "text";
-}
-
-interface InternalHandle extends WorkerHandle {
-  process: ManagedProcess;
-  startTime: number;
-  collectedStdout: string[];
-  collectedEvents: WorkerEvent[];
-  streamConsumed: boolean;
 }
 
 export function mapCapabilitiesToAllowedTools(
@@ -75,65 +64,36 @@ export function buildArgs(
   return args;
 }
 
-export class ClaudeCodeAdapter implements WorkerAdapter {
+export class ClaudeCodeAdapter extends BaseProcessAdapter {
   readonly kind = WorkerKind.CLAUDE_CODE;
   private readonly config: Required<ClaudeCodeAdapterConfig>;
-  private readonly processManager: ProcessManager;
-  private readonly handles = new Map<string, InternalHandle>();
 
   constructor(
     config: ClaudeCodeAdapterConfig = {},
     processManager?: ProcessManager
   ) {
+    super(processManager ?? new ProcessManager(), config.gracePeriodMs ?? 5000);
     this.config = {
       claudeCommand: config.claudeCommand ?? "claude",
       defaultArgs: config.defaultArgs ?? [],
       gracePeriodMs: config.gracePeriodMs ?? 5000,
       outputFormat: config.outputFormat ?? "json",
     };
-    this.processManager = processManager ?? new ProcessManager();
   }
 
-  async startTask(task: WorkerTask): Promise<WorkerHandle> {
+  buildCommand(task: WorkerTask): string[] {
     const args = buildArgs(task, this.config);
-    const command = [this.config.claudeCommand, ...args];
-
-    // Convert deadline to timeout for ProcessManager
-    const now = Date.now();
-    const timeoutMs = task.budget.deadlineAt > now
-      ? task.budget.deadlineAt - now
-      : undefined;
-
-    const managed = this.processManager.spawn({
-      command,
-      cwd: task.workspaceRef,
-      abortSignal: task.abortSignal,
-      timeoutMs,
-    });
-
-    const handle: InternalHandle = {
-      handleId: generateId(),
-      workerKind: task.workerKind,
-      abortSignal: task.abortSignal,
-      process: managed,
-      startTime: Date.now(),
-      collectedStdout: [],
-      collectedEvents: [],
-      streamConsumed: false,
-    };
-
-    this.handles.set(handle.handleId, handle);
-    return handle;
+    return [this.config.claudeCommand, ...args];
   }
 
   async *streamEvents(handle: WorkerHandle): AsyncIterable<WorkerEvent> {
-    const internal = this.handles.get(handle.handleId);
-    if (!internal) return;
+    const active = this.activeProcesses.get(handle.handleId);
+    if (!active) return;
 
-    internal.streamConsumed = true;
+    active.streamConsumed = true;
 
-    const stdoutReader = internal.process.stdout.getReader();
-    const stderrReader = internal.process.stderr.getReader();
+    const stdoutReader = active.managed.stdout.getReader();
+    const stderrReader = active.managed.stderr.getReader();
     const decoder = new TextDecoder();
 
     // Read stderr in background, collect events
@@ -167,7 +127,7 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            internal.collectedStdout.push(trimmed);
+            active.collectedStdout.push(trimmed);
             try {
               const parsed = JSON.parse(trimmed);
               if (parsed.type === "result" && parsed.result) {
@@ -188,14 +148,14 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
             }
           }
         } else {
-          internal.collectedStdout.push(chunk);
+          active.collectedStdout.push(chunk);
           yield { type: "stdout", data: chunk };
         }
       }
 
       // Flush remaining buffer
       if (stdoutBuffer.trim()) {
-        internal.collectedStdout.push(stdoutBuffer.trim());
+        active.collectedStdout.push(stdoutBuffer.trim());
         yield { type: "stdout", data: stdoutBuffer.trim() };
       }
     } catch {
@@ -204,24 +164,13 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
 
     await stderrDone;
     for (const event of stderrEvents) {
-      internal.collectedEvents.push(event);
       yield event;
     }
   }
 
-  async cancel(handle: WorkerHandle): Promise<void> {
-    const internal = this.handles.get(handle.handleId);
-    if (!internal) return;
-
-    await this.processManager.gracefulShutdown(
-      internal.process.pid,
-      this.config.gracePeriodMs
-    );
-  }
-
   async awaitResult(handle: WorkerHandle): Promise<WorkerResult> {
-    const internal = this.handles.get(handle.handleId);
-    if (!internal) {
+    const active = this.activeProcesses.get(handle.handleId);
+    if (!active) {
       return {
         status: WorkerStatus.FAILED,
         artifacts: [],
@@ -231,23 +180,23 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
       };
     }
 
-    const exitCode = await internal.process.exitPromise;
-    const wallTimeMs = Date.now() - internal.startTime;
+    const exitCode = await active.managed.exitPromise;
+    const wallTimeMs = Date.now() - active.startedAt;
 
     // Get stdout: from collected data if streamEvents consumed the stream, otherwise read directly
     let stdout = "";
-    if (internal.streamConsumed) {
-      stdout = internal.collectedStdout.join("\n");
+    if (active.streamConsumed) {
+      stdout = active.collectedStdout.join("\n");
     } else {
       try {
-        stdout = await new Response(internal.process.stdout).text();
+        stdout = await new Response(active.managed.stdout).text();
       } catch {
         // stdout may already have been consumed
       }
     }
 
     // Clean up handle
-    this.handles.delete(handle.handleId);
+    this.activeProcesses.delete(handle.handleId);
 
     // Determine status from exit code
     if (handle.abortSignal.aborted) {
@@ -257,16 +206,19 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
         observations: [],
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        errorClass: ErrorClass.RETRYABLE_TRANSIENT,
       };
     }
 
     if (exitCode !== 0) {
+      const errorClass = this.classifyExitCode(exitCode, stdout);
       return {
         status: WorkerStatus.FAILED,
         artifacts: [],
         observations: [],
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        errorClass,
       };
     }
 
@@ -284,6 +236,16 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
       },
       durationMs: wallTimeMs,
     };
+  }
+
+  protected parseArtifacts(stdout: string): Artifact[] {
+    // Used by base class awaitResult — but ClaudeCodeAdapter overrides awaitResult
+    // so this is only needed for consistency. Delegate to parseOutput.
+    return this.parseOutput(stdout).artifacts;
+  }
+
+  protected parseObservations(stdout: string): Observation[] {
+    return this.parseOutput(stdout).observations;
   }
 
   private parseOutput(stdout: string): {

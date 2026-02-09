@@ -90,8 +90,18 @@ export class EscalationManager {
       }
     }
 
-    // Clear cancelTimeouts after processing
-    this.cancelTimeouts.clear();
+    // Remove only the processed entries (preserve any new entries added during evaluation)
+    for (const [workerKind, count] of cancelTimeoutsSnapshot) {
+      const current = this.cancelTimeouts.get(workerKind);
+      if (current !== undefined) {
+        const remaining = current - count;
+        if (remaining <= 0) {
+          this.cancelTimeouts.delete(workerKind);
+        } else {
+          this.cancelTimeouts.set(workerKind, remaining);
+        }
+      }
+    }
 
     // Check latest-wins thresholds (non-converging changes)
     for (const [workspaceRef, count] of Array.from(this.latestWinsCounts.entries())) {

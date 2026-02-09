@@ -34,6 +34,12 @@ export class HealthChecker {
   start(): void {
     if (this.timer) return;
     this.lastResponseAt = now();
+
+    // Register heartbeat_ack handler to update lastResponseAt
+    this.ipc.onMessage("heartbeat_ack", () => {
+      this.recordHeartbeatResponse();
+    });
+
     this.timer = setInterval(() => this.check(), this.config.intervalMs);
   }
 

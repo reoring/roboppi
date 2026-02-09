@@ -7,6 +7,7 @@ import {
   WorkerCapability,
   OutputMode,
   WorkerStatus,
+  ErrorClass,
   generateId,
 } from "../../../src/types/index.js";
 import type { WorkerTask } from "../../../src/types/index.js";
@@ -212,7 +213,7 @@ describe("CodexCliAdapter", () => {
       expect(result.cost.wallTimeMs).toBeGreaterThanOrEqual(0);
     });
 
-    test("should return FAILED for non-zero exit code", async () => {
+    test("should return FAILED with NON_RETRYABLE errorClass for non-zero exit code", async () => {
       const managed = createMockManagedProcess(1, "Error occurred\n");
       mockPm.spawnMock.mockReturnValue(managed);
 
@@ -221,6 +222,55 @@ describe("CodexCliAdapter", () => {
       const result = await adapter.awaitResult(handle);
 
       expect(result.status).toBe(WorkerStatus.FAILED);
+      expect(result.errorClass).toBe(ErrorClass.NON_RETRYABLE);
+    });
+
+    test("should return RETRYABLE_TRANSIENT errorClass for exit code 137 (SIGKILL)", async () => {
+      const managed = createMockManagedProcess(137, "");
+      mockPm.spawnMock.mockReturnValue(managed);
+
+      const task = createTask();
+      const handle = await adapter.startTask(task);
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.FAILED);
+      expect(result.errorClass).toBe(ErrorClass.RETRYABLE_TRANSIENT);
+    });
+
+    test("should return RETRYABLE_TRANSIENT errorClass for exit code 143 (SIGTERM)", async () => {
+      const managed = createMockManagedProcess(143, "");
+      mockPm.spawnMock.mockReturnValue(managed);
+
+      const task = createTask();
+      const handle = await adapter.startTask(task);
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.FAILED);
+      expect(result.errorClass).toBe(ErrorClass.RETRYABLE_TRANSIENT);
+    });
+
+    test("should return RETRYABLE_RATE_LIMIT for rate limit errors in stdout", async () => {
+      const managed = createMockManagedProcess(1, "Error: rate limit exceeded, try again later\n");
+      mockPm.spawnMock.mockReturnValue(managed);
+
+      const task = createTask();
+      const handle = await adapter.startTask(task);
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.FAILED);
+      expect(result.errorClass).toBe(ErrorClass.RETRYABLE_RATE_LIMIT);
+    });
+
+    test("should return RETRYABLE_NETWORK for network errors in stdout", async () => {
+      const managed = createMockManagedProcess(1, "Error: ECONNREFUSED 127.0.0.1:443\n");
+      mockPm.spawnMock.mockReturnValue(managed);
+
+      const task = createTask();
+      const handle = await adapter.startTask(task);
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.FAILED);
+      expect(result.errorClass).toBe(ErrorClass.RETRYABLE_NETWORK);
     });
 
     test("should return CANCELLED when abort signal is triggered", async () => {

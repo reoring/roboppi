@@ -16,12 +16,14 @@ export class CircuitBreaker {
   private state: CircuitState = CircuitState.CLOSED;
   private failureCount = 0;
   private halfOpenAttempts = 0;
+  private halfOpenInProgress = false;
   private resetTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly config: CircuitBreakerConfig = DEFAULT_CONFIG) {}
 
   recordSuccess(): void {
     if (this.state === CircuitState.HALF_OPEN) {
+      this.halfOpenInProgress = false;
       this.state = CircuitState.CLOSED;
       this.failureCount = 0;
       this.halfOpenAttempts = 0;
@@ -34,6 +36,7 @@ export class CircuitBreaker {
     this.failureCount++;
 
     if (this.state === CircuitState.HALF_OPEN) {
+      this.halfOpenInProgress = false;
       this.halfOpenAttempts++;
       if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
         this.tripOpen();
@@ -43,6 +46,19 @@ export class CircuitBreaker {
         this.tripOpen();
       }
     }
+  }
+
+  /**
+   * Returns true if the request should be blocked.
+   * OPEN always blocks. HALF_OPEN blocks if a probe request is already in progress.
+   */
+  shouldReject(): boolean {
+    if (this.state === CircuitState.OPEN) return true;
+    if (this.state === CircuitState.HALF_OPEN && this.halfOpenInProgress) return true;
+    if (this.state === CircuitState.HALF_OPEN) {
+      this.halfOpenInProgress = true;
+    }
+    return false;
   }
 
   isOpen(): boolean {
@@ -74,6 +90,7 @@ export class CircuitBreaker {
     this.resetTimer = setTimeout(() => {
       this.state = CircuitState.HALF_OPEN;
       this.halfOpenAttempts = 0;
+      this.halfOpenInProgress = false;
       this.resetTimer = null;
     }, this.config.resetTimeoutMs);
   }
@@ -102,6 +119,11 @@ export class CircuitBreakerRegistry {
       if (breaker.isOpen()) return true;
     }
     return false;
+  }
+
+  isProviderOpen(provider: string): boolean {
+    const breaker = this.breakers.get(provider);
+    return breaker?.shouldReject() ?? false;
   }
 
   getSnapshot(): Record<string, CircuitState> {

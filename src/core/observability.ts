@@ -80,10 +80,42 @@ export interface MetricEntry {
   timestamp: number;
 }
 
+/** Ring buffer for O(1) histogram entry storage with bounded capacity. */
+class HistogramRingBuffer {
+  private readonly buffer: (MetricEntry | null)[];
+  private head = 0;
+  private count = 0;
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+    this.buffer = new Array(capacity).fill(null);
+  }
+
+  push(entry: MetricEntry): void {
+    this.buffer[this.head] = entry;
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+
+  toArray(): MetricEntry[] {
+    if (this.count === 0) return [];
+    const result: MetricEntry[] = [];
+    const start = (this.head - this.count + this.capacity) % this.capacity;
+    for (let i = 0; i < this.count; i++) {
+      const entry = this.buffer[(start + i) % this.capacity];
+      if (entry != null) result.push(entry);
+    }
+    return result;
+  }
+}
+
 export class MetricsCollector {
   private readonly counters = new Map<string, MetricEntry>();
   private readonly gauges = new Map<string, MetricEntry>();
-  private readonly histograms = new Map<string, MetricEntry[]>();
+  private readonly histograms = new Map<string, HistogramRingBuffer>();
+
+  static readonly MAX_HISTOGRAM_ENTRIES = 10000;
 
   private labelKey(name: string, labels?: Record<string, string>): string {
     if (!labels || Object.keys(labels).length === 0) return name;
@@ -110,21 +142,15 @@ export class MetricsCollector {
     this.gauges.set(key, { name, type: "gauge", value, labels, timestamp: now() });
   }
 
-  private static readonly MAX_HISTOGRAM_ENTRIES = 10000;
-
   histogram(name: string, value: number, labels?: Record<string, string>): void {
     const key = this.labelKey(name, labels);
-    const existing = this.histograms.get(key);
-    const entry: MetricEntry = { name, type: "histogram", value, labels, timestamp: now() };
-    if (existing) {
-      existing.push(entry);
-      // Prevent unbounded growth: keep recent half when limit exceeded
-      if (existing.length >= MetricsCollector.MAX_HISTOGRAM_ENTRIES) {
-        existing.splice(0, existing.length - MetricsCollector.MAX_HISTOGRAM_ENTRIES / 2);
-      }
-    } else {
-      this.histograms.set(key, [entry]);
+    let ring = this.histograms.get(key);
+    if (!ring) {
+      ring = new HistogramRingBuffer(MetricsCollector.MAX_HISTOGRAM_ENTRIES);
+      this.histograms.set(key, ring);
     }
+    const entry: MetricEntry = { name, type: "histogram", value, labels, timestamp: now() };
+    ring.push(entry);
   }
 
   getMetrics(): MetricEntry[] {
@@ -135,8 +161,8 @@ export class MetricsCollector {
     for (const entry of Array.from(this.gauges.values())) {
       result.push({ ...entry });
     }
-    for (const entries of Array.from(this.histograms.values())) {
-      for (const entry of entries) {
+    for (const ring of Array.from(this.histograms.values())) {
+      for (const entry of ring.toArray()) {
         result.push({ ...entry });
       }
     }

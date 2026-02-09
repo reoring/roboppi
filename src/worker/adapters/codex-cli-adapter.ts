@@ -1,10 +1,9 @@
-import { generateId, now } from "../../types/index.js";
-import { WorkerKind, WorkerCapability, WorkerStatus } from "../../types/index.js";
+import { WorkerKind, WorkerCapability } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
-import type { WorkerResult, Artifact, Observation } from "../../types/index.js";
-import type { WorkerAdapter, WorkerHandle, WorkerEvent } from "../worker-adapter.js";
-import { ProcessManager } from "../process-manager.js";
-import type { ManagedProcess } from "../process-manager.js";
+import type { Artifact, Observation } from "../../types/index.js";
+import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
+import type { ProcessManager } from "../process-manager.js";
+import { BaseProcessAdapter } from "./base-process-adapter.js";
 
 export interface CodexCliAdapterConfig {
   codexCommand?: string;
@@ -12,24 +11,15 @@ export interface CodexCliAdapterConfig {
   gracePeriodMs?: number;
 }
 
-interface ActiveProcess {
-  managed: ManagedProcess;
-  startedAt: number;
-  collectedStdout: string[];
-  streamConsumed: boolean;
-}
-
-export class CodexCliAdapter implements WorkerAdapter {
+export class CodexCliAdapter extends BaseProcessAdapter {
   readonly kind = WorkerKind.CODEX_CLI;
   private readonly config: Required<CodexCliAdapterConfig>;
-  private readonly processManager: ProcessManager;
-  private readonly activeProcesses = new Map<string, ActiveProcess>();
 
   constructor(
     processManager: ProcessManager,
     config: CodexCliAdapterConfig = {},
   ) {
-    this.processManager = processManager;
+    super(processManager, config.gracePeriodMs ?? 5000);
     this.config = {
       codexCommand: config.codexCommand ?? "codex",
       defaultArgs: config.defaultArgs ?? [],
@@ -37,37 +27,23 @@ export class CodexCliAdapter implements WorkerAdapter {
     };
   }
 
-  async startTask(task: WorkerTask): Promise<WorkerHandle> {
-    const command = this.buildCommand(task);
-    const startedAt = now();
+  buildCommand(task: WorkerTask): string[] {
+    const args: string[] = [this.config.codexCommand, ...this.config.defaultArgs];
 
-    // Convert deadline to timeout for ProcessManager
-    const currentTime = Date.now();
-    const timeoutMs = task.budget.deadlineAt > currentTime
-      ? task.budget.deadlineAt - currentTime
-      : undefined;
+    // Map capabilities to approval mode
+    const hasWrite = task.capabilities.includes(WorkerCapability.EDIT);
+    const hasRunCommands = task.capabilities.includes(WorkerCapability.RUN_COMMANDS);
 
-    const managed = this.processManager.spawn({
-      command,
-      cwd: task.workspaceRef,
-      abortSignal: task.abortSignal,
-      timeoutMs,
-    });
+    if (hasWrite && hasRunCommands) {
+      args.push("--approval-mode=full-auto");
+    } else if (hasWrite) {
+      args.push("--approval-mode=auto-edit");
+    }
 
-    const handle: WorkerHandle = {
-      handleId: generateId(),
-      workerKind: WorkerKind.CODEX_CLI,
-      abortSignal: task.abortSignal,
-    };
+    // Pass instructions via --prompt
+    args.push("--prompt", task.instructions);
 
-    this.activeProcesses.set(handle.handleId, {
-      managed,
-      startedAt,
-      collectedStdout: [],
-      streamConsumed: false,
-    });
-
-    return handle;
+    return args;
   }
 
   async *streamEvents(handle: WorkerHandle): AsyncIterable<WorkerEvent> {
@@ -170,99 +146,6 @@ export class CodexCliAdapter implements WorkerAdapter {
     }
   }
 
-  async cancel(handle: WorkerHandle): Promise<void> {
-    const active = this.activeProcesses.get(handle.handleId);
-    if (!active) return;
-
-    await this.processManager.gracefulShutdown(
-      active.managed.pid,
-      this.config.gracePeriodMs,
-    );
-  }
-
-  async awaitResult(handle: WorkerHandle): Promise<WorkerResult> {
-    const active = this.activeProcesses.get(handle.handleId);
-    if (!active) {
-      return {
-        status: WorkerStatus.FAILED,
-        artifacts: [],
-        observations: [],
-        cost: { wallTimeMs: 0 },
-        durationMs: 0,
-      };
-    }
-
-    const { managed, startedAt } = active;
-
-    // Get stdout: from collected data if streamEvents consumed the stream, otherwise read directly
-    let stdout = "";
-    if (active.streamConsumed) {
-      stdout = active.collectedStdout.join("\n");
-    } else {
-      const stdoutChunks: string[] = [];
-      const decoder = new TextDecoder();
-      const reader = managed.stdout.getReader();
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          stdoutChunks.push(decoder.decode(value, { stream: true }));
-        }
-      } catch {
-        // Stream may already be consumed by streamEvents
-      } finally {
-        reader.releaseLock();
-      }
-      stdout = stdoutChunks.join("");
-    }
-
-    const exitCode = await managed.exitPromise;
-    const wallTimeMs = now() - startedAt;
-
-    this.activeProcesses.delete(handle.handleId);
-
-    const artifacts = this.parseArtifacts(stdout);
-    const observations = this.parseObservations(stdout);
-
-    if (handle.abortSignal.aborted) {
-      return {
-        status: WorkerStatus.CANCELLED,
-        artifacts,
-        observations,
-        cost: { wallTimeMs },
-        durationMs: wallTimeMs,
-      };
-    }
-
-    return {
-      status: exitCode === 0 ? WorkerStatus.SUCCEEDED : WorkerStatus.FAILED,
-      artifacts,
-      observations,
-      cost: { wallTimeMs },
-      durationMs: wallTimeMs,
-    };
-  }
-
-  buildCommand(task: WorkerTask): string[] {
-    const args: string[] = [this.config.codexCommand, ...this.config.defaultArgs];
-
-    // Map capabilities to approval mode
-    const hasWrite = task.capabilities.includes(WorkerCapability.EDIT);
-    const hasRunCommands = task.capabilities.includes(WorkerCapability.RUN_COMMANDS);
-
-    if (hasWrite && hasRunCommands) {
-      args.push("--approval-mode=full-auto");
-    } else if (hasWrite) {
-      args.push("--approval-mode=auto-edit");
-    }
-
-    // Pass instructions via --prompt
-    args.push("--prompt", task.instructions);
-
-    return args;
-  }
-
   private *parseStdoutLine(line: string): Iterable<WorkerEvent> {
     if (!line) return;
 
@@ -286,7 +169,7 @@ export class CodexCliAdapter implements WorkerAdapter {
     yield { type: "stdout", data: line };
   }
 
-  private parseArtifacts(stdout: string): Artifact[] {
+  protected parseArtifacts(stdout: string): Artifact[] {
     const artifacts: Artifact[] = [];
 
     for (const line of stdout.split("\n")) {
@@ -317,7 +200,7 @@ export class CodexCliAdapter implements WorkerAdapter {
     return artifacts;
   }
 
-  private parseObservations(stdout: string): Observation[] {
+  protected parseObservations(stdout: string): Observation[] {
     if (!stdout.trim()) return [];
 
     return [

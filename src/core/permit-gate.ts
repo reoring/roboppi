@@ -1,6 +1,6 @@
 import type { UUID, Job, PermitRejection } from "../types/index.js";
 import type { PermitHandle } from "../types/index.js";
-import { PermitRejectionReason, CircuitState } from "../types/index.js";
+import { PermitRejectionReason, JobType } from "../types/index.js";
 import { generateId, now } from "../types/index.js";
 import { BackpressureResponse } from "./backpressure.js";
 import type { BackpressureController } from "./backpressure.js";
@@ -30,15 +30,14 @@ export class PermitGate {
       return { reason: PermitRejectionReason.DEFERRED, detail: "Backpressure: system busy, retry later" };
     }
 
-    // 2. Check circuit breakers
+    // 2. Check circuit breaker for the relevant provider
     const cbSnapshot = this.circuitBreakers.getSnapshot();
-    for (const [provider, state] of Object.entries(cbSnapshot)) {
-      if (state === CircuitState.OPEN) {
-        return {
-          reason: PermitRejectionReason.CIRCUIT_OPEN,
-          detail: `Circuit breaker open for provider: ${provider}`,
-        };
-      }
+    const provider = this.resolveProvider(job);
+    if (provider !== undefined && this.circuitBreakers.isProviderOpen(provider)) {
+      return {
+        reason: PermitRejectionReason.CIRCUIT_OPEN,
+        detail: `Circuit breaker open for provider: ${provider}`,
+      };
     }
 
     // 3. Check execution budget
@@ -62,9 +61,11 @@ export class PermitGate {
       attemptIndex,
       abortController,
       tokensGranted: {
-        concurrency: isDegraded ? 1 : 1,
-        rps: isDegraded ? 1 : 1,
-        costBudget: job.limits.costHint,
+        concurrency: 1,
+        rps: 1,
+        costBudget: isDegraded && job.limits.costHint !== undefined
+          ? Math.ceil(job.limits.costHint / 2)
+          : job.limits.costHint,
       },
       circuitStateSnapshot: cbSnapshot,
     };
@@ -122,6 +123,18 @@ export class PermitGate {
 
   getActivePermit(permitId: UUID): PermitHandle | undefined {
     return this.activePermits.get(permitId);
+  }
+
+  /** Determine which circuit breaker provider is relevant for this job. */
+  private resolveProvider(job: Job): string | undefined {
+    if (job.type === JobType.WORKER_TASK) {
+      const payload = job.payload as { workerKind?: string } | null;
+      return payload?.workerKind;
+    }
+    if (job.type === JobType.LLM) {
+      return job.type;
+    }
+    return undefined;
   }
 
   dispose(): void {

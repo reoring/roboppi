@@ -6,12 +6,48 @@ export interface ExecutionBudgetConfig {
   maxCostBudget?: number;
 }
 
+/** Ring buffer for O(1) sliding-window RPS tracking. */
+class RpsRingBuffer {
+  private readonly buffer: number[];
+  private head = 0;   // next write position
+  private count = 0;  // number of valid entries
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity + 1; // +1 so we can distinguish full from empty
+    this.buffer = new Array(this.capacity).fill(0);
+  }
+
+  /** Evict entries older than windowStart and return the current count. */
+  countInWindow(windowStart: number): number {
+    // Advance past expired entries from the tail
+    const tail = (this.head - this.count + this.capacity) % this.capacity;
+    let evicted = 0;
+    for (let i = 0; i < this.count; i++) {
+      const idx = (tail + i) % this.capacity;
+      if (this.buffer[idx]! > windowStart) break;
+      evicted++;
+    }
+    this.count -= evicted;
+    return this.count;
+  }
+
+  /** Add a timestamp to the ring buffer. */
+  push(timestamp: number): void {
+    this.buffer[this.head] = timestamp;
+    this.head = (this.head + 1) % this.capacity;
+    this.count++;
+  }
+}
+
 export class ExecutionBudget {
   private activeSlots = 0;
   private cumulativeCost = 0;
-  private rpsTimestamps: number[] = [];
+  private readonly rpsRing: RpsRingBuffer;
 
-  constructor(private readonly config: ExecutionBudgetConfig) {}
+  constructor(private readonly config: ExecutionBudgetConfig) {
+    this.rpsRing = new RpsRingBuffer(config.maxRps);
+  }
 
   checkAttempts(_jobId: string, attemptIndex: number, maxAttempts: number): boolean {
     return attemptIndex < maxAttempts;
@@ -34,11 +70,11 @@ export class ExecutionBudget {
   tryAcquireRate(): boolean {
     const now = Date.now();
     const windowStart = now - 1000;
-    this.rpsTimestamps = this.rpsTimestamps.filter((t) => t > windowStart);
-    if (this.rpsTimestamps.length >= this.config.maxRps) {
+    const count = this.rpsRing.countInWindow(windowStart);
+    if (count >= this.config.maxRps) {
       return false;
     }
-    this.rpsTimestamps.push(now);
+    this.rpsRing.push(now);
     return true;
   }
 
@@ -73,7 +109,7 @@ export class ExecutionBudget {
     // Check RPS without consuming
     const now = Date.now();
     const windowStart = now - 1000;
-    const recentCount = this.rpsTimestamps.filter((t) => t > windowStart).length;
+    const recentCount = this.rpsRing.countInWindow(windowStart);
     if (recentCount >= this.config.maxRps) {
       return { allowed: false, reason: "RATE_LIMIT" as PermitRejectionReason };
     }
@@ -91,8 +127,8 @@ export class ExecutionBudget {
     // Re-validate RPS before consuming (atomic check-and-consume)
     const now = Date.now();
     const windowStart = now - 1000;
-    this.rpsTimestamps = this.rpsTimestamps.filter((t) => t > windowStart);
-    if (this.rpsTimestamps.length >= this.config.maxRps) {
+    const rpsCount = this.rpsRing.countInWindow(windowStart);
+    if (rpsCount >= this.config.maxRps) {
       return false;
     }
 
@@ -107,7 +143,7 @@ export class ExecutionBudget {
 
     // All checks passed — commit the resource consumption
     this.activeSlots++;
-    this.rpsTimestamps.push(now);
+    this.rpsRing.push(now);
     if (permit.tokensGranted.costBudget !== undefined) {
       this.cumulativeCost += permit.tokensGranted.costBudget;
     }

@@ -719,6 +719,107 @@ describe("WorkflowExecutor", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Input/output resolution
+  // -----------------------------------------------------------------------
+  describe("input/output resolution", () => {
+    it("resolves inputs before running the step", async () => {
+      await withTempDir(async (dir) => {
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+
+        // Pre-populate an artifact from a "producer" step
+        await ctx.initWorkflow("test-wf", "test");
+        await ctx.initStep("producer");
+        const { writeFile: wf, mkdir: mkd } = await import("node:fs/promises");
+        const artifactDir = path.join(ctxDir, "producer", "result");
+        await mkd(artifactDir, { recursive: true });
+        await wf(path.join(artifactDir, "data.txt"), "hello from producer");
+
+        let receivedInputData = "";
+        const runner = new MockStepRunner(async (stepId) => {
+          if (stepId === "consumer") {
+            // Read the file that should have been copied by resolveInputs
+            const { readFile: rf } = await import("node:fs/promises");
+            try {
+              receivedInputData = await rf(path.join(dir, "result", "data.txt"), "utf-8");
+            } catch {
+              receivedInputData = "NOT_FOUND";
+            }
+          }
+          return { status: "SUCCEEDED" };
+        });
+
+        const wfDef = makeWorkflow({
+          producer: makeStep(),
+          consumer: makeStep({
+            depends_on: ["producer"],
+            inputs: [{ from: "producer", artifact: "result" }],
+          }),
+        });
+
+        const executor = new WorkflowExecutor(wfDef, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+        expect(receivedInputData).toBe("hello from producer");
+      });
+    });
+
+    it("collects outputs after step succeeds", async () => {
+      await withTempDir(async (dir) => {
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+
+        const { writeFile: wf, mkdir: mkd, stat: st } = await import("node:fs/promises");
+
+        const runner = new MockStepRunner(async (stepId) => {
+          if (stepId === "builder") {
+            // Create an output file in the workspace
+            const outputDir = path.join(dir, "build-output");
+            await mkd(outputDir, { recursive: true });
+            await wf(path.join(outputDir, "artifact.txt"), "built output");
+          }
+          return { status: "SUCCEEDED" };
+        });
+
+        const wfDef = makeWorkflow({
+          builder: makeStep({
+            outputs: [{ name: "build", path: "build-output" }],
+          }),
+        });
+
+        const executor = new WorkflowExecutor(wfDef, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+
+        // Verify the output was collected into the context dir
+        const collectedPath = path.join(ctxDir, "builder", "build");
+        const collectedStat = await st(collectedPath).catch(() => null);
+        expect(collectedStat).not.toBeNull();
+        expect(collectedStat!.isDirectory()).toBe(true);
+      });
+    });
+
+    it("skips input resolution when step has no inputs", async () => {
+      await withTempDir(async (dir) => {
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const runner = new MockStepRunner();
+
+        const wfDef = makeWorkflow({
+          A: makeStep(), // no inputs
+        });
+
+        const executor = new WorkflowExecutor(wfDef, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // WorkflowState shape
   // -----------------------------------------------------------------------
   describe("WorkflowState shape", () => {

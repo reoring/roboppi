@@ -36,6 +36,7 @@ export interface StepRunner {
     step: StepDefinition,
     workspaceDir: string,
     abortSignal: AbortSignal,
+    env?: Record<string, string>,
   ): Promise<StepRunResult>;
 
   runCheck(
@@ -43,6 +44,7 @@ export interface StepRunner {
     check: CompletionCheckDef,
     workspaceDir: string,
     abortSignal: AbortSignal,
+    env?: Record<string, string>,
   ): Promise<CheckResult>;
 }
 
@@ -120,6 +122,7 @@ export class WorkflowExecutor {
     private readonly contextManager: ContextManager,
     private readonly stepRunner: StepRunner,
     private readonly workspaceDir: string,
+    private readonly env?: Record<string, string>,
   ) {
     this.stepDefs = definition.steps;
     this.concurrency =
@@ -332,6 +335,11 @@ export class WorkflowExecutor {
         // If workflow was aborted (timeout), bail out — status already set by handleWorkflowTimeout
         if (this.workflowAbortController!.signal.aborted) return;
 
+        // Resolve inputs before running the step
+        if (stepDef.inputs && stepDef.inputs.length > 0) {
+          await this.contextManager.resolveInputs(stepId, stepDef.inputs, this.workspaceDir);
+        }
+
         // Run the main worker
         state.status = StepStatus.RUNNING;
         this.notify();
@@ -344,6 +352,7 @@ export class WorkflowExecutor {
             stepDef,
             this.workspaceDir,
             stepAbort,
+            this.env,
           );
         } catch (_err) {
           if (this.workflowAbortController!.signal.aborted) return;
@@ -389,7 +398,12 @@ export class WorkflowExecutor {
           return;
         }
 
-        // Step SUCCEEDED — check for completion_check
+        // Step SUCCEEDED — collect outputs if defined
+        if (stepDef.outputs && stepDef.outputs.length > 0) {
+          await this.contextManager.collectOutputs(stepId, stepDef.outputs, this.workspaceDir);
+        }
+
+        // Check for completion_check
         if (!stepDef.completion_check) {
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
@@ -408,6 +422,7 @@ export class WorkflowExecutor {
             stepDef.completion_check,
             this.workspaceDir,
             checkAbort,
+            this.env,
           );
         } catch (_err) {
           if (this.workflowAbortController!.signal.aborted) return;

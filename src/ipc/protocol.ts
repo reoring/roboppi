@@ -11,6 +11,7 @@ import type {
   JobCancelledMessage,
   EscalationMessage,
   HeartbeatMessage,
+  HeartbeatAckMessage,
   ErrorMessage,
   SubmitJobMessage,
   RequestPermitMessage,
@@ -192,6 +193,12 @@ export class IpcProtocol {
     await this.transport.write(msg);
   }
 
+  /** Send a heartbeat acknowledgement. */
+  async sendHeartbeatAck(timestamp: Timestamp): Promise<void> {
+    const msg: HeartbeatAckMessage = { type: "heartbeat_ack", timestamp };
+    await this.transport.write(msg);
+  }
+
   /** Send an error message. */
   async sendError(code: string, message: string, requestId?: string): Promise<void> {
     const msg: ErrorMessage = { type: "error", code, message };
@@ -220,6 +227,13 @@ export class IpcProtocol {
     }
     const msg = raw as Record<string, unknown>;
 
+    // Validate required fields for known message types
+    const validationError = validateMessage(msg);
+    if (validationError) {
+      console.error(`[IPC] Invalid ${msg["type"]} message: ${validationError}`);
+      return;
+    }
+
     // Check for request/response correlation
     if (typeof msg["requestId"] === "string") {
       const pending = this.pendingRequests.get(msg["requestId"]);
@@ -244,5 +258,88 @@ export class IpcProtocol {
         console.error("[IPC] Handler error:", err);
       }
     }
+  }
+}
+
+/**
+ * Validates that a message has the required fields for its type.
+ * Returns an error string if invalid, or null if valid.
+ * Unknown message types pass validation (no required fields to check).
+ */
+export function validateMessage(msg: Record<string, unknown>): string | null {
+  const type = msg["type"] as string;
+
+  switch (type) {
+    // --- Scheduler → Core (Inbound) ---
+    case "submit_job":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["job"] !== "object" || msg["job"] === null) return "missing required field 'job'";
+      return null;
+
+    case "cancel_job":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
+      if (typeof msg["reason"] !== "string") return "missing required field 'reason'";
+      return null;
+
+    case "request_permit":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["job"] !== "object" || msg["job"] === null) return "missing required field 'job'";
+      if (typeof msg["attemptIndex"] !== "number") return "missing required field 'attemptIndex'";
+      return null;
+
+    case "report_queue_metrics":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["queueDepth"] !== "number") return "missing required field 'queueDepth'";
+      if (typeof msg["oldestJobAgeMs"] !== "number") return "missing required field 'oldestJobAgeMs'";
+      if (typeof msg["backlogCount"] !== "number") return "missing required field 'backlogCount'";
+      return null;
+
+    // --- Core → Scheduler (Outbound) ---
+    case "ack":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
+      return null;
+
+    case "permit_granted":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["permit"] !== "object" || msg["permit"] === null) return "missing required field 'permit'";
+      return null;
+
+    case "permit_rejected":
+      if (typeof msg["requestId"] !== "string") return "missing required field 'requestId'";
+      if (typeof msg["rejection"] !== "object" || msg["rejection"] === null) return "missing required field 'rejection'";
+      return null;
+
+    case "job_completed":
+      if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
+      if (typeof msg["outcome"] !== "string") return "missing required field 'outcome'";
+      return null;
+
+    case "job_cancelled":
+      if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
+      if (typeof msg["reason"] !== "string") return "missing required field 'reason'";
+      return null;
+
+    case "escalation":
+      if (typeof msg["event"] !== "object" || msg["event"] === null) return "missing required field 'event'";
+      return null;
+
+    case "heartbeat":
+      if (typeof msg["timestamp"] !== "number") return "missing required field 'timestamp'";
+      return null;
+
+    case "heartbeat_ack":
+      if (typeof msg["timestamp"] !== "number") return "missing required field 'timestamp'";
+      return null;
+
+    case "error":
+      if (typeof msg["code"] !== "string") return "missing required field 'code'";
+      if (typeof msg["message"] !== "string") return "missing required field 'message'";
+      return null;
+
+    default:
+      // Unknown message types pass validation
+      return null;
   }
 }

@@ -212,5 +212,6 @@ export type TriggerAction =
   | { action: "debounced" }
   | { action: "cooldown" }
   | { action: "skipped_by_evaluate" }
+  | { action: "queued"; triggerId: string }
   | { action: "queue_full" }
   | { action: "disabled" };

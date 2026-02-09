@@ -25,12 +25,29 @@ export interface SchedulerConfig {
   supervisor?: Partial<SupervisorConfig>;
   retry?: Partial<RetryPolicyConfig>;
   defaultPolicy?: DeduplicationPolicy;
+  drainTimeoutMs?: number;
+  metricsIntervalMs?: number;
 }
+
+const DEFAULT_DRAIN_TIMEOUT_MS = 5000;
+const DEFAULT_METRICS_INTERVAL_MS = 5000;
 
 interface InFlightJobInfo {
   job: Job;
   attemptIndex: number;
   processing?: boolean;
+  enqueuedAt: number;
+  /** Tracks consecutive permit rejections / IPC failures for exponential backoff. Reset on success. */
+  backoffCount: number;
+}
+
+export const BACKOFF_BASE_MS = 500;
+export const BACKOFF_MAX_MS = 30_000;
+
+/** Full-jitter exponential backoff: random(0, min(cap, base * 2^count)). */
+export function computeBackoffDelay(count: number): number {
+  const ceiling = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * Math.pow(2, count));
+  return Math.floor(Math.random() * ceiling);
 }
 
 export class Scheduler {
@@ -40,14 +57,19 @@ export class Scheduler {
   private readonly dlq: DeadLetterQueue;
   private readonly supervisor: Supervisor;
   private readonly defaultPolicy: DeduplicationPolicy;
+  private readonly drainTimeoutMs: number;
+  private readonly metricsIntervalMs: number;
   private readonly jobInfo = new Map<UUID, InFlightJobInfo>();
 
   private ipc: IpcProtocol | null = null;
   private running = false;
-  private processingTimer: ReturnType<typeof setInterval> | null = null;
+  private metricsTimer: ReturnType<typeof setInterval> | null = null;
   private mutexQueue: Array<() => void> = [];
   private mutexLocked = false;
   private escalationCallback: ((event: EscalationEvent) => void) | null = null;
+
+  // Event-driven notification mechanism
+  private notifyResolve: (() => void) | null = null;
 
   constructor(config?: SchedulerConfig) {
     this.queue = new JobQueue();
@@ -56,6 +78,8 @@ export class Scheduler {
     this.dlq = new DeadLetterQueue();
     this.supervisor = new Supervisor(config?.supervisor);
     this.defaultPolicy = config?.defaultPolicy ?? DeduplicationPolicy.REJECT;
+    this.drainTimeoutMs = config?.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+    this.metricsIntervalMs = config?.metricsIntervalMs ?? DEFAULT_METRICS_INTERVAL_MS;
   }
 
   getQueue(): JobQueue {
@@ -97,6 +121,22 @@ export class Scheduler {
     }
   }
 
+  /** Wake the process loop to check for queued jobs. */
+  private notify(): void {
+    if (this.notifyResolve !== null) {
+      const r = this.notifyResolve;
+      this.notifyResolve = null;
+      r();
+    }
+  }
+
+  /** Wait until notify() is called or the scheduler is stopped. */
+  private waitForNotification(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.notifyResolve = resolve;
+    });
+  }
+
   async submitJob(job: Job, policy?: DeduplicationPolicy): Promise<{ accepted: boolean; reason?: string; cancelJobId?: string }> {
     await this.acquireMutex();
     try {
@@ -114,7 +154,8 @@ export class Scheduler {
 
           case "proceed": {
             this.queue.enqueue(job);
-            this.jobInfo.set(job.jobId, { job, attemptIndex: 0 });
+            this.jobInfo.set(job.jobId, { job, attemptIndex: 0, enqueuedAt: Date.now(), backoffCount: 0 });
+            this.notify();
             const cancelJobId = "cancelJobId" in result ? result.cancelJobId : undefined;
             if (cancelJobId) {
               return { accepted: true, cancelJobId };
@@ -125,7 +166,8 @@ export class Scheduler {
       }
 
       this.queue.enqueue(job);
-      this.jobInfo.set(job.jobId, { job, attemptIndex: 0 });
+      this.jobInfo.set(job.jobId, { job, attemptIndex: 0, enqueuedAt: Date.now(), backoffCount: 0 });
+      this.notify();
       return { accepted: true };
     } finally {
       this.releaseMutex();
@@ -139,18 +181,96 @@ export class Scheduler {
     this.ipc = await this.supervisor.spawnCore();
     this.wireIpcHandlers();
     this.startProcessLoop();
+    this.startMetricsReporting();
   }
 
   async shutdown(): Promise<void> {
     this.running = false;
 
-    if (this.processingTimer) {
-      clearInterval(this.processingTimer);
-      this.processingTimer = null;
+    // Stop metrics reporting
+    if (this.metricsTimer) {
+      clearInterval(this.metricsTimer);
+      this.metricsTimer = null;
+    }
+
+    // Wake the process loop so it can exit
+    this.notify();
+
+    // Wait for in-flight jobs to complete within drainTimeoutMs
+    if (this.hasInFlightJobs()) {
+      await this.drainInFlightJobs();
     }
 
     await this.supervisor.killCore();
     this.ipc = null;
+  }
+
+  private hasInFlightJobs(): boolean {
+    for (const info of this.jobInfo.values()) {
+      if (info.processing) return true;
+    }
+    return false;
+  }
+
+  private drainInFlightJobs(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (!this.hasInFlightJobs()) {
+          clearInterval(checkInterval);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 50);
+
+      const timeout = setTimeout(() => {
+        clearInterval(checkInterval);
+        // Move remaining in-flight (processing) jobs to DLQ
+        for (const [jobId, info] of this.jobInfo) {
+          if (info.processing) {
+            this.dlq.push(
+              info.job,
+              "Drain timeout: job still in-flight at shutdown",
+              undefined,
+              info.attemptIndex + 1,
+            );
+            if (info.job.key) {
+              this.inflight.deregister(info.job.key);
+            }
+            this.jobInfo.delete(jobId);
+          }
+        }
+        resolve();
+      }, this.drainTimeoutMs);
+    });
+  }
+
+  private startMetricsReporting(): void {
+    this.metricsTimer = setInterval(() => {
+      this.reportQueueMetrics();
+    }, this.metricsIntervalMs);
+  }
+
+  private reportQueueMetrics(): void {
+    if (!this.ipc || !this.running) return;
+
+    const queueDepth = this.queue.size();
+    const backlogCount = this.jobInfo.size;
+
+    // Find the oldest job age
+    let oldestJobAgeMs = 0;
+    const now = Date.now();
+    for (const info of this.jobInfo.values()) {
+      const age = now - info.enqueuedAt;
+      if (age > oldestJobAgeMs) {
+        oldestJobAgeMs = age;
+      }
+    }
+
+    const requestId = generateId();
+    this.ipc.sendReportQueueMetrics(requestId, queueDepth, oldestJobAgeMs, backlogCount)
+      .catch(() => {
+        // Silently ignore metrics send failures
+      });
   }
 
   private wireIpcHandlers(): void {
@@ -203,9 +323,17 @@ export class Scheduler {
   }
 
   private startProcessLoop(): void {
-    this.processingTimer = setInterval(() => {
-      this.processNext();
-    }, 100);
+    void this.processLoop();
+  }
+
+  private async processLoop(): Promise<void> {
+    while (this.running) {
+      if (this.queue.isEmpty()) {
+        await this.waitForNotification();
+        if (!this.running) break;
+      }
+      await this.processNext();
+    }
   }
 
   private async processNext(): Promise<void> {
@@ -243,30 +371,56 @@ export class Scheduler {
       .then((response) => {
         const msg = response as Record<string, unknown>;
         if (msg["type"] === "permit_rejected") {
-          // Permit was rejected — re-enqueue with priority preserved (at front)
+          // Permit was rejected — re-enqueue with exponential backoff + jitter
           const rejection = msg["rejection"] as PermitRejection;
           if (info) {
             info.processing = false;
+            const delay = computeBackoffDelay(info.backoffCount);
+            info.backoffCount++;
+            setTimeout(() => {
+              if (this.running) {
+                this.queue.enqueue(job!);
+                this.notify();
+              }
+            }, delay);
+          } else {
+            // No info — fallback to base delay
+            setTimeout(() => {
+              if (this.running) {
+                this.queue.enqueue(job!);
+                this.notify();
+              }
+            }, BACKOFF_BASE_MS);
           }
-          // Back off and re-enqueue instead of going to DLQ immediately
-          setTimeout(() => {
-            if (this.running) {
-              this.queue.enqueue(job!);
-            }
-          }, 1000);
           void rejection;
+        } else {
+          // permit_granted — reset backoff on success
+          if (info) {
+            info.backoffCount = 0;
+          }
         }
         // If permit_granted, the job is now being processed by Core.
         // The job_completed handler will be called when Core finishes.
       })
       .catch((_err) => {
-        // IPC failure — re-enqueue the job preserving its priority
-        // Use setTimeout to avoid tight retry loops
-        setTimeout(() => {
-          if (this.running) {
-            this.queue.enqueue(job!);
-          }
-        }, 500);
+        // IPC failure — re-enqueue with exponential backoff + jitter
+        if (info) {
+          const delay = computeBackoffDelay(info.backoffCount);
+          info.backoffCount++;
+          setTimeout(() => {
+            if (this.running) {
+              this.queue.enqueue(job!);
+              this.notify();
+            }
+          }, delay);
+        } else {
+          setTimeout(() => {
+            if (this.running) {
+              this.queue.enqueue(job!);
+              this.notify();
+            }
+          }, BACKOFF_BASE_MS);
+        }
       });
   }
 
@@ -300,6 +454,7 @@ export class Scheduler {
         setTimeout(() => {
           if (this.running) {
             this.queue.enqueue(info.job);
+            this.notify();
           }
         }, decision.delayMs);
         return;

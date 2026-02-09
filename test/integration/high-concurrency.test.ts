@@ -259,8 +259,8 @@ describe("High concurrency stress tests", () => {
       maxRps: 1000,
     });
 
-    // Open a circuit breaker
-    const cb = reg.getOrCreate("test-provider");
+    // Open a circuit breaker for "LLM" provider (matches makeJob's type: "LLM")
+    const cb = reg.getOrCreate("LLM");
     // Need failureThreshold failures to open. Default is usually 5.
     // Force it open by recording many failures
     for (let i = 0; i < 10; i++) {

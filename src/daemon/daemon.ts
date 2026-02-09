@@ -4,7 +4,7 @@ import path from "node:path";
 import type { DaemonConfig, DaemonEvent, TriggerDef } from "./types.js";
 import type { WorkflowState } from "../workflow/types.js";
 import { DaemonStateStore } from "./state-store.js";
-import { TriggerEngine } from "./trigger-engine.js";
+import { TriggerEngine, WorkflowQueuedError } from "./trigger-engine.js";
 import { EvaluateGate } from "./evaluate-gate.js";
 import { ResultAnalyzer } from "./result-analyzer.js";
 import { CronSource } from "./events/cron-source.js";
@@ -19,6 +19,13 @@ import { parseWorkflow } from "../workflow/parser.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import { ShellStepRunner } from "../workflow/shell-step-runner.js";
 import { ContextManager } from "../workflow/context-manager.js";
+import { Logger } from "../core/observability.js";
+
+interface QueuedItem {
+  triggerId: string;
+  trigger: TriggerDef;
+  event: DaemonEvent;
+}
 
 export class Daemon {
   private readonly config: DaemonConfig;
@@ -29,14 +36,18 @@ export class Daemon {
   private triggerEngine: TriggerEngine | null = null;
   private webhookServer: WebhookServer | null = null;
 
+  private readonly logger: Logger;
   private shutdownRequested = false;
   private runningWorkflows = 0;
   private readonly maxConcurrent: number;
+  private readonly workflowQueue: QueuedItem[] = [];
+  private readonly defaultMaxQueue: number = 10;
   private workflowDoneResolve: (() => void) | null = null;
   private startedAt: number = 0;
 
-  constructor(config: DaemonConfig) {
+  constructor(config: DaemonConfig, logger?: Logger) {
     this.config = config;
+    this.logger = logger ?? new Logger("daemon");
     const stateDir = config.state_dir ?? path.join(config.workspace, ".daemon-state");
     this.stateStore = new DaemonStateStore(stateDir);
     this.evaluateGate = new EvaluateGate();
@@ -81,7 +92,7 @@ export class Daemon {
           this.eventSources.push(new CommandSource(eventId, eventDef));
           break;
         default:
-          console.log(`[daemon] Event type not yet supported (event: ${eventId}), skipping`);
+          this.logger.warn(`Event type not yet supported, skipping`, { eventId });
           break;
       }
     }
@@ -93,11 +104,11 @@ export class Daemon {
       ) as import("./types.js").WebhookEventDef | undefined;
       const webhookPort = firstWebhookDef?.port ?? 8080;
       this.webhookServer.start(webhookPort);
-      console.log(`[daemon] Webhook server started on port ${webhookPort}`);
+      this.logger.info(`Webhook server started`, { port: webhookPort });
     }
 
     if (this.eventSources.length === 0) {
-      console.log("[daemon] No supported event sources found, exiting");
+      this.logger.warn("No supported event sources found, exiting");
       return;
     }
 
@@ -106,7 +117,7 @@ export class Daemon {
       this.config,
       this.stateStore,
       (triggerId, trigger, event) =>
-        this.executeWorkflow(triggerId, trigger, event),
+        this.scheduleWorkflow(triggerId, trigger, event),
     );
 
     // 5. Set up signal handlers
@@ -119,37 +130,33 @@ export class Daemon {
     // 6. Merge event sources and run event loop
     const merged = mergeEventSources(this.eventSources);
 
-    console.log("[daemon] Event loop started, waiting for events...");
+    this.logger.info("Event loop started, waiting for events...");
 
     try {
       for await (const event of merged) {
         if (this.shutdownRequested) break;
 
         try {
-          console.log(`[daemon] Event received: ${event.sourceId} (${event.payload.type})`);
-
-          // Check concurrent limit — if at max, skip event
-          if (this.runningWorkflows >= this.maxConcurrent) {
-            console.log(`[daemon] Max concurrent workflows (${this.maxConcurrent}) reached, skipping event from ${event.sourceId}`);
-            continue;
-          }
+          this.logger.debug("Event received", { sourceId: event.sourceId, type: event.payload.type });
 
           const actions = await this.triggerEngine.handleEvent(event);
           for (const action of actions) {
             if (action.action === "executed") {
-              console.log(`[daemon] Workflow completed: ${action.result.status}`);
+              this.logger.info("Workflow completed", { status: action.result.status });
+            } else if (action.action === "queued") {
+              this.logger.info("Workflow queued", { triggerId: action.triggerId, queueSize: this.workflowQueue.length });
             } else {
-              console.log(`[daemon] Trigger action: ${action.action}`);
+              this.logger.debug("Trigger action", { action: action.action });
             }
           }
         } catch (err) {
-          console.error(`[daemon] Error handling event from ${event.sourceId}:`, err);
+          this.logger.error("Error handling event", { sourceId: event.sourceId, error: err instanceof Error ? err.message : String(err) });
           continue;
         }
       }
     } catch (err) {
       if (!this.shutdownRequested) {
-        console.error("[daemon] Event loop error:", err);
+        this.logger.error("Event loop error", { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
@@ -166,7 +173,7 @@ export class Daemon {
     if (this.shutdownRequested) return;
     this.shutdownRequested = true;
 
-    console.log("[daemon] Shutting down...");
+    this.logger.info("Shutting down...");
 
     // Stop all event sources
     await Promise.all(this.eventSources.map((s) => s.stop()));
@@ -178,7 +185,7 @@ export class Daemon {
 
     // Wait for running workflows to complete (with timeout)
     if (this.runningWorkflows > 0) {
-      console.log(`[daemon] Waiting for ${this.runningWorkflows} running workflow(s)...`);
+      this.logger.info("Waiting for running workflows", { count: this.runningWorkflows });
       const timeout = 30_000;
       await Promise.race([
         new Promise<void>((resolve) => {
@@ -196,7 +203,81 @@ export class Daemon {
       status: "stopped",
     });
 
-    console.log("[daemon] Stopped.");
+    this.logger.info("Stopped.");
+  }
+
+  /**
+   * Called by TriggerEngine as the onExecute callback.
+   * If under capacity, executes immediately. If at capacity, enqueues
+   * and throws WorkflowQueuedError so the trigger engine skips state updates.
+   */
+  private async scheduleWorkflow(
+    triggerId: string,
+    trigger: TriggerDef,
+    event: DaemonEvent,
+  ): Promise<WorkflowState> {
+    if (this.runningWorkflows >= this.maxConcurrent) {
+      this.enqueueWorkflow(triggerId, trigger, event);
+      throw new WorkflowQueuedError();
+    }
+    return this.executeWorkflow(triggerId, trigger, event);
+  }
+
+  private enqueueWorkflow(
+    triggerId: string,
+    trigger: TriggerDef,
+    event: DaemonEvent,
+  ): void {
+    const maxQueue = trigger.max_queue ?? this.defaultMaxQueue;
+
+    // Count items in queue for this specific trigger
+    const triggerQueueCount = this.workflowQueue.filter(
+      (item) => item.triggerId === triggerId,
+    ).length;
+
+    if (triggerQueueCount >= maxQueue) {
+      // Drop oldest item for this trigger to make room
+      const oldestIdx = this.workflowQueue.findIndex(
+        (item) => item.triggerId === triggerId,
+      );
+      if (oldestIdx !== -1) {
+        this.workflowQueue.splice(oldestIdx, 1);
+        this.logger.warn("Queue full, dropping oldest item", {
+          triggerId,
+          maxQueue,
+        });
+      }
+    }
+
+    this.workflowQueue.push({ triggerId, trigger, event });
+  }
+
+  /** Dequeue and execute next queued workflow if capacity allows. */
+  private drainQueue(): void {
+    while (
+      this.workflowQueue.length > 0 &&
+      this.runningWorkflows < this.maxConcurrent
+    ) {
+      const item = this.workflowQueue.shift()!;
+      // Fire-and-forget: executeWorkflow manages runningWorkflows count
+      // and will call drainQueue again in its finally block
+      void this.executeWorkflow(item.triggerId, item.trigger, item.event).catch(
+        (err) => {
+          this.logger.error("Dequeued workflow execution failed", {
+            triggerId: item.triggerId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        },
+      );
+      // Only start one at a time; executeWorkflow's finally block will
+      // call drainQueue again when it completes
+      break;
+    }
+  }
+
+  /** Returns current queue depth (for testing/metrics). */
+  get queueSize(): number {
+    return this.workflowQueue.length;
   }
 
   private async executeWorkflow(
@@ -236,79 +317,67 @@ export class Daemon {
         }
       }
 
-      // 1b. Context injection
-      const savedEnv: Record<string, string | undefined> = {};
-      if (trigger.context?.env) {
-        for (const [key, value] of Object.entries(trigger.context.env)) {
-          savedEnv[key] = process.env[key];
-          process.env[key] = value;
+      // 1b. Context injection — build env to pass to executor (not process.env)
+      const workflowEnv: Record<string, string> | undefined =
+        trigger.context?.env ? { ...trigger.context.env } : undefined;
+
+      const daemonContextDir = path.join(workspaceDir, ".daemon-context");
+      await mkdir(daemonContextDir, { recursive: true });
+
+      if (trigger.context?.last_result) {
+        const lastResultForCtx = await this.stateStore.getLastResult(safeTriggerId);
+        await writeFile(
+          path.join(daemonContextDir, "last-result.json"),
+          JSON.stringify(lastResultForCtx, null, 2),
+        );
+      }
+
+      if (trigger.context?.event_payload) {
+        await writeFile(
+          path.join(daemonContextDir, "event.json"),
+          JSON.stringify(event.payload, null, 2),
+        );
+      }
+
+      // 2. Read and parse the workflow YAML
+      const workflowPath = path.resolve(workspaceDir, trigger.workflow);
+      const yamlContent = await readFile(workflowPath, "utf-8");
+      const definition = parseWorkflow(yamlContent);
+
+      // 3. Setup context dir
+      const contextDir = path.join(workspaceDir, "context", safeTriggerId);
+      await mkdir(contextDir, { recursive: true });
+
+      // 4. Create executor and run
+      const ctx = new ContextManager(contextDir);
+      const runner = new ShellStepRunner(false);
+      const executor = new WorkflowExecutor(definition, ctx, runner, workspaceDir, workflowEnv);
+      const result = await executor.execute();
+
+      // 5. Run result analyzer if defined
+      if (trigger.analyze) {
+        const triggerState = await this.stateStore.getTriggerState(safeTriggerId);
+        const analyzeOutput = await this.resultAnalyzer.analyze(
+          trigger.analyze,
+          result,
+          contextDir,
+          workspaceDir,
+          safeTriggerId,
+          triggerState.executionCount,
+        );
+        if (analyzeOutput) {
+          this.logger.info("Analysis result", { triggerId: safeTriggerId, output: analyzeOutput });
         }
       }
 
-      try {
-        const daemonContextDir = path.join(workspaceDir, ".daemon-context");
-        await mkdir(daemonContextDir, { recursive: true });
-
-        if (trigger.context?.last_result) {
-          const lastResultForCtx = await this.stateStore.getLastResult(safeTriggerId);
-          await writeFile(
-            path.join(daemonContextDir, "last-result.json"),
-            JSON.stringify(lastResultForCtx, null, 2),
-          );
-        }
-
-        if (trigger.context?.event_payload) {
-          await writeFile(
-            path.join(daemonContextDir, "event.json"),
-            JSON.stringify(event.payload, null, 2),
-          );
-        }
-
-        // 2. Read and parse the workflow YAML
-        const workflowPath = path.resolve(workspaceDir, trigger.workflow);
-        const yamlContent = await readFile(workflowPath, "utf-8");
-        const definition = parseWorkflow(yamlContent);
-
-        // 3. Setup context dir
-        const contextDir = path.join(workspaceDir, "context", safeTriggerId);
-        await mkdir(contextDir, { recursive: true });
-
-        // 4. Create executor and run
-        const ctx = new ContextManager(contextDir);
-        const runner = new ShellStepRunner(false);
-        const executor = new WorkflowExecutor(definition, ctx, runner, workspaceDir);
-        const result = await executor.execute();
-
-        // 5. Run result analyzer if defined
-        if (trigger.analyze) {
-          const triggerState = await this.stateStore.getTriggerState(safeTriggerId);
-          const analyzeOutput = await this.resultAnalyzer.analyze(
-            trigger.analyze,
-            result,
-            contextDir,
-            workspaceDir,
-            safeTriggerId,
-            triggerState.executionCount,
-          );
-          if (analyzeOutput) {
-            console.log(`[daemon] Analysis for ${safeTriggerId}: ${analyzeOutput}`);
-          }
-        }
-
-        return result;
-      } finally {
-        // Restore env vars
-        for (const [key, original] of Object.entries(savedEnv)) {
-          if (original === undefined) {
-            delete process.env[key];
-          } else {
-            process.env[key] = original;
-          }
-        }
-      }
+      return result;
     } finally {
       this.runningWorkflows--;
-      if (this.runningWorkflows <= 0 && this.workflowDoneResolve) {
+
+      // Drain queued workflows now that we have capacity
+      this.drainQueue();
+
+      if (this.runningWorkflows <= 0 && this.workflowQueue.length === 0 && this.workflowDoneResolve) {
         this.workflowDoneResolve();
         this.workflowDoneResolve = null;
       }

@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { RetryPolicy } from "../../../src/scheduler/retry-policy.js";
 import { ErrorClass } from "../../../src/types/index.js";
+import { computeBackoffDelay, BACKOFF_BASE_MS, BACKOFF_MAX_MS } from "../../../src/scheduler/index.js";
 
 describe("RetryPolicy", () => {
   describe("retryable errors", () => {
@@ -17,6 +18,20 @@ describe("RetryPolicy", () => {
       expect(decision.retry).toBe(true);
       expect(decision.delayMs).toBeGreaterThanOrEqual(0);
     });
+
+    test("RETRYABLE_NETWORK is retryable on first attempt", () => {
+      const policy = new RetryPolicy();
+      const decision = policy.shouldRetry(ErrorClass.RETRYABLE_NETWORK, 0);
+      expect(decision.retry).toBe(true);
+      expect(decision.delayMs).toBeGreaterThanOrEqual(0);
+    });
+
+    test("RETRYABLE_SERVICE is retryable on first attempt", () => {
+      const policy = new RetryPolicy();
+      const decision = policy.shouldRetry(ErrorClass.RETRYABLE_SERVICE, 0);
+      expect(decision.retry).toBe(true);
+      expect(decision.delayMs).toBeGreaterThanOrEqual(0);
+    });
   });
 
   describe("non-retryable errors", () => {
@@ -30,6 +45,20 @@ describe("RetryPolicy", () => {
     test("FATAL is never retried", () => {
       const policy = new RetryPolicy();
       const decision = policy.shouldRetry(ErrorClass.FATAL, 0);
+      expect(decision.retry).toBe(false);
+      expect(decision.delayMs).toBe(0);
+    });
+
+    test("NON_RETRYABLE_LINT is never retried", () => {
+      const policy = new RetryPolicy();
+      const decision = policy.shouldRetry(ErrorClass.NON_RETRYABLE_LINT, 0);
+      expect(decision.retry).toBe(false);
+      expect(decision.delayMs).toBe(0);
+    });
+
+    test("NON_RETRYABLE_TEST is never retried", () => {
+      const policy = new RetryPolicy();
+      const decision = policy.shouldRetry(ErrorClass.NON_RETRYABLE_TEST, 0);
       expect(decision.retry).toBe(false);
       expect(decision.delayMs).toBe(0);
     });
@@ -53,6 +82,20 @@ describe("RetryPolicy", () => {
       const policy = new RetryPolicy({ maxAttempts: 1 });
       const decision = policy.shouldRetry(ErrorClass.RETRYABLE_TRANSIENT, 0);
       expect(decision.retry).toBe(false);
+    });
+
+    test("RETRYABLE_NETWORK respects maxAttempts", () => {
+      const policy = new RetryPolicy({ maxAttempts: 3 });
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_NETWORK, 0).retry).toBe(true);
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_NETWORK, 1).retry).toBe(true);
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_NETWORK, 2).retry).toBe(false);
+    });
+
+    test("RETRYABLE_SERVICE respects maxAttempts", () => {
+      const policy = new RetryPolicy({ maxAttempts: 3 });
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_SERVICE, 0).retry).toBe(true);
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_SERVICE, 1).retry).toBe(true);
+      expect(policy.shouldRetry(ErrorClass.RETRYABLE_SERVICE, 2).retry).toBe(false);
     });
   });
 
@@ -154,5 +197,69 @@ describe("RetryPolicy", () => {
       const decision = policy.shouldRetry(ErrorClass.RETRYABLE_TRANSIENT, 3);
       expect(decision.retry).toBe(true);
     });
+  });
+});
+
+describe("computeBackoffDelay (Scheduler processNext backoff)", () => {
+  test("delay at count=0 is in [0, BACKOFF_BASE_MS)", () => {
+    for (let i = 0; i < 100; i++) {
+      const delay = computeBackoffDelay(0);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(BACKOFF_BASE_MS);
+    }
+  });
+
+  test("delay is always capped at BACKOFF_MAX_MS", () => {
+    for (let i = 0; i < 100; i++) {
+      // Large count that would exceed max without cap
+      const delay = computeBackoffDelay(20);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(BACKOFF_MAX_MS);
+    }
+  });
+
+  test("ceiling grows exponentially with count", () => {
+    // count=0: ceiling = min(30000, 500 * 1)   = 500
+    // count=1: ceiling = min(30000, 500 * 2)   = 1000
+    // count=3: ceiling = min(30000, 500 * 8)   = 4000
+    // count=6: ceiling = min(30000, 500 * 64)  = 30000 (capped)
+    const expectedCeilings = [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000];
+    for (let count = 0; count < expectedCeilings.length; count++) {
+      const expected = expectedCeilings[count];
+      for (let i = 0; i < 50; i++) {
+        const delay = computeBackoffDelay(count);
+        expect(delay).toBeLessThan(expected);
+        expect(delay).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  test("jitter produces non-deterministic values", () => {
+    const delays = new Set<number>();
+    for (let i = 0; i < 30; i++) {
+      delays.add(computeBackoffDelay(3));
+    }
+    // With jitter across a range of [0, 4000), we expect multiple unique values
+    expect(delays.size).toBeGreaterThan(1);
+  });
+
+  test("average delay increases with count", () => {
+    const runs = 500;
+    let sumLow = 0;
+    let sumHigh = 0;
+    for (let i = 0; i < runs; i++) {
+      sumLow += computeBackoffDelay(0);
+      sumHigh += computeBackoffDelay(4);
+    }
+    // count=0 ceiling is 500, count=4 ceiling is 8000 => avg should be ~16x larger
+    expect(sumHigh / runs).toBeGreaterThan(sumLow / runs);
+  });
+
+  test("BACKOFF_BASE_MS is 500", () => {
+    expect(BACKOFF_BASE_MS).toBe(500);
+  });
+
+  test("BACKOFF_MAX_MS is 30000", () => {
+    expect(BACKOFF_MAX_MS).toBe(30_000);
   });
 });
