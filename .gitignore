@@ -3,3 +3,9 @@ dist
 *.tsbuildinfo
 .DS_Store
 /agentcore
+
+# Local AgentCore workflow state
+.agentcore-loop/
+
+# Local scratch notes (do not commit)
+docs/wip/
