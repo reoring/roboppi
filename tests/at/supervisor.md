@@ -1,60 +1,60 @@
-# Workflow システム 受け入れテスト設計
+# Workflow System Acceptance Test Plan
 
-## テスト方針
+## Test Strategy
 
-- **テストレベル**: YAML 文字列を入力、`WorkflowState` を出力として検証する E2E テスト
-- **Worker**: `MockStepRunner` を使用。実プロセスは起動しない（プロセス統合はスコープ外）
-- **ファイル I/O**: 実際のファイルシステム操作を行う（`ContextManager` が実ファイルを扱うため）
-- **全テストを temp ディレクトリ内で実行し、テスト後にクリーンアップする**
+- **Test level**: E2E tests that take YAML strings as input and assert on the resulting `WorkflowState`
+- **Worker**: use `MockStepRunner`; do not spawn real processes (process integration is out of scope)
+- **File I/O**: use real filesystem operations (because `ContextManager` works with real files)
+- **Run all tests in a temp directory and clean up afterwards**
 
 ---
 
-## AT-1: YAML パース → DAG バリデーション → 実行 フルパイプライン
+## AT-1: Full pipeline (YAML parse -> DAG validate -> execute)
 
-### AT-1.1 正常系: 設計書の「実装→レビュー→修正」例を完走
+### AT-1.1 Happy path: complete the design-doc "implement -> review -> fix" example
 
-**入力 YAML**: `docs/workflow-design.md` セクション 3.1 の `implement-review-fix` ワークフロー
+**Input YAML**: the `implement-review-fix` workflow from `docs/workflow-design.md` section 3.1
 
-**MockStepRunner の振る舞い**:
-- 全ステップ SUCCEEDED を返す
-- 各ステップで `outputs[].path` に該当するファイルを workspace に書き出す
+**MockStepRunner behavior**:
+- Return `SUCCEEDED` for all steps
+- For each step, write the file corresponding to `outputs[].path` into the workspace
 
-**検証項目**:
-| # | 検証内容 | 期待値 |
+**Assertions**:
+| # | What | Expected |
 |---|---------|--------|
 | 1 | `WorkflowState.status` | `SUCCEEDED` |
-| 2 | 全ステップの `StepState.status` | `SUCCEEDED` |
-| 3 | 実行順序 | `implement` → (`test`, `review` 並列) → `fix` |
-| 4 | `context/implement/implementation/` にファイルが存在 | true |
-| 5 | `context/review/review-comments/` にファイルが存在 | true |
-| 6 | `context/test/test-report/` にファイルが存在 | true |
-| 7 | `context/_workflow.json` が存在し、name が正しい | `"implement-review-fix"` |
-| 8 | 各ステップの `_meta.json` が存在する | true |
+| 2 | `StepState.status` for all steps | `SUCCEEDED` |
+| 3 | Execution order | `implement` -> (`test`, `review` in parallel) -> `fix` |
+| 4 | File exists at `context/implement/implementation/` | true |
+| 5 | File exists at `context/review/review-comments/` | true |
+| 6 | File exists at `context/test/test-report/` | true |
+| 7 | `context/_workflow.json` exists with correct `name` | `"implement-review-fix"` |
+| 8 | Each step has `_meta.json` | true |
 
-### AT-1.2 正常系: 設計書の「completion_check ループ」例を完走
+### AT-1.2 Happy path: complete the design-doc `completion_check` loop example
 
-**入力 YAML**: `docs/workflow-design.md` セクション 3.3 の `implement-from-todo` ワークフロー
+**Input YAML**: the `implement-from-todo` workflow from `docs/workflow-design.md` section 3.3
 
-**MockStepRunner の振る舞い**:
-- `implement-all` ステップ: 毎回 SUCCEEDED
-- `completion_check`: 3 回目で `complete: true` を返す
-- `verify` ステップ: SUCCEEDED
+**MockStepRunner behavior**:
+- `implement-all`: always `SUCCEEDED`
+- `completion_check`: return `complete: true` on the 3rd call
+- `verify`: `SUCCEEDED`
 
-**検証項目**:
-| # | 検証内容 | 期待値 |
+**Assertions**:
+| # | What | Expected |
 |---|---------|--------|
 | 1 | `WorkflowState.status` | `SUCCEEDED` |
-| 2 | `implement-all` の `StepState.iteration` | `3` |
-| 3 | `implement-all` の `StepState.status` | `SUCCEEDED` |
-| 4 | `verify` の `StepState.status` | `SUCCEEDED` |
-| 5 | StepRunner の `runStep` 呼び出し回数（implement-all） | `3` |
-| 6 | StepRunner の `runCheck` 呼び出し回数（implement-all） | `3` |
+| 2 | `StepState.iteration` for `implement-all` | `3` |
+| 3 | `StepState.status` for `implement-all` | `SUCCEEDED` |
+| 4 | `StepState.status` for `verify` | `SUCCEEDED` |
+| 5 | StepRunner `runStep` call count (`implement-all`) | `3` |
+| 6 | StepRunner `runCheck` call count (`implement-all`) | `3` |
 
-### AT-1.3 異常系: 不正な YAML は早期にリジェクト
+### AT-1.3 Negative cases: invalid YAML is rejected early
 
-**入力 YAML**: 各パターン
+**Input YAML**: each case below
 
-| ケース | YAML の問題 | 期待動作 |
+| Case | Problem | Expected |
 |--------|-----------|---------|
 | a | `version: "2"` | `WorkflowParseError`（version must be "1"） |
 | b | `steps` が空オブジェクト | `WorkflowParseError`（at least one step） |
@@ -65,9 +65,9 @@
 | g | `on_failure: "explode"` | `WorkflowParseError`（invalid on_failure） |
 | h | YAML 構文エラー（インデント不正） | `WorkflowParseError`（Invalid YAML） |
 
-### AT-1.4 異常系: DAG バリデーションエラー
+### AT-1.4 Negative cases: DAG validation errors
 
-| ケース | DAG の問題 | 期待動作 |
+| Case | DAG issue | Expected |
 |--------|-----------|---------|
 | a | A → B → A（循環） | `validateDag` がサイクルエラーを返す |
 | b | A → B → C → A（3 ノード循環） | `validateDag` がサイクルエラーを返す |
@@ -78,42 +78,42 @@
 
 ---
 
-## AT-2: DAG 実行トポロジー
+## AT-2: DAG execution topology
 
-### AT-2.1 線形チェーン (A → B → C → D)
+### AT-2.1 Linear chain (A -> B -> C -> D)
 
-**検証項目**:
-- 実行順序が厳密に `[A, B, C, D]` であること
-- 各ステップ開始時に先行ステップが SUCCEEDED であること
-- 全ステップ SUCCEEDED → `WorkflowStatus.SUCCEEDED`
+**Assertions**:
+- Execution order is exactly `[A, B, C, D]`
+- Each step starts only after its dependencies are `SUCCEEDED`
+- All steps `SUCCEEDED` -> `WorkflowStatus.SUCCEEDED`
 
-### AT-2.2 ダイヤモンド (A → {B, C} → D)
+### AT-2.2 Diamond (A -> {B, C} -> D)
 
-**検証項目**:
-- A 完了後に B, C が並列起動すること
-- B, C 両方完了後に D が起動すること
-- MockStepRunner の `maxConcurrentObserved >= 2`
+**Assertions**:
+- B and C start in parallel after A completes
+- D starts only after both B and C complete
+- `MockStepRunner.maxConcurrentObserved >= 2`
 
-### AT-2.3 ワイドファンアウト (A → {B, C, D, E})
+### AT-2.3 Wide fan-out (A -> {B, C, D, E})
 
-**検証項目**:
-- 4 ステップが並列起動可能であること（concurrency 制限なし時）
-- concurrency: 2 の場合、同時実行が 2 以下であること
+**Assertions**:
+- All 4 steps can start in parallel when no concurrency limit is set
+- With `concurrency: 2`, observed parallelism is <= 2
 
-### AT-2.4 独立グラフ (A, B, C 相互依存なし)
+### AT-2.4 Independent graph (A, B, C have no dependencies)
 
-**検証項目**:
-- 全ステップが即座に READY になること
-- 並列実行されること
-- いずれかが FAILED でも他は影響を受けないこと（on_failure のポリシーによる）
+**Assertions**:
+- All steps become READY immediately
+- Steps run in parallel
+- A FAILED step does not block others (depending on `on_failure` policy)
 
-### AT-2.5 深い依存チェーン (A → B → C → ... → J, 10段)
+### AT-2.5 Deep dependency chain (A -> B -> C -> ... -> J, depth 10)
 
-**検証項目**:
-- 全 10 ステップが順番に完走すること
-- 中間ステップの失敗が後続全てを SKIPPED にすること（on_failure: abort 時）
+**Assertions**:
+- All 10 steps run to completion in order
+- With `on_failure: abort`, a failure causes all dependents to become SKIPPED
 
-### AT-2.6 複雑 DAG（複数合流点）
+### AT-2.6 Complex DAG (multiple join points)
 
 ```
 A → B → D → F
@@ -121,74 +121,74 @@ A → C → D
 A → C → E → F
 ```
 
-**検証項目**:
-- D は B と C の両方が完了してから起動
-- F は D と E の両方が完了してから起動
-- E は C のみに依存
+**Assertions**:
+- D starts only after both B and C complete
+- F starts only after both D and E complete
+- E depends only on C
 
 ---
 
-## AT-3: コンテキスト受け渡し（ContextManager）
+## AT-3: Context hand-off (ContextManager)
 
-### AT-3.1 ステップ間のファイル受け渡し
+### AT-3.1 Passing a file between steps
 
-**シナリオ**:
+**Scenario**:
 1. ステップ A が workspace に `output.txt` を書き出す
 2. ステップ A の `outputs: [{name: "result", path: "output.txt"}]`
 3. ステップ B が `inputs: [{from: "A", artifact: "result"}]` で参照
 4. ステップ B の workspace に `result/output.txt` が存在することを検証
 
-**MockStepRunner の振る舞い**:
+**MockStepRunner behavior**:
 - A の `runStep` 内で `fs.writeFile(workspace + "/output.txt", "hello")` を実行
 - B の `runStep` 内で `fs.readFile(workspace + "/result/output.txt")` を読んで内容を検証
 
-**検証項目**:
-| # | 検証内容 | 期待値 |
+**Assertions**:
+| # | What | Expected |
 |---|---------|--------|
 | 1 | `context/A/result/output.txt` が存在 | true |
 | 2 | B の workspace に `result/output.txt` が存在 | true |
 | 3 | ファイルの内容 | `"hello"` |
 
-### AT-3.2 ディレクトリ成果物の受け渡し
+### AT-3.2 Passing a directory artifact
 
-**シナリオ**: ステップ A が `src/` ディレクトリを出力し、ステップ B が参照する
+**Scenario**: step A outputs a `src/` directory and step B consumes it
 
-**検証項目**:
+**Assertions**:
 - ディレクトリごと `context/A/<artifactName>/` にコピーされること
 - B の workspace にディレクトリ構造が再現されること
 
-### AT-3.3 `as` によるリネーム
+### AT-3.3 Renaming with `as`
 
-**シナリオ**: `inputs: [{from: "A", artifact: "result", as: "prev-output"}]`
+**Scenario**: `inputs: [{from: "A", artifact: "result", as: "prev-output"}]`
 
-**検証項目**:
+**Assertions**:
 - B の workspace に `prev-output/` として配置されること（`result/` ではない）
 
-### AT-3.4 存在しないアーティファクトの参照
+### AT-3.4 Referencing a missing artifact
 
-**シナリオ**: A が outputs で宣言したパスにファイルを書かなかった場合
+**Scenario**: step A does not write the file declared in its outputs
 
-**検証項目**:
+**Assertions**:
 - `collectOutputs` がエラーにならないこと（スキップ）
 - B の `resolveInputs` で該当ディレクトリが空であること
 
-### AT-3.5 on_failure: continue 時の欠落入力
+### AT-3.5 Missing inputs with on_failure: continue
 
-**シナリオ**:
+**Scenario**:
 - A が FAILED（on_failure: continue）
 - B が A の成果物を inputs で参照
 
-**検証項目**:
+**Assertions**:
 - B は起動されること
 - B の workspace に A の成果物が存在しないこと（空）
 - B がそれでも正常に実行可能なこと
 
-### AT-3.6 `_meta.json` の内容検証
+### AT-3.6 Verifying `_meta.json`
 
-**シナリオ**: 成功したステップの `_meta.json` を読み取る
+**Scenario**: read `_meta.json` for a successful step
 
-**検証項目**:
-| フィールド | 期待値 |
+**Assertions**:
+| Field | Expected |
 |-----------|--------|
 | `stepId` | ステップ ID と一致 |
 | `status` | `"SUCCEEDED"` |
@@ -198,10 +198,10 @@ A → C → E → F
 | `workerKind` | ステップの `worker` と一致 |
 | `artifacts` | `outputs` 定義と対応 |
 
-### AT-3.7 `_workflow.json` の内容検証
+### AT-3.7 Verifying `_workflow.json`
 
-**検証項目**:
-| フィールド | 期待値 |
+**Assertions**:
+| Field | Expected |
 |-----------|--------|
 | `id` | UUID 形式 |
 | `name` | ワークフロー名と一致 |
@@ -210,14 +210,14 @@ A → C → E → F
 
 ---
 
-## AT-4: completion_check ループ
+## AT-4: completion_check loop
 
-### AT-4.1 初回で完了（ループなし）
+### AT-4.1 Complete on first check (no loop)
 
-**シナリオ**: completion_check が 1 回目で `complete: true`
+**Scenario**: completion_check returns `complete: true` on the first call
 
-**検証項目**:
-- `runStep` 1 回、`runCheck` 1 回
+**Assertions**:
+- `runStep` called once, `runCheck` called once
 - `StepState.iteration` = 1
 - `StepState.status` = `SUCCEEDED`
 

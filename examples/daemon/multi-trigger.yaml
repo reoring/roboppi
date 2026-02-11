@@ -1,28 +1,28 @@
-# Multi-Trigger — 複数イベント＋複数トリガーの daemon
-# cron + interval + command の 3 つのイベントソースを使い、
-# 異なるワークフローを条件付きで起動する例
+# Multi-trigger daemon
+# Uses cron + interval + command event sources and triggers different workflows.
 #
-# 起動: bun run src/daemon/cli.ts examples/daemon/multi-trigger.yaml --verbose
+# Start:
+#   bun run src/daemon/cli.ts examples/daemon/multi-trigger.yaml --verbose
 name: multi-trigger
 version: "1"
-description: "複数のイベントソースとトリガーを組み合わせる daemon"
+description: "Daemon combining multiple event sources and triggers"
 
 workspace: "/tmp/agentcore-daemon-multi"
 state_dir: "/tmp/agentcore-daemon-multi/.daemon-state"
 max_concurrent_workflows: 2
 
 events:
-  # 30 秒ごとの定期チェック
+  # Periodic heartbeat every 30 seconds
   heartbeat:
     type: interval
     every: "30s"
 
-  # 毎時 0 分のスケジュール実行
+  # Run on the hour
   hourly:
     type: cron
     schedule: "0 * * * *"
 
-  # 外部 API の状態を 1 分ごとに確認
+  # Check an external API status every minute
   api-status:
     type: command
     command: "curl -s -o /dev/null -w '%{http_code}' https://httpbin.org/status/200 2>/dev/null || echo '000'"
@@ -30,13 +30,13 @@ events:
     trigger_on: change
 
 triggers:
-  # --- ハートビート: 30 秒ごとにヘルスチェック ---
+  # Heartbeat -> health check
   health:
     on: heartbeat
     workflow: ./workflows/health-check.yaml
     on_workflow_failure: ignore
 
-  # --- 毎時レビュー: evaluate ゲートで新コミット有無を判定 ---
+  # Hourly review (evaluate gate checks if there were recent commits)
   hourly-review:
     on: hourly
     workflow: ./workflows/code-review.yaml
@@ -45,7 +45,7 @@ triggers:
     evaluate:
       worker: CUSTOM
       instructions: |
-        # 直近 1 時間以内のコミットがあるか確認
+        # Check if there are commits within the last hour
         if git rev-parse --git-dir > /dev/null 2>&1; then
           RECENT=$(git log --since="1 hour ago" --oneline 2>/dev/null | wc -l)
           if [ "$RECENT" -gt 0 ]; then
@@ -73,7 +73,7 @@ triggers:
         - name: hourly-summary
           path: hourly-summary.txt
 
-  # --- API 状態変化: ステータスコードが変わったらテスト実行 ---
+  # API status change -> run test suite
   api-change:
     on: api-status
     workflow: ./workflows/test-suite.yaml

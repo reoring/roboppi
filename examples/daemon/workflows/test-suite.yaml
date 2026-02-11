@@ -1,13 +1,13 @@
-# テストスイート — ビルド＋テスト実行ワークフロー
+# Test suite - typecheck + tests + report
 name: test-suite
 version: "1"
-description: "プロジェクトのテストを実行し、結果をレポートする"
+description: "Run project checks and summarize results"
 timeout: "5m"
 concurrency: 2
 
 steps:
   lint:
-    description: "型チェックを実行"
+    description: "Run TypeScript type checking"
     worker: CUSTOM
     instructions: |
       echo "=== Type Check ===" > lint-result.txt
@@ -27,7 +27,7 @@ steps:
         path: "lint-result.txt"
 
   test:
-    description: "ユニットテストを実行"
+    description: "Run unit tests"
     worker: CUSTOM
     instructions: |
       echo "=== Test Run ===" > test-result.txt
@@ -47,7 +47,7 @@ steps:
         type: test-report
 
   report:
-    description: "テスト結果を統合レポートにまとめる"
+    description: "Write a combined report"
     worker: CUSTOM
     depends_on: [lint, test]
     instructions: |

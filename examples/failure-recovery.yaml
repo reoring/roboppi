@@ -1,25 +1,25 @@
-# Failure Recovery — エラーハンドリングの動作確認
-# retry / continue / abort の各ポリシーの挙動を実演する
+# Failure Recovery - on_failure behavior demo
+# Demonstrates retry / continue / abort behaviors
 name: failure-recovery
 version: "1"
-description: "on_failure ポリシーの動作を確認する"
+description: "Demonstrate on_failure behavior"
 timeout: "3m"
 concurrency: 2
 
 steps:
-  # このステップは最初の試行で失敗し、リトライで成功する
+  # This step fails on the first attempt, then succeeds on retry
   flaky-step:
-    description: "不安定なステップ（1回目失敗、2回目成功）"
+    description: "Flaky step (fails once, then succeeds)"
     worker: CUSTOM
     instructions: |
       ATTEMPT_FILE=".flaky-attempt"
       if [ ! -f "$ATTEMPT_FILE" ]; then
         echo "1" > "$ATTEMPT_FILE"
-        echo "First attempt — simulating failure"
+        echo "First attempt - simulating failure"
         exit 1
       fi
       ATTEMPT=$(cat "$ATTEMPT_FILE")
-      echo "Attempt $((ATTEMPT + 1)) — succeeding this time"
+      echo "Attempt $((ATTEMPT + 1)) - succeeding this time"
       echo "Flaky step output" > flaky-result.txt
       rm "$ATTEMPT_FILE"
     capabilities: [EDIT, RUN_COMMANDS]
@@ -30,9 +30,9 @@ steps:
       - name: flaky-output
         path: "flaky-result.txt"
 
-  # このステップは必ず失敗するが、continue で後続に影響させない
+  # This step always fails, but continue prevents it from blocking follow-ups
   optional-lint:
-    description: "Lint チェック（失敗しても続行）"
+    description: "Lint check (continue on failure)"
     worker: CUSTOM
     instructions: |
       echo "Running lint..."
@@ -46,10 +46,10 @@ steps:
       - name: lint-report
         path: "lint-result.txt"
 
-  # flaky-step と optional-lint の両方に依存
-  # flaky-step はリトライで成功、optional-lint は失敗(continue)
+  # Depends on both flaky-step and optional-lint
+  # flaky-step succeeds after retry; optional-lint fails but continues
   summary:
-    description: "結果をまとめる"
+    description: "Summarize results"
     worker: CUSTOM
     depends_on: [flaky-step, optional-lint]
     instructions: |

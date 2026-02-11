@@ -1,12 +1,12 @@
-# ヘルスチェック — システム状態を確認する 1 ステップワークフロー
+# Health check - a single-step workflow
 name: health-check
 version: "1"
-description: "ディスク・メモリ・プロセス状態を確認する"
+description: "Check disk, memory, and process state"
 timeout: "1m"
 
 steps:
   check:
-    description: "システムリソースの状態をチェック"
+    description: "Check system resource status"
     worker: CUSTOM
     instructions: |
       echo "=== Health Check $(date) ==="

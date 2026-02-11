@@ -1,13 +1,13 @@
-# Todo Loop — completion_check によるループ実行
-# todo.txt の全項目を完了するまで繰り返す例
+# Todo Loop - Loop execution via completion_check
+# Repeats until all items in todo.txt are completed
 name: todo-loop
 version: "1"
-description: "タスクリストの項目を1つずつ処理し、全完了まで繰り返す"
+description: "Process a task list one item at a time until everything is complete"
 timeout: "5m"
 
 steps:
   setup:
-    description: "タスクリストを初期化する"
+    description: "Initialize the task list"
     worker: CUSTOM
     instructions: |
       cat > todo.txt << 'TASKS'
@@ -24,11 +24,11 @@ steps:
         path: "todo.txt"
 
   process-tasks:
-    description: "未完了タスクを1つずつ処理する"
+    description: "Process one incomplete task at a time"
     worker: CUSTOM
     depends_on: [setup]
     instructions: |
-      # 最初の未完了タスクを見つけて処理する
+      # Find and process the first incomplete task
       TASK=$(grep -m1 '^\- \[ \]' todo.txt || true)
       if [ -z "$TASK" ]; then
         echo "All tasks complete!"
@@ -36,7 +36,7 @@ steps:
       fi
       echo "Processing: $TASK"
 
-      # タスクに応じて作業を実行
+      # Execute work based on the task text
       case "$TASK" in
         *"Create src directory"*)
           mkdir -p src
@@ -52,7 +52,7 @@ steps:
           ;;
       esac
 
-      # 完了マークを付ける
+      # Mark the task as done
       ESCAPED=$(echo "$TASK" | sed 's/[[\]/\\&]/\\&/g')
       DONE=$(echo "$TASK" | sed 's/\- \[ \]/- [x]/')
       sed -i "s|${TASK}|${DONE}|" todo.txt
@@ -90,7 +90,7 @@ steps:
         type: code
 
   verify:
-    description: "全成果物が存在するか検証する"
+    description: "Verify that all artifacts exist"
     worker: CUSTOM
     depends_on: [process-tasks]
     instructions: |

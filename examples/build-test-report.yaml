@@ -1,14 +1,14 @@
-# Build → Test → Report ワークフロー
-# 並列実行と合流を実演する3ステップの例
+# Build -> Test -> Report workflow
+# A 3-step example demonstrating parallelism and a join
 name: build-test-report
 version: "1"
-description: "コードをビルドし、テストを走らせ、レポートを作成する"
+description: "Build code, run tests, and generate a report"
 timeout: "5m"
 concurrency: 2
 
 steps:
   build:
-    description: "ソースコードをビルドする"
+    description: "Build the source code"
     worker: CUSTOM
     instructions: |
       mkdir -p dist
@@ -23,7 +23,7 @@ steps:
         type: code
 
   test-math:
-    description: "math モジュールのテストを実行"
+    description: "Run tests for the math module"
     worker: CUSTOM
     depends_on: [build]
     instructions: |
@@ -44,7 +44,7 @@ steps:
         type: test-report
 
   test-greet:
-    description: "greet モジュールのテストを実行"
+    description: "Run tests for the greet module"
     worker: CUSTOM
     depends_on: [build]
     instructions: |
@@ -64,7 +64,7 @@ steps:
         type: test-report
 
   report:
-    description: "テスト結果を集約してレポートを生成"
+    description: "Aggregate test results into a report"
     worker: CUSTOM
     depends_on: [test-math, test-greet]
     instructions: |
