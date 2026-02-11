@@ -1,47 +1,47 @@
-# Daemon ガイド
+# Daemon Guide
 
-Daemon（デーモン）は AgentCore の常駐プロセスです。イベントソースを監視し、条件を満たしたときにワークフローを自動実行します。cron スケジュール、ファイル変更、Webhook、外部コマンドなど、さまざまなイベントに反応して動作します。
+Daemon is AgentCore's resident process. It monitors event sources and automatically runs workflows when conditions are met. It can react to cron schedules, file changes, webhooks, external commands, and more.
 
-## 目次
+## Contents
 
-- [ユースケース](#ユースケース)
-- [最小構成で始める](#最小構成で始める)
-- [YAML スキーマ](#yaml-スキーマ)
-- [イベントソース](#イベントソース)
-  - [interval — 固定間隔](#interval--固定間隔)
-  - [cron — cron 式スケジュール](#cron--cron-式スケジュール)
-  - [fswatch — ファイル変更検知](#fswatch--ファイル変更検知)
-  - [webhook — HTTP Webhook](#webhook--http-webhook)
-  - [command — 外部コマンド実行](#command--外部コマンド実行)
-- [トリガー](#トリガー)
-  - [基本設定](#基本設定)
-  - [フィルタリング](#フィルタリング)
-  - [レート制御](#レート制御)
-  - [失敗ハンドリング](#失敗ハンドリング)
-- [インテリジェントレイヤー](#インテリジェントレイヤー)
-  - [evaluate — 実行ゲート](#evaluate--実行ゲート)
-  - [analyze — 結果分析](#analyze--結果分析)
-  - [テンプレート変数](#テンプレート変数)
-- [コンテキスト注入](#コンテキスト注入)
-- [状態管理](#状態管理)
-- [CLI の使い方](#cli-の使い方)
-- [実践例ウォークスルー](#実践例ウォークスルー)
-
----
-
-## ユースケース
-
-- **定期監視**: 30 秒ごとにシステムのヘルスチェックを実行する
-- **自動テスト**: ソースファイルの変更を検知して自動テストを走らせる
-- **インテリジェントレビュー**: 新しいコミットがあるときだけ LLM にコードレビューを依頼する
-- **Webhook 連携**: GitHub の Push イベントを受け取り CI パイプラインを起動する
-- **外部 API 監視**: API の状態変化を検知してアラートワークフローを実行する
+- [Use cases](#use-cases)
+- [Start with a minimal config](#start-with-a-minimal-config)
+- [YAML schema](#yaml-schema)
+- [Event sources](#event-sources)
+  - [interval - fixed interval](#interval---fixed-interval)
+  - [cron - cron schedule](#cron---cron-schedule)
+  - [fswatch - filesystem changes](#fswatch---filesystem-changes)
+  - [webhook - HTTP webhook](#webhook---http-webhook)
+  - [command - external command](#command---external-command)
+- [Triggers](#triggers)
+  - [Basics](#basics)
+  - [Filtering](#filtering)
+  - [Rate control](#rate-control)
+  - [Failure handling](#failure-handling)
+- [Intelligent layer](#intelligent-layer)
+  - [evaluate - execution gate](#evaluate---execution-gate)
+  - [analyze - result analysis](#analyze---result-analysis)
+  - [Template variables](#template-variables)
+- [Context injection](#context-injection)
+- [State management](#state-management)
+- [CLI usage](#cli-usage)
+- [Walkthrough examples](#walkthrough-examples)
 
 ---
 
-## 最小構成で始める
+## Use cases
 
-最もシンプルな Daemon は、interval イベントとワークフロー 1 つだけで構成できます。
+- **Periodic monitoring**: run a system health check every 30 seconds
+- **Auto tests**: detect source changes and run tests automatically
+- **Intelligent review**: ask an LLM for a code review only when there are new commits
+- **Webhook integration**: receive GitHub events and start a CI workflow
+- **External API monitoring**: detect API status changes and run an alert workflow
+
+---
+
+## Start with a minimal config
+
+The simplest daemon uses a single interval event and one workflow.
 
 ```yaml
 # my-daemon.yaml
@@ -63,13 +63,13 @@ triggers:
     on_workflow_failure: ignore
 ```
 
-起動:
+Start:
 
 ```bash
 bun run src/daemon/cli.ts my-daemon.yaml --verbose
 ```
 
-出力:
+Output:
 
 ```
 Daemon: my-first-daemon
@@ -81,77 +81,77 @@ Triggers: 1
 [daemon] Workflow completed: SUCCEEDED
 ```
 
-`Ctrl+C` で安全に停止します（Graceful Shutdown）。
+Stop safely with `Ctrl+C` (graceful shutdown).
 
 ---
 
-## YAML スキーマ
+## YAML schema
 
-Daemon の設定は 1 つの YAML ファイルで完結します。
+Daemon configuration is defined in a single YAML file.
 
 ```yaml
-name: string                        # Daemon 名（識別用）
-version: "1"                        # スキーマバージョン（現在は "1" 固定）
-description?: string                # 説明文
+name: string                        # daemon name (identifier)
+version: "1"                        # schema version (currently fixed to "1")
+description?: string                # optional description
 
-workspace: string                   # 作業ディレクトリ（全トリガー共通）
-log_dir?: string                    # ログ出力先（デフォルト: ./logs）
-state_dir?: string                  # 状態保存先（デフォルト: <workspace>/.daemon-state）
-max_concurrent_workflows?: number   # 同時実行ワークフロー数の上限（デフォルト: 5）
+workspace: string                   # working directory (shared by all triggers)
+log_dir?: string                    # log output directory (default: ./logs)
+state_dir?: string                  # state directory (default: <workspace>/.daemon-state)
+max_concurrent_workflows?: number   # max concurrent workflows (default: 5)
 
-events:                             # イベントソース定義
+events:                             # event source definitions
   <event_id>:
     type: cron | interval | fswatch | webhook | command
     ...
 
-triggers:                           # トリガー定義（イベント → ワークフロー）
+triggers:                           # trigger definitions (event -> workflow)
   <trigger_id>:
     on: <event_id>
     workflow: <path>
     ...
 ```
 
-### トップレベルフィールド
+### Top-level fields
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `name` | Yes | Daemon の識別名 |
-| `version` | Yes | `"1"` 固定 |
-| `description` | No | 説明文 |
-| `workspace` | Yes | ワークフロー実行時の作業ディレクトリ |
-| `log_dir` | No | ログ出力先ディレクトリ |
-| `state_dir` | No | 実行状態の保存先 |
-| `max_concurrent_workflows` | No | 同時に実行するワークフローの上限（デフォルト: 5） |
-| `events` | Yes | イベントソースの定義（1 つ以上） |
-| `triggers` | Yes | トリガーの定義（1 つ以上） |
+| `name` | yes | daemon identifier |
+| `version` | yes | fixed to `"1"` |
+| `description` | no | description |
+| `workspace` | yes | working directory for workflow execution |
+| `log_dir` | no | log output directory |
+| `state_dir` | no | where execution state is persisted |
+| `max_concurrent_workflows` | no | max workflows running concurrently (default: 5) |
+| `events` | yes | event sources (at least one) |
+| `triggers` | yes | triggers (at least one) |
 
 ---
 
-## イベントソース
+## Event sources
 
-Daemon は 5 種類のイベントソースをサポートします。`events` セクションで定義し、`triggers` の `on` フィールドで参照します。
+Daemon supports five event source kinds. Define them under `events` and reference them from triggers via `on`.
 
-### interval — 固定間隔
+### interval - fixed interval
 
-最もシンプルなイベントソース。指定した間隔で定期的にイベントを発火します。
+The simplest event source: fires periodically at a fixed interval.
 
 ```yaml
 events:
   tick:
     type: interval
-    every: "30s"      # 30 秒ごと
+    every: "30s"      # every 30 seconds
 ```
 
-`every` には DurationString を指定します。使用可能な形式:
+`every` is a DurationString. Supported forms:
 
-| 形式 | 例 | 意味 |
+| Form | Example | Meaning |
 |------|----|----|
-| `Nms` | `"200ms"` | 200 ミリ秒 |
-| `Ns` | `"30s"` | 30 秒 |
-| `Nm` | `"5m"` | 5 分 |
-| `Nh` | `"1h"` | 1 時間 |
+| `Nms` | `"200ms"` | 200 milliseconds |
+| `Ns` | `"30s"` | 30 seconds |
+| `Nm` | `"5m"` | 5 minutes |
+| `Nh` | `"1h"` | 1 hour |
 
-発火するペイロード:
+Payload:
 
 ```json
 {
@@ -160,38 +160,38 @@ events:
 }
 ```
 
-### cron — cron 式スケジュール
+### cron - cron schedule
 
-標準的な cron 式でスケジュールを指定します。
+Specify a schedule with a standard cron expression.
 
 ```yaml
 events:
   every-5min:
     type: cron
-    schedule: "*/5 * * * *"     # 5 分ごと
+    schedule: "*/5 * * * *"     # every 5 minutes
 
   daily-morning:
     type: cron
-    schedule: "0 9 * * *"       # 毎朝 9 時
+    schedule: "0 9 * * *"       # every day at 09:00
 
   weekday-night:
     type: cron
-    schedule: "0 22 * * 1-5"    # 平日 22 時
+    schedule: "0 22 * * 1-5"    # weekdays at 22:00
 ```
 
-cron 式のフォーマット:
+Cron format:
 
 ```
-┌───────────── 分 (0-59)
-│ ┌───────────── 時 (0-23)
-│ │ ┌───────────── 日 (1-31)
-│ │ │ ┌───────────── 月 (1-12)
-│ │ │ │ ┌───────────── 曜日 (0-7, 0・7 = 日曜)
-│ │ │ │ │
 * * * * *
+| | | | |
+| | | | +-- day of week (0-7; 0 and 7 are Sunday)
+| | | +---- month (1-12)
+| | +------ day of month (1-31)
+| +-------- hour (0-23)
++---------- minute (0-59)
 ```
 
-発火するペイロード:
+Payload:
 
 ```json
 {
@@ -201,34 +201,34 @@ cron 式のフォーマット:
 }
 ```
 
-### fswatch — ファイル変更検知
+### fswatch - filesystem changes
 
-ファイルシステムの変更を監視します。glob パターンでファイルを指定し、変更があったときにイベントを発火します。
+Watch filesystem changes. Specify files via glob patterns and fire when changes occur.
 
 ```yaml
 events:
   src-change:
     type: fswatch
-    paths:                        # 監視対象（glob パターン）
+    paths:                        # watched paths (glob patterns)
       - "src/**/*.ts"
       - "src/**/*.tsx"
-    ignore:                       # 除外パターン（任意）
+    ignore:                       # ignored patterns (optional)
       - "**/*.test.ts"
       - "**/*.spec.ts"
       - "**/node_modules/**"
       - "**/dist/**"
-    events: [create, modify]      # 監視するイベント種別（任意）
+    events: [create, modify]      # watched event kinds (optional)
 ```
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `paths` | Yes | 監視対象の glob パターン配列 |
-| `ignore` | No | 除外パターン配列 |
-| `events` | No | `create`, `modify`, `delete` の組み合わせ。省略時は全て |
+| `paths` | yes | array of glob patterns to watch |
+| `ignore` | no | ignore patterns |
+| `events` | no | subset of `create`, `modify`, `delete` (default: all) |
 
-短時間に大量の変更が発生した場合、200ms のウィンドウでバッチ化されて 1 つのイベントとして発火します。
+If a large number of changes happen in a short time, they are batched into one event using a 200ms window.
 
-発火するペイロード:
+Payload:
 
 ```json
 {
@@ -240,30 +240,30 @@ events:
 }
 ```
 
-### webhook — HTTP Webhook
+### webhook - HTTP webhook
 
-HTTP エンドポイントで外部からのイベントを受信します。Daemon 内の全 Webhook ソースで 1 つの HTTP サーバーを共有します。
+Receive external events via an HTTP endpoint. All webhook sources share a single HTTP server within the daemon.
 
 ```yaml
 events:
   github-push:
     type: webhook
-    path: "/hooks/github"         # エンドポイントパス
-    port: 8080                    # リッスンポート（任意、デフォルト: 8080）
-    secret: "${GITHUB_WEBHOOK_SECRET}"  # HMAC-SHA256 署名検証キー（任意）
-    method: "POST"                # HTTP メソッド（任意、デフォルト: POST）
+    path: "/hooks/github"         # endpoint path
+    port: 8080                    # listen port (optional; default: 8080)
+    secret: "${GITHUB_WEBHOOK_SECRET}"  # optional HMAC-SHA256 secret
+    method: "POST"                # optional; default: POST
 ```
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `path` | Yes | URL パス（例: `/hooks/github`） |
-| `port` | No | リッスンポート（デフォルト: 8080） |
-| `secret` | No | HMAC-SHA256 署名検証キー。`${ENV_VAR}` 形式で環境変数を参照可能 |
-| `method` | No | 許可する HTTP メソッド（デフォルト: `POST`） |
+| `path` | yes | URL path (e.g. `/hooks/github`) |
+| `port` | no | listen port (default: 8080) |
+| `secret` | no | HMAC-SHA256 secret; env expansion supported via `${ENV_VAR}` |
+| `method` | no | allowed HTTP method (default: `POST`) |
 
-`secret` を設定すると、`X-Hub-Signature-256` ヘッダーを使って HMAC-SHA256 署名を検証します。検証に失敗したリクエストは拒否されます。
+If `secret` is set, requests are validated using the `X-Hub-Signature-256` header. Invalid requests are rejected.
 
-発火するペイロード:
+Payload:
 
 ```json
 {
@@ -271,32 +271,32 @@ events:
   "method": "POST",
   "path": "/hooks/github",
   "headers": { "content-type": "application/json", "x-github-event": "push" },
-  "body": { "ref": "refs/heads/main", "commits": [...] }
+  "body": { "ref": "refs/heads/main", "commits": [] }
 }
 ```
 
-### command — 外部コマンド実行
+### command - external command
 
-外部コマンドを定期実行し、その結果（または変化）をイベントとして発火します。
+Periodically run an external command and emit events based on its result (or changes).
 
 ```yaml
 events:
   api-status:
     type: command
     command: "curl -s -o /dev/null -w '%{http_code}' https://api.example.com/health"
-    interval: "1m"                # 実行間隔
+    interval: "1m"                # execution interval
     trigger_on: change            # change | always
 ```
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `command` | Yes | 実行するシェルコマンド |
-| `interval` | Yes | コマンドの実行間隔（DurationString） |
-| `trigger_on` | No | `change` = 前回と出力が変わったとき発火（デフォルト）、`always` = 毎回発火 |
+| `command` | yes | shell command to run |
+| `interval` | yes | interval (DurationString) |
+| `trigger_on` | no | `change` (default) fires only when stdout changes; `always` fires every run |
 
-`trigger_on: change` の場合、初回実行は比較対象がないため発火しません。2 回目以降、前回の stdout と異なる場合にイベントが発火します。
+With `trigger_on: change`, the first execution does not fire (no previous output to compare). From the second run, events fire when stdout differs.
 
-発火するペイロード:
+Payload:
 
 ```json
 {
@@ -309,29 +309,29 @@ events:
 
 ---
 
-## トリガー
+## Triggers
 
-トリガーはイベントとワークフローを結びつけます。フィルタリング、レート制御、失敗ハンドリングを設定できます。
+Triggers connect events to workflows. You can configure filtering, rate control, and failure handling.
 
-### 基本設定
+### Basics
 
 ```yaml
 triggers:
   auto-test:
-    on: src-change                # 紐づけるイベント ID
-    workflow: ./workflows/test.yaml  # 実行するワークフロー YAML パス
-    enabled: true                 # 有効/無効（デフォルト: true）
+    on: src-change                   # referenced event id
+    workflow: ./workflows/test.yaml  # workflow YAML path
+    enabled: true                    # enable/disable (default: true)
 ```
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `on` | Yes | イベント ID（`events` セクションのキー） |
-| `workflow` | Yes | ワークフロー YAML のパス（workspace からの相対パス） |
-| `enabled` | No | `false` でトリガーを無効化（デフォルト: `true`） |
+| `on` | yes | event id (key under `events`) |
+| `workflow` | yes | workflow YAML path (relative to workspace) |
+| `enabled` | no | set false to disable the trigger (default: true) |
 
-### フィルタリング
+### Filtering
 
-`filter` でイベントペイロードに対する条件を指定します。すべての条件を満たしたときだけワークフローを実行します。
+Use `filter` to specify conditions on the event payload. The workflow runs only when all conditions match.
 
 ```yaml
 triggers:
@@ -339,56 +339,56 @@ triggers:
     on: github-push
     workflow: ./workflows/ci.yaml
     filter:
-      # 単純一致: 値が等しい
+      # exact match
       action: "opened"
 
-      # ドット記法: ネストしたフィールドにアクセス
+      # dot notation for nested fields
       pull_request.base.ref: "main"
 
-      # 正規表現: パターンにマッチ
+      # regex match
       ref:
         pattern: "^refs/heads/(main|develop)$"
 
-      # リスト: いずれかの値に一致
+      # list membership
       sender.login:
         in: ["user-a", "user-b", "bot-ci"]
 ```
 
-フィルタ条件の種類:
+Filter kinds:
 
-| 形式 | 例 | 意味 |
+| Kind | Example | Meaning |
 |------|----|----|
-| 単純一致 | `action: "opened"` | 値が一致する |
-| 正規表現 | `ref: { pattern: "^refs/heads/main$" }` | 正規表現にマッチする |
-| リスト | `login: { in: ["a", "b"] }` | リスト内のいずれかの値に一致する |
+| exact match | `action: "opened"` | value equals |
+| regex | `ref: { pattern: "^refs/heads/main$" }` | matches regex |
+| list | `login: { in: ["a", "b"] }` | is one of the list values |
 
-ドット記法（`pull_request.base.ref` など）でネストしたオブジェクトのフィールドにアクセスできます。
+Use dot notation (`pull_request.base.ref`, etc.) to access nested fields.
 
-### レート制御
+### Rate control
 
-イベントの発火頻度を制御します。
+Control how frequently triggers execute.
 
 ```yaml
 triggers:
   auto-test:
     on: src-change
     workflow: ./workflows/test.yaml
-    debounce: "5s"       # 連続イベントを抑制（最後のイベントから 5 秒待つ）
-    cooldown: "30s"      # ワークフロー完了後 30 秒は再実行しない
-    max_queue: 5         # 未実行キューの上限（超過分は破棄、デフォルト: 10）
+    debounce: "5s"       # ignore rapid bursts (wait 5s from last event)
+    cooldown: "30s"      # do not rerun for 30s after completion
+    max_queue: 5          # max pending queue size (default: 10)
 ```
 
-| フィールド | 説明 |
+| Field | Description |
 |-----------|------|
-| `debounce` | 前回のイベントから指定時間が経過するまで新しいイベントを無視 |
-| `cooldown` | ワークフロー完了後、指定時間が経過するまで再実行しない |
-| `max_queue` | 実行待ちキューの上限。超過分は古い方から破棄 |
+| `debounce` | ignore new events until a duration has elapsed since the last event |
+| `cooldown` | after a workflow completes, do not rerun until duration elapses |
+| `max_queue` | pending queue upper bound; discard overflow from oldest |
 
-`debounce` はファイル変更の連続イベントを集約するのに便利です。`cooldown` はワークフロー完了後の再実行を防ぐために使います。
+`debounce` is useful to aggregate save bursts from file watchers. `cooldown` prevents immediate reruns after completion.
 
-### 失敗ハンドリング
+### Failure handling
 
-ワークフローが失敗したときの挙動を指定します。
+Specify what to do when the workflow fails.
 
 ```yaml
 triggers:
@@ -396,24 +396,24 @@ triggers:
     on: github-push
     workflow: ./workflows/ci.yaml
     on_workflow_failure: retry     # ignore | retry | pause_trigger
-    max_retries: 2                # retry 時の最大回数（デフォルト: 3）
+    max_retries: 2                # max retries (default: 3)
 ```
 
-| 値 | 意味 |
+| Value | Meaning |
 |----|------|
-| `ignore` | 失敗を無視して次のイベントを待つ |
-| `retry` | `max_retries` 回まで再実行する |
-| `pause_trigger` | 連続失敗が `max_retries` 回に達したらトリガーを一時停止する |
+| `ignore` | ignore failures and wait for the next event |
+| `retry` | rerun up to `max_retries` |
+| `pause_trigger` | pause the trigger when consecutive failures reach `max_retries` |
 
 ---
 
-## インテリジェントレイヤー
+## Intelligent layer
 
-Daemon の特徴的な機能として、LLM やシェルスクリプトによるインテリジェントな判断を組み込めます。
+Daemon can incorporate intelligent decisions via LLM workers or shell scripts.
 
-### evaluate -- 実行ゲート
+### evaluate - execution gate
 
-ワークフローを実行する前に「本当に実行すべきか」を判断するゲートです。
+An optional gate that decides "should we run this workflow?" before execution.
 
 ```yaml
 triggers:
@@ -428,39 +428,39 @@ triggers:
         CURRENT=$(git rev-parse HEAD 2>/dev/null || echo "none")
         LAST=$(cat ".daemon-state/.last-review-commit" 2>/dev/null || echo "")
         if [ "$CURRENT" = "$LAST" ]; then
-          exit 1    # スキップ
+          exit 1    # skip
         else
           mkdir -p .daemon-state
           echo "$CURRENT" > ".daemon-state/.last-review-commit"
-          exit 0    # 実行
+          exit 0    # run
         fi
       capabilities: [READ, RUN_COMMANDS]
       timeout: "15s"
 ```
 
-#### worker 種別ごとの判定方法
+#### Decision behavior by worker kind
 
-| worker | 判定方法 |
+| worker | Decision rule |
 |--------|---------|
-| `CUSTOM` | シェルスクリプトとして実行。exit 0 = 実行、exit 1 = スキップ |
-| `CLAUDE_CODE` | Claude Code CLI を起動。出力に "run" を含めば実行、"skip" を含めばスキップ |
-| `CODEX_CLI` | Codex CLI を起動。判定は CLAUDE_CODE と同じ |
-| `OPENCODE` | OpenCode CLI を起動。判定は CLAUDE_CODE と同じ |
+| `CUSTOM` | run as a shell script: exit 0 = run, exit 1 = skip |
+| `CLAUDE_CODE` | run Claude Code CLI: if output contains "run" => run; if it contains "skip" => skip |
+| `CODEX_CLI` | same as CLAUDE_CODE |
+| `OPENCODE` | same as CLAUDE_CODE |
 
-LLM Worker（CLAUDE_CODE 等）の場合、出力の最後の非空行を見て判定します。"run" も "skip" も含まない場合は安全側に倒してスキップします。
+For LLM workers, the daemon checks the last non-empty output line first. If neither "run" nor "skip" is present, it defaults to skip (safer).
 
-#### evaluate のフィールド
+#### evaluate fields
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `worker` | Yes | Worker 種別 |
-| `instructions` | Yes | 実行する指示（テンプレート変数使用可能） |
-| `capabilities` | Yes | 必要な権限 |
-| `timeout` | No | タイムアウト（デフォルト: `"30s"`） |
+| `worker` | yes | worker kind |
+| `instructions` | yes | instructions (template vars supported) |
+| `capabilities` | yes | required permissions |
+| `timeout` | no | timeout (default: `"30s"`) |
 
-### analyze -- 結果分析
+### analyze - result analysis
 
-ワークフロー完了後に結果を分析し、レポートやサマリーを生成します。
+Analyze workflow results after completion and generate reports/summaries.
 
 ```yaml
 triggers:
@@ -482,53 +482,53 @@ triggers:
           path: summary.md
 ```
 
-| フィールド | 必須 | 説明 |
+| Field | Required | Description |
 |-----------|------|------|
-| `worker` | Yes | Worker 種別 |
-| `instructions` | Yes | 分析の指示（テンプレート変数使用可能） |
-| `capabilities` | Yes | 必要な権限 |
-| `timeout` | No | タイムアウト（デフォルト: `"2m"`） |
-| `outputs` | No | 分析結果の出力先ファイル定義 |
+| `worker` | yes | worker kind |
+| `instructions` | yes | analysis instructions (template vars supported) |
+| `capabilities` | yes | required permissions |
+| `timeout` | no | timeout (default: `"2m"`) |
+| `outputs` | no | file outputs for analysis results |
 
-`analyze` はワークフローが `SUCCEEDED` で完了したときに実行されます。Worker はワークフローの `context/` ディレクトリにアクセスでき、各ステップの実行結果を参照できます。
+`analyze` runs only when the workflow completes with `SUCCEEDED`. The worker can access the workflow `context/` directory and read per-step results.
 
-### テンプレート変数
+### Template variables
 
-`evaluate` と `analyze` の `instructions` 内で `{{変数名}}` 形式のテンプレート変数を使用できます。
+You can use `{{var}}` placeholders in `evaluate` and `analyze` instructions.
 
-| 変数 | 説明 | 使用可能箇所 |
+| Variable | Description | Where |
 |------|------|-------------|
-| `{{event}}` | イベントペイロード（JSON 文字列） | evaluate, analyze |
-| `{{event.type}}` | イベント種別 | evaluate, analyze |
-| `{{last_result}}` | 前回実行結果（JSON 文字列） | evaluate |
-| `{{last_result.status}}` | 前回のステータス | evaluate |
-| `{{timestamp}}` | 現在時刻（ISO 8601 形式） | evaluate, analyze |
-| `{{trigger_id}}` | トリガー ID | evaluate, analyze |
-| `{{workspace}}` | 作業ディレクトリのパス | evaluate |
-| `{{execution_count}}` | このトリガーの累計実行回数 | evaluate, analyze |
-| `{{workflow_status}}` | ワークフロー実行結果ステータス | analyze |
-| `{{steps}}` | 各ステップの実行結果（JSON） | analyze |
-| `{{context_dir}}` | コンテキストディレクトリパス | analyze |
+| `{{event}}` | event payload (JSON string) | evaluate, analyze |
+| `{{event.type}}` | event type | evaluate, analyze |
+| `{{last_result}}` | previous workflow result (JSON string) | evaluate |
+| `{{last_result.status}}` | previous status | evaluate |
+| `{{timestamp}}` | current time (ISO 8601) | evaluate, analyze |
+| `{{trigger_id}}` | trigger id | evaluate, analyze |
+| `{{workspace}}` | workspace path | evaluate |
+| `{{execution_count}}` | total execution count for this trigger | evaluate, analyze |
+| `{{workflow_status}}` | workflow status | analyze |
+| `{{steps}}` | step results (JSON) | analyze |
+| `{{context_dir}}` | context directory path | analyze |
 
-ドット記法でネストしたフィールドにアクセスできます:
+Dot notation works for nested fields:
 
 ```yaml
 instructions: |
-  イベント種別: {{event.type}}
-  前回のステータス: {{last_result.status}}
+  Event type: {{event.type}}
+  Previous status: {{last_result.status}}
 ```
 
-テンプレートエンジンは `{{key}}` 形式のプレースホルダーを解決します。解決順:
+Template resolution order:
 
-1. 完全キー一致（`vars["event.type"]` に直接マッチ）
-2. ドット記法による JSON パス走査（`vars["event"]` を JSON パースして `.type` にアクセス）
-3. 未解決の場合はそのまま残す（`{{unknown_var}}`）
+1. exact key match (e.g. `vars["event.type"]`)
+2. dot-path lookup by parsing JSON in `vars["event"]` and accessing `.type`
+3. unresolved placeholders are left as-is (`{{unknown_var}}`)
 
 ---
 
-## コンテキスト注入
+## Context injection
 
-トリガーの `context` セクションで、ワークフローに追加情報を渡せます。
+Use the trigger's `context` section to pass extra information to workflows.
 
 ```yaml
 triggers:
@@ -536,39 +536,37 @@ triggers:
     on: periodic
     workflow: ./workflows/review.yaml
     context:
-      env:                        # 環境変数を設定
+      env:
         REVIEW_MODE: "strict"
         TARGET_BRANCH: "main"
-      last_result: true           # 前回実行結果を注入
-      event_payload: true         # イベントペイロードを注入
+      last_result: true
+      event_payload: true
 ```
 
-### env -- 環境変数
+### env - environment variables
 
-ワークフロー実行時に指定した環境変数が `process.env` に設定されます。ワークフロー完了後に元の値に復元されます。
+When the workflow runs, these environment variables are set on `process.env`, then restored after completion.
 
-### last_result -- 前回実行結果
+### last_result - previous result
 
-`true` にすると、前回のワークフロー実行結果が `.daemon-context/last-result.json` に書き出されます。ワークフロー内のステップからこのファイルを読み取れます。
+If true, the previous workflow result is written to `.daemon-context/last-result.json`. Workflow steps can read this file.
 
 ```json
-// .daemon-context/last-result.json
 {
   "workflowId": "review-1705312200000",
   "name": "code-review",
   "status": "SUCCEEDED",
-  "steps": { ... },
+  "steps": {},
   "startedAt": 1705312200000,
   "completedAt": 1705312260000
 }
 ```
 
-### event_payload -- イベントペイロード
+### event_payload - event payload
 
-`true` にすると、トリガーの発火原因となったイベントのペイロードが `.daemon-context/event.json` に書き出されます。
+If true, the payload of the triggering event is written to `.daemon-context/event.json`.
 
 ```json
-// .daemon-context/event.json
 {
   "type": "cron",
   "schedule": "*/5 * * * *",
@@ -578,19 +576,19 @@ triggers:
 
 ---
 
-## 状態管理
+## State management
 
-Daemon は `state_dir`（デフォルト: `<workspace>/.daemon-state`）にファイルベースで状態を永続化します。
+Daemon persists state as files under `state_dir` (default: `<workspace>/.daemon-state`).
 
-### ディレクトリ構造
+### Directory layout
 
 ```
 .daemon-state/
-├── daemon.json                  # Daemon メタ情報（PID, 起動時刻, 状態）
+├── daemon.json                  # daemon metadata (PID, start time, status)
 └── triggers/
     ├── auto-test/
     │   ├── state.json           # enabled, lastFiredAt, cooldownUntil, executionCount
-    │   ├── last-result.json     # 最後のワークフロー実行結果
+    │   ├── last-result.json     # last workflow result
     │   └── history/
     │       ├── 1705312200000.json
     │       └── 1705312500000.json
@@ -612,7 +610,7 @@ Daemon は `state_dir`（デフォルト: `<workspace>/.daemon-state`）にフ�
 }
 ```
 
-### triggers/\<id\>/state.json
+### triggers/<id>/state.json
 
 ```json
 {
@@ -624,67 +622,64 @@ Daemon は `state_dir`（デフォルト: `<workspace>/.daemon-state`）にフ�
 }
 ```
 
-`consecutiveFailures` は `on_workflow_failure: pause_trigger` と組み合わせて使います。連続失敗が `max_retries` 回に達すると `enabled` が `false` に切り替わります。
+`consecutiveFailures` is used with `on_workflow_failure: pause_trigger`. When consecutive failures reach `max_retries`, `enabled` is flipped to `false`.
 
-### triggers/\<id\>/history/
+### triggers/<id>/history/
 
-実行履歴は `<completedAt>.json` ファイルとして保存されます。各ファイルにはイベント情報、ワークフロー実行結果、タイムスタンプが含まれます。
+History is stored as `<completedAt>.json` files. Each includes event info, workflow result, and timestamps.
 
 ---
 
-## CLI の使い方
+## CLI usage
 
-### Daemon の起動
+### Start a daemon
 
 ```bash
-bun run src/daemon/cli.ts <daemon.yaml> [オプション]
+bun run src/daemon/cli.ts <daemon.yaml> [options]
 ```
 
-| オプション | 説明 |
+| Option | Description |
 |-----------|------|
-| `--workspace`, `-w` | `workspace` を CLI で上書きする（起動ディレクトリに依存させたくない場合に便利） |
-| `--verbose`, `-v` | 詳細ログを有効にする |
-| `--help`, `-h` | ヘルプを表示 |
+| `--workspace`, `-w` | override `workspace` via CLI |
+| `--verbose`, `-v` | enable verbose logging |
+| `--help`, `-h` | show help |
 
-補足:
+Notes:
 
-- `command` イベントのコマンド実行ディレクトリ（cwd）と `fswatch.paths` の相対パス解決は `workspace` を基準に行われます。
-- `workspace` / `state_dir` / `log_dir` / `triggers.*.workflow` では `${ENV_VAR}` 形式の環境変数展開が利用できます（未設定の場合は起動時にエラー）。
+- command event `cwd` and relative `fswatch.paths` resolution are based on `workspace`
+- `workspace` / `state_dir` / `log_dir` / `triggers.*.workflow` support `${ENV_VAR}` expansion (startup error if missing)
 
-例:
+Examples:
 
 ```bash
-# 基本的な起動
 bun run src/daemon/cli.ts my-daemon.yaml
-
-# 詳細ログ付きで起動
 bun run src/daemon/cli.ts my-daemon.yaml --verbose
 ```
 
-### 停止
+### Stop
 
-`Ctrl+C`（SIGINT）または `SIGTERM` を送信すると、Daemon は Graceful Shutdown を行います:
+On `Ctrl+C` (SIGINT) or SIGTERM, Daemon performs a graceful shutdown:
 
-1. 新規イベントの受信を停止
-2. 全イベントソースを停止
-3. 実行中のワークフローの完了を待機（30 秒タイムアウト）
-4. Webhook サーバーを停止
-5. 状態をフラッシュして終了
+1. stop receiving new events
+2. stop all event sources
+3. wait for running workflows to finish (30s timeout)
+4. stop webhook server
+5. flush state and exit
 
 ---
 
-## 実践例ウォークスルー
+## Walkthrough examples
 
-`examples/daemon/` ディレクトリにサンプル設定が用意されています。
+Sample configs live under `examples/daemon/`.
 
-### 例 1: シンプルな定期実行（simple-cron.yaml）
+### Example 1: simple periodic run (simple-cron.yaml)
 
-30 秒ごとにヘルスチェックワークフローを実行する最小構成です。
+A minimal setup that runs a health-check workflow every 30 seconds.
 
 ```yaml
 name: simple-cron
 version: "1"
-description: "30 秒ごとにヘルスチェックを実行するシンプルな daemon"
+description: "A simple daemon that runs health checks every 30 seconds"
 
 workspace: "/tmp/agentcore-daemon-simple"
 state_dir: "/tmp/agentcore-daemon-simple/.daemon-state"
@@ -701,17 +696,17 @@ triggers:
     on_workflow_failure: ignore
 ```
 
-実行:
+Run:
 
 ```bash
 bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
 ```
 
-ヘルスチェックのワークフロー（`workflows/health-check.yaml`）はディスク使用量、メモリ、ロードアベレージを確認する 1 ステップのワークフローです。
+The health-check workflow (`workflows/health-check.yaml`) is a 1-step workflow that checks disk usage, memory, and load average.
 
-### 例 2: LLM ゲート付きスマートレビュー（smart-reviewer.yaml）
+### Example 2: smart reviewer with an LLM gate (smart-reviewer.yaml)
 
-5 分ごとに cron で発火し、evaluate ゲートで「新しいコミットがあるかどうか」をシェルスクリプトで判定します。新しいコミットがある場合だけレビューワークフローを実行し、完了後に analyze で結果サマリーを生成します。
+Fires every 5 minutes via cron. An evaluate gate checks whether there are new commits. Only if there are new commits does it run a review workflow, then generates a summary via analyze.
 
 ```yaml
 name: smart-reviewer
@@ -742,11 +737,11 @@ triggers:
         LAST=$(cat "$MARKER" 2>/dev/null || echo "")
 
         if [ "$CURRENT" = "$LAST" ]; then
-          exit 1    # 新しいコミットなし → スキップ
+          exit 1    # no new commits -> skip
         else
           mkdir -p .daemon-state
           echo "$CURRENT" > "$MARKER"
-          exit 0    # 新しいコミットあり → 実行
+          exit 0    # new commits -> run
         fi
       capabilities: [READ, RUN_COMMANDS]
       timeout: "15s"
@@ -768,16 +763,16 @@ triggers:
           path: summary.md
 ```
 
-ポイント:
+Key points:
 
-- `evaluate` の `worker: CUSTOM` でシェルスクリプトによる条件判定
-- `{{workspace}}` テンプレート変数で作業ディレクトリを参照
-- `context.last_result: true` で前回結果をワークフローに渡す
-- `analyze` でレビュー結果のサマリーを自動生成
+- `evaluate.worker: CUSTOM` uses a shell gate
+- `{{workspace}}` template variable references the workspace
+- `context.last_result: true` injects the previous result
+- `analyze` auto-generates a summary of review results
 
-### 例 3: ファイル変更検知（file-watcher.yaml）
+### Example 3: file watcher (file-watcher.yaml)
 
-TypeScript ファイルの変更を検知して自動テストを実行します。
+Detect TypeScript file changes and run tests automatically.
 
 ```yaml
 name: file-watcher
@@ -807,15 +802,15 @@ triggers:
     on_workflow_failure: ignore
 ```
 
-ポイント:
+Key points:
 
-- `debounce: "5s"` で連続的なファイル保存イベントを集約
-- `cooldown: "30s"` でテスト完了後 30 秒間は再実行を抑制
-- テスト失敗は `ignore` して次の変更を待つ
+- `debounce: "5s"` aggregates bursts of file-save events
+- `cooldown: "30s"` prevents immediate reruns after completion
+- test failures are ignored and the daemon waits for the next change
 
-### 例 4: 複数イベント + 複数トリガー（multi-trigger.yaml）
+### Example 4: multiple events and triggers (multi-trigger.yaml)
 
-interval、cron、command の 3 つのイベントソースを使い、異なるワークフローを条件付きで起動する構成です。
+Use interval, cron, and command event sources together and start different workflows conditionally.
 
 ```yaml
 name: multi-trigger
@@ -840,13 +835,13 @@ events:
     trigger_on: change
 
 triggers:
-  # ハートビート → ヘルスチェック
+  # heartbeat -> health check
   health:
     on: heartbeat
     workflow: ./workflows/health-check.yaml
     on_workflow_failure: ignore
 
-  # 毎時 → evaluate 付きレビュー
+  # hourly -> review with evaluate
   hourly-review:
     on: hourly
     workflow: ./workflows/code-review.yaml
@@ -867,7 +862,7 @@ triggers:
       last_result: true
       event_payload: true
 
-  # API 状態変化 → テスト実行
+  # API change -> run tests
   api-change:
     on: api-status
     workflow: ./workflows/test-suite.yaml
@@ -877,17 +872,17 @@ triggers:
     on_workflow_failure: retry
 ```
 
-ポイント:
+Key points:
 
-- `max_concurrent_workflows: 2` で同時実行を 2 つまでに制限
-- 3 種類のイベントソースがそれぞれ異なるトリガーに紐づく
-- `command` ソースの `trigger_on: change` で API レスポンスの変化だけを検知
-- トリガーごとに異なる失敗ハンドリング（`ignore` / `retry`）
+- `max_concurrent_workflows: 2` limits concurrency to 2
+- three event source kinds each drive different triggers
+- `command.trigger_on: change` fires only when API response output changes
+- each trigger can have different failure handling (`ignore` / `retry`)
 
 ---
 
-## 次のステップ
+## Next steps
 
-- ワークフローの書き方は [`docs/guide/workflow.md`](./workflow.md) を参照
-- 設計の詳細は [`docs/daemon-design.md`](../daemon-design.md) を参照
-- サンプル設定は `examples/daemon/` ディレクトリにあります
+- See [`docs/guide/workflow.md`](./workflow.md) for writing workflows
+- See [`docs/daemon-design.md`](../daemon-design.md) for design details
+- Sample configs live in `examples/daemon/`

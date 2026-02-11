@@ -1,78 +1,78 @@
-# ワークフローガイド
+# Workflow Guide
 
-AgentCore のワークフロー機能を使うと、複数のステップを YAML で宣言的に定義し、自動で実行できます。ステップ間の依存関係（DAG）、コンテキストの受け渡し、失敗時のリトライや継続など、実際の開発フローで必要な制御をシンプルに記述できます。
+AgentCore workflows let you define multiple steps declaratively in YAML and execute them automatically. You can express dependencies (DAG), pass context between steps, and control retries/continuation on failures - all of which are needed for real development flows.
 
-## 目次
+## Contents
 
-1. [ワークフローとは](#ワークフローとは)
-2. [YAML スキーマ](#yaml-スキーマ)
-3. [ステップの定義](#ステップの定義)
-4. [DAG による依存関係](#dag-による依存関係)
-5. [コンテキストの受け渡し](#コンテキストの受け渡し)
-6. [完了チェック（ループ実行）](#完了チェックループ実行)
-7. [失敗ハンドリング](#失敗ハンドリング)
-8. [Worker の種類](#worker-の種類)
-9. [ワークフローの実行](#ワークフローの実行)
-10. [サンプル解説](#サンプル解説)
-
----
-
-## ワークフローとは
-
-ワークフローは「複数のステップを順番に（または並列に）実行する」ための仕組みです。
-
-たとえば「ビルド → テスト → レポート作成」のように、複数の作業を決まった順序で行いたい場合に使います。手動で1つずつ実行する代わりに、YAML ファイルに書いておけば AgentCore が依存関係を解決しながら自動で実行します。
-
-**ワークフローが便利な場面:**
-
-- 実装 → レビュー → 修正の一連の流れ
-- 複数のテストスイートを並列に実行して結果を集約
-- タスクリストの項目を1つずつ完了するまでループ
-- 失敗したステップを自動リトライしつつ、任意のステップは失敗を無視して続行
+1. [What is a workflow?](#what-is-a-workflow)
+2. [YAML schema](#yaml-schema)
+3. [Defining steps](#defining-steps)
+4. [Dependencies with DAG](#dependencies-with-dag)
+5. [Context hand-off](#context-hand-off)
+6. [Completion check (loop execution)](#completion-check-loop-execution)
+7. [Failure handling](#failure-handling)
+8. [Worker kinds](#worker-kinds)
+9. [Running workflows](#running-workflows)
+10. [Sample walkthroughs](#sample-walkthroughs)
 
 ---
 
-## YAML スキーマ
+## What is a workflow?
 
-### トップレベルの構造
+A workflow is a mechanism for executing multiple steps in sequence (or in parallel).
+
+For example, when you want to run "build -> test -> report" with a fixed order, a workflow is a good fit. Instead of running each command manually, you can write the workflow in YAML and let AgentCore resolve dependencies and execute it.
+
+Common use cases:
+
+- implement -> review -> fix
+- run multiple test suites in parallel and aggregate results
+- iterate until all items in a task list are complete
+- retry failed steps automatically while allowing some steps to continue even if they fail
+
+---
+
+## YAML schema
+
+### Top-level structure
 
 ```yaml
-name: my-workflow          # ワークフロー名
-version: "1"               # スキーマバージョン（現在は "1" 固定）
-description: "説明文"       # 任意
-timeout: "30m"             # ワークフロー全体のタイムアウト
-concurrency: 2             # ステップの最大同時実行数（省略時は制限なし）
-context_dir: "./context"   # コンテキストディレクトリ（省略時は "./context"）
+name: my-workflow          # workflow name
+version: "1"               # schema version (currently fixed to "1")
+description: "description"  # optional
+timeout: "30m"              # workflow-level timeout
+concurrency: 2             # max parallel steps (omit for unlimited)
+context_dir: "./context"   # context directory (default: "./context")
 
 steps:
   step-a:
-    # ... ステップ定義
+    # ... step definition
   step-b:
-    # ... ステップ定義
+    # ... step definition
 ```
 
-| フィールド | 型 | 必須 | 説明 |
+| Field | Type | Required | Description |
 |-----------|-----|------|------|
-| `name` | string | はい | ワークフロー名 |
-| `version` | `"1"` | はい | スキーマバージョン |
-| `description` | string | いいえ | 説明文 |
-| `timeout` | DurationString | はい | 全体のタイムアウト（例: `"30m"`, `"2h"`） |
-| `concurrency` | number | いいえ | 最大同時実行数 |
-| `context_dir` | string | いいえ | コンテキストディレクトリのパス |
-| `steps` | Record | はい | ステップの定義（キーがステップ ID） |
+| `name` | string | yes | workflow name |
+| `version` | `"1"` | yes | schema version |
+| `description` | string | no | description |
+| `timeout` | DurationString | yes | overall timeout (e.g. `"30m"`, `"2h"`) |
+| `concurrency` | number | no | max concurrent steps |
+| `context_dir` | string | no | context directory path |
+| `steps` | Record | yes | step definitions (keys are step ids) |
 
-**DurationString の書き方:** `"200ms"`（200ミリ秒）、`"30s"`（30秒）、`"5m"`（5分）、`"2h"`（2時間）、`"1h30m"`（1時間30分）のように指定します。
+DurationString examples: `"200ms"`, `"30s"`, `"5m"`, `"2h"`, `"1h30m"`.
 
 ---
 
-## ステップの定義
+## Defining steps
 
-各ステップは `steps` の下にキー（ステップ ID）と値（定義）のペアで記述します。
+Each step is defined as a key/value pair under `steps` (key = step id).
 
 ```yaml
 steps:
   build:
-    description: "ソースコードをビルドする"
+    description: "Build the source"
     worker: CUSTOM
     instructions: |
       mkdir -p dist
@@ -81,38 +81,38 @@ steps:
     timeout: "5m"
 ```
 
-### ステップの全フィールド
+### Full step fields
 
-| フィールド | 型 | 必須 | 説明 |
+| Field | Type | Required | Description |
 |-----------|-----|------|------|
-| `description` | string | いいえ | ステップの説明 |
-| `worker` | enum | はい | 使用する Worker（後述） |
-| `model` | string | いいえ | 使用するモデル ID（Worker/CLI によって形式が異なる） |
-| `instructions` | string | はい | Worker に渡す指示テキスト |
-| `capabilities` | enum[] | はい | Worker に許可する操作 |
-| `workspace` | string | いいえ | 作業ディレクトリ（デフォルト: `"."`） |
-| `depends_on` | string[] | いいえ | 先行ステップ ID のリスト |
-| `inputs` | InputRef[] | いいえ | 先行ステップの成果物参照 |
-| `outputs` | OutputDef[] | いいえ | このステップの出力定義 |
-| `timeout` | DurationString | いいえ | ステップのタイムアウト |
-| `max_retries` | number | いいえ | 最大リトライ回数（デフォルト: 0） |
-| `max_steps` | number | いいえ | Worker の最大ステップ数 |
-| `max_command_time` | DurationString | いいえ | コマンド実行タイムアウト |
-| `completion_check` | object | いいえ | 完了チェック定義（後述） |
-| `max_iterations` | number | いいえ | 完了チェックループの上限（デフォルト: 1） |
-| `on_iterations_exhausted` | enum | いいえ | ループ上限到達時の動作: `abort` / `continue` |
-| `on_failure` | enum | いいえ | 失敗時の動作: `retry` / `continue` / `abort`（デフォルト: `abort`） |
+| `description` | string | no | step description |
+| `worker` | enum | yes | worker kind (see below) |
+| `model` | string | no | model id (format depends on worker/CLI) |
+| `instructions` | string | yes | instructions passed to the worker |
+| `capabilities` | enum[] | yes | allowed operations |
+| `workspace` | string | no | working directory (default: `"."`) |
+| `depends_on` | string[] | no | list of prerequisite step ids |
+| `inputs` | InputRef[] | no | references to upstream artifacts |
+| `outputs` | OutputDef[] | no | output definitions for this step |
+| `timeout` | DurationString | no | step timeout |
+| `max_retries` | number | no | max retries (default: 0) |
+| `max_steps` | number | no | max worker steps |
+| `max_command_time` | DurationString | no | per-command timeout |
+| `completion_check` | object | no | completion check definition (see below) |
+| `max_iterations` | number | no | max completion-check iterations (default: 1) |
+| `on_iterations_exhausted` | enum | no | behavior on hitting iteration limit: `abort` / `continue` |
+| `on_failure` | enum | no | behavior on failure: `retry` / `continue` / `abort` (default: `abort`) |
 
-### capabilities（権限）
+### capabilities
 
-Worker に許可する操作を配列で指定します。
+Specify allowed operations as an array.
 
-| 値 | 意味 |
+| Value | Meaning |
 |-----|------|
-| `READ` | ファイルの読み取り |
-| `EDIT` | ファイルの作成・編集 |
-| `RUN_TESTS` | テストの実行 |
-| `RUN_COMMANDS` | 任意のコマンド実行 |
+| `READ` | read files |
+| `EDIT` | create/edit files |
+| `RUN_TESTS` | run tests |
+| `RUN_COMMANDS` | run arbitrary commands |
 
 ```yaml
 capabilities: [READ, EDIT, RUN_TESTS]
@@ -120,103 +120,103 @@ capabilities: [READ, EDIT, RUN_TESTS]
 
 ---
 
-## DAG による依存関係
+## Dependencies with DAG
 
-`depends_on` を使うと、ステップ間の実行順序を制御できます。依存するステップが全て完了してから、そのステップが実行されます。
+Use `depends_on` to control step order. A step runs only after all its dependencies complete.
 
-### 直列実行
+### Sequential execution
 
 ```yaml
 steps:
   build:
     worker: CUSTOM
-    instructions: "ビルドする"
+    instructions: "Build"
     capabilities: [EDIT]
 
   test:
     worker: CUSTOM
-    depends_on: [build]          # build の完了後に実行
-    instructions: "テストする"
+    depends_on: [build]          # run after build
+    instructions: "Test"
     capabilities: [READ, RUN_TESTS]
 
   deploy:
     worker: CUSTOM
-    depends_on: [test]           # test の完了後に実行
-    instructions: "デプロイする"
+    depends_on: [test]           # run after test
+    instructions: "Deploy"
     capabilities: [RUN_COMMANDS]
 ```
 
-実行順: `build` → `test` → `deploy`
+Execution order: `build` -> `test` -> `deploy`.
 
-### 並列実行と合流
+### Parallel execution and join
 
-`depends_on` が同じステップを共有するステップは、並列に実行されます。複数の先行ステップを持つステップは、全ての先行ステップが完了するまで待機します。
+Steps that share the same dependency can run in parallel. A step with multiple dependencies waits until all are complete.
 
 ```yaml
 steps:
   build:
     worker: CUSTOM
-    instructions: "ビルドする"
+    instructions: "Build"
     capabilities: [EDIT]
 
   test-unit:
-    depends_on: [build]           # build 後に開始
+    depends_on: [build]           # start after build
     worker: CUSTOM
-    instructions: "ユニットテスト"
+    instructions: "Unit tests"
     capabilities: [RUN_TESTS]
 
   test-e2e:
-    depends_on: [build]           # build 後に開始（test-unit と並列）
+    depends_on: [build]           # start after build (in parallel with test-unit)
     worker: CUSTOM
-    instructions: "E2E テスト"
+    instructions: "E2E tests"
     capabilities: [RUN_TESTS]
 
   report:
-    depends_on: [test-unit, test-e2e]   # 両方の完了を待つ
+    depends_on: [test-unit, test-e2e]   # wait for both
     worker: CUSTOM
-    instructions: "結果をまとめる"
+    instructions: "Summarize results"
     capabilities: [READ, EDIT]
 ```
 
-DAG 構造:
+DAG:
 
 ```
 build
-  ├── test-unit  ──┐
-  └── test-e2e   ──┴── report
+  +-- test-unit --+
+  +-- test-e2e ---+-- report
 ```
 
-`test-unit` と `test-e2e` は `build` 完了後に **同時に実行** されます。`report` は両方が終わるまで待ちます。`concurrency: 2` を設定すれば、同時に動くステップ数が最大 2 に制限されます。
+`test-unit` and `test-e2e` run concurrently after `build`. `report` waits for both. If you set `concurrency: 2`, the max parallel steps is limited to 2.
 
 ---
 
-## コンテキストの受け渡し
+## Context hand-off
 
-ステップ間でファイルを受け渡すには `outputs` と `inputs` を使います。
+To pass files between steps, use `outputs` and `inputs`.
 
-### outputs（成果物の定義）
+### outputs (declare artifacts)
 
-ステップの実行結果としてファイルを公開します。
+Publish files/directories as artifacts.
 
 ```yaml
 outputs:
-  - name: build-output       # アーティファクト名（後続ステップから参照するキー）
-    path: "dist"             # ファイルまたはディレクトリのパス
-    type: code               # 種別のヒント（任意）
+  - name: build-output       # artifact name (key referenced by downstream steps)
+    path: "dist"             # file or directory path
+    type: code               # optional hint
 ```
 
-### inputs（成果物の参照）
+### inputs (consume artifacts)
 
-先行ステップの成果物を取り込みます。
+Import upstream artifacts.
 
 ```yaml
 inputs:
-  - from: build              # 参照元のステップ ID
-    artifact: build-output   # outputs の name に対応
-    as: build-files          # ローカルでの参照名（省略時は artifact と同じ）
+  - from: build              # upstream step id
+    artifact: build-output   # outputs[].name
+    as: build-files          # local name (default: same as artifact)
 ```
 
-### 実例: ビルド成果物をテストで使う
+### Example: use build artifacts in test
 
 ```yaml
 steps:
@@ -235,49 +235,49 @@ steps:
     worker: CUSTOM
     depends_on: [build]
     instructions: |
-      # inputs で取り込んだ成果物が参照可能
+      # Artifacts imported via inputs are available
       cat build-output/dist/math.js
-      echo "PASS: テスト通過"
+      echo "PASS: test passed"
     capabilities: [READ, RUN_TESTS]
     inputs:
       - from: build
         artifact: build-output
 ```
 
-### コンテキストディレクトリの構造
+### Context directory layout
 
-実行時にはワークフロー全体のコンテキストディレクトリが以下のように作成されます。
+At runtime, the workflow context directory looks like:
 
 ```
 <workspace>/
-└── context/
-    ├── _workflow.json              # ワークフロー実行メタデータ
-    ├── build/
-    │   ├── _meta.json             # ステップの実行結果
-    │   └── build-output/          # outputs で定義した成果物
-    │       └── dist/math.js
-    └── test/
-        └── _meta.json
+  +-- context/
+      +-- _workflow.json              # workflow metadata
+      +-- build/
+      |    +-- _meta.json             # step result metadata
+      |    +-- build-output/          # artifacts declared by outputs
+      |         +-- dist/math.js
+      +-- test/
+           +-- _meta.json
 ```
 
-`_meta.json` にはステップの実行状態（ステータス、所要時間、試行回数など）が記録されます。
+`_meta.json` records step execution state (status, duration, attempts, etc.).
 
 ---
 
-## 完了チェック（ループ実行）
+## Completion check (loop execution)
 
-`completion_check` を使うと、ステップの実行後に「本当に完了したか」を判定し、未完了なら再実行するループを作れます。
+`completion_check` lets you decide "is it actually complete?" after a step runs and, if incomplete, rerun it in a loop.
 
-これは「Worker の実行自体は成功したが、目的のタスクがまだ残っている」ケースに対応します。たとえば、タスクリストの項目を1つずつ処理し、全項目が完了するまで繰り返す場合に使います。
+This is for cases where the worker run succeeded, but the overall objective is not yet complete (e.g. processing one task-list item at a time until all are done).
 
-### 基本的な書き方
+### Basic form
 
 ```yaml
 steps:
   process:
     worker: CUSTOM
     instructions: |
-      # 未完了タスクを1つ処理する
+      # Process one incomplete task
       ...
     capabilities: [READ, EDIT]
     timeout: "5m"
@@ -285,144 +285,144 @@ steps:
     completion_check:
       worker: CUSTOM
       instructions: |
-        # 全タスクが完了しているか確認する
+        # Check whether all tasks are complete
         REMAINING=$(grep -c '^\- \[ \]' todo.txt || true)
         if [ "$REMAINING" -eq 0 ]; then
-          exit 0   # 完了 → ループ終了
+          exit 0   # complete -> stop loop
         else
-          exit 1   # 未完了 → メイン Worker を再実行
+          exit 1   # incomplete -> rerun main worker
         fi
       capabilities: [READ]
       timeout: "1m"
 
-    max_iterations: 10                # 最大ループ回数
-    on_iterations_exhausted: abort    # 上限到達時: abort or continue
+    max_iterations: 10                # max loop count
+    on_iterations_exhausted: abort    # abort or continue
 ```
 
-### 実行フロー
+### Execution flow
 
 ```
-ステップ開始 (iteration 1)
-  │
-  ├─→ メイン Worker 実行
-  │     ├── 失敗 → on_failure ポリシーで処理
-  │     └── 成功 ↓
-  │
-  ├─→ completion_check 実行
-  │     ├── exit 0 (完了) → ステップ完了
-  │     └── exit 1 (未完了) ↓
-  │
-  ├─→ iteration < max_iterations ?
-  │     ├── Yes → iteration++ → メイン Worker を再実行
-  │     └── No  → on_iterations_exhausted で処理
-  │
-  └─→ ステップ timeout 到達 → キャンセル
+Step start (iteration 1)
+  |
+  +-> Run main worker
+  |     +-- failed -> handle via on_failure
+  |     +-- succeeded
+  |
+  +-> Run completion_check
+  |     +-- exit 0 (complete) -> step completes
+  |     +-- exit 1 (incomplete)
+  |
+  +-> iteration < max_iterations ?
+  |     +-- Yes -> iteration++ -> rerun main worker
+  |     +-- No  -> handle via on_iterations_exhausted
+  |
+  +-> step timeout -> cancelled
 ```
 
-### retry との違い
+### Difference from retry
 
-| | `on_failure: retry` | `completion_check` ループ |
+| | `on_failure: retry` | `completion_check` loop |
 |---|---|---|
-| トリガー | Worker が**失敗**した | Worker は**成功**したがタスクが**未完了** |
-| 上限 | `max_retries` | `max_iterations` |
-| 判定 | 自動（終了コード） | チェッカー Worker が判定 |
+| Trigger | the worker **failed** | the worker **succeeded** but task is **incomplete** |
+| Limit | `max_retries` | `max_iterations` |
+| Decision | automatic (exit code / classification) | checker worker decides |
 
-### completion_check フィールド
+### completion_check fields
 
-| フィールド | 型 | 必須 | 説明 |
+| Field | Type | Required | Description |
 |-----------|-----|------|------|
-| `worker` | enum | はい | チェックに使う Worker |
-| `model` | string | いいえ | 使用するモデル ID（Worker/CLI によって形式が異なる） |
-| `instructions` | string | はい | チェック内容の指示 |
-| `capabilities` | enum[] | はい | チェッカーの権限（通常は `[READ]` で十分） |
-| `timeout` | DurationString | いいえ | チェック1回あたりのタイムアウト |
+| `worker` | enum | yes | worker used for checking |
+| `model` | string | no | model id (format depends on worker/CLI) |
+| `instructions` | string | yes | check instructions |
+| `capabilities` | enum[] | yes | checker capabilities (usually `[READ]`) |
+| `timeout` | DurationString | no | timeout per check |
 
 ---
 
-## 失敗ハンドリング
+## Failure handling
 
-ステップが失敗した場合の動作を `on_failure` で制御します。
+Control behavior when a step fails via `on_failure`.
 
-### on_failure ポリシー
+### on_failure policies
 
-| ポリシー | 動作 |
+| Policy | Behavior |
 |---------|------|
-| `abort`（デフォルト） | ワークフロー全体を中断する。未実行ステップはスキップされる |
-| `retry` | `max_retries` 回までリトライする。上限を超えたら中断 |
-| `continue` | 失敗を記録して後続ステップの実行を続ける |
+| `abort` (default) | abort the whole workflow; pending steps are skipped |
+| `retry` | retry up to `max_retries`; abort if exhausted |
+| `continue` | record failure but continue executing downstream steps |
 
-### retry の例
+### retry example
 
 ```yaml
 steps:
   flaky-api-call:
     worker: CUSTOM
-    instructions: "外部 API を呼び出す"
+    instructions: "Call an external API"
     capabilities: [RUN_COMMANDS]
-    max_retries: 3         # 最大3回リトライ
-    on_failure: retry      # 失敗時にリトライ
+    max_retries: 3
+    on_failure: retry
     timeout: "2m"
 ```
 
-リトライは指数バックオフ（待ち時間が徐々に増える）で実行されます。
+Retries use exponential backoff (wait time grows).
 
-### continue の例
+### continue example
 
 ```yaml
 steps:
   lint:
     worker: CUSTOM
-    instructions: "lint チェックを実行"
+    instructions: "Run lint"
     capabilities: [READ]
-    on_failure: continue   # 失敗しても後続に影響しない
+    on_failure: continue
     outputs:
       - name: lint-report
         path: "lint-result.txt"
 
   build:
-    depends_on: [lint]     # lint が失敗しても実行される
+    depends_on: [lint]     # runs even if lint fails
     worker: CUSTOM
-    instructions: "ビルドする"
+    instructions: "Build"
     capabilities: [EDIT]
 ```
 
-`continue` を使うと、そのステップが失敗しても後続ステップは実行されます。ただし、失敗したステップの成果物（outputs）は利用できない場合があります。
+With `continue`, downstream steps still run, but artifacts from the failed step may not be available.
 
-### abort の例
+### abort example
 
 ```yaml
 steps:
   critical-setup:
     worker: CUSTOM
-    instructions: "必須の初期設定"
+    instructions: "Critical setup"
     capabilities: [EDIT]
-    on_failure: abort      # 失敗したらワークフロー全体を停止
+    on_failure: abort
 
   work:
     depends_on: [critical-setup]
     worker: CUSTOM
-    instructions: "メイン作業"
+    instructions: "Main work"
     capabilities: [READ, EDIT]
 ```
 
-`critical-setup` が失敗すると、`work` はスキップされ、ワークフロー全体が `FAILED` になります。
+If `critical-setup` fails, `work` is skipped and the workflow becomes `FAILED`.
 
 ---
 
-## Worker の種類
+## Worker kinds
 
-`worker` フィールドで、ステップの実行に使う Worker を指定します。
+Pick a worker kind via the `worker` field.
 
-| Worker | 説明 | 用途 |
+| Worker | Description | Typical use |
 |--------|------|------|
-| `CUSTOM` | シェルコマンドを直接実行 | スクリプト、ビルドコマンド、テスト実行 |
-| `CLAUDE_CODE` | Claude Code をエージェントとして起動 | コードレビュー、分析、生成 |
-| `CODEX_CLI` | Codex CLI をエージェントとして起動 | コード実装、リファクタリング |
-| `OPENCODE` | OpenCode をエージェントとして起動 | コード生成、テスト修正 |
+| `CUSTOM` | run shell commands directly | scripts, builds, tests |
+| `CLAUDE_CODE` | launch Claude Code as an agent | reviews, analysis, generation |
+| `CODEX_CLI` | launch Codex CLI as an agent | implementation, refactoring |
+| `OPENCODE` | launch OpenCode as an agent | generation, test fixes |
 
-### CUSTOM Worker
+### CUSTOM worker
 
-もっとも基本的な Worker です。`instructions` にシェルスクリプトを書くと、そのまま実行されます。
+The simplest worker. Whatever you write in `instructions` is executed as a shell script.
 
 ```yaml
 steps:
@@ -434,19 +434,19 @@ steps:
     capabilities: [EDIT]
 ```
 
-`CUSTOM` は追加のツールのインストールが不要で、すぐに使い始められます。ワークフローの動作確認やシェルスクリプトベースのタスクに最適です。
+`CUSTOM` requires no extra tool installation and is a good default for validating workflow behavior or running shell-based tasks.
 
-### AI エージェント Worker
+### AI agent workers
 
-`CLAUDE_CODE`、`CODEX_CLI`、`OPENCODE` は AI エージェントを起動して作業を行います。`instructions` には自然言語でタスクを指示できます。
+`CLAUDE_CODE`, `CODEX_CLI`, and `OPENCODE` launch AI agents. You can write natural-language instructions.
 
 ```yaml
 steps:
   implement:
     worker: CODEX_CLI
     instructions: |
-      src/utils.ts に配列のユニーク化関数を追加してください。
-      型安全に実装し、テストも書いてください。
+      Add an array-unique function to src/utils.ts.
+      Implement it in a type-safe way and add tests.
     capabilities: [READ, EDIT, RUN_TESTS]
     timeout: "15m"
 
@@ -454,48 +454,48 @@ steps:
     worker: CLAUDE_CODE
     depends_on: [implement]
     instructions: |
-      src/utils.ts の変更をレビューしてください。
-      パフォーマンス、エッジケース、型安全性の観点で確認してください。
+      Review the changes in src/utils.ts.
+      Check performance, edge cases, and type safety.
     capabilities: [READ]
     timeout: "10m"
 ```
 
-これらの Worker を使うには、対応するツールが事前にインストールされている必要があります（[クイックスタート](./quickstart.md) の前提条件を参照）。
+These workers require the corresponding tools to be installed (see prerequisites in the [Quickstart](./quickstart.md)).
 
 ---
 
-## ワークフローの実行
+## Running workflows
 
-### 基本的な実行方法
+### Basic
 
 ```bash
 bun run src/workflow/run.ts <workflow.yaml>
 ```
 
-### オプション
+### Options
 
-| オプション | 短縮形 | 説明 | デフォルト |
+| Option | Short | Description | Default |
 |-----------|--------|------|----------|
-| `--workspace <dir>` | `-w` | 作業ディレクトリ | 一時ディレクトリ |
-| `--verbose` | `-v` | ステップの出力を表示 | オフ |
-| `--help` | `-h` | ヘルプを表示 | — |
+| `--workspace <dir>` | `-w` | working directory | temp directory |
+| `--verbose` | `-v` | show step output | off |
+| `--help` | `-h` | show help | - |
 
-### 実行例
+### Examples
 
 ```bash
-# 最小構成で実行（一時ディレクトリを自動作成）
+# run with a temp directory
 bun run src/workflow/run.ts examples/hello-world.yaml
 
-# 作業ディレクトリを指定して実行
+# specify a workspace
 bun run src/workflow/run.ts examples/build-test-report.yaml --workspace /tmp/my-work
 
-# 詳細出力つきで実行
+# verbose output
 bun run src/workflow/run.ts examples/todo-loop.yaml --verbose
 ```
 
-### 実行結果の見方
+### Reading results
 
-実行すると以下のような出力が表示されます。
+Running prints output like:
 
 ```
 Workflow: /home/user/agentcore/examples/build-test-report.yaml
@@ -503,7 +503,7 @@ Name:     build-test-report
 Steps:    build, test-math, test-greet, report
 Timeout:  5m
 
-─── Results ───
+--- Results ---
 
   PASS  build
   PASS  test-math
@@ -514,27 +514,27 @@ Workflow: SUCCEEDED  (2.3s)
 Context:  /tmp/my-work/context
 ```
 
-各ステップのステータス:
+Step status labels:
 
-| 表示 | 意味 |
+| Label | Meaning |
 |------|------|
-| `PASS` | 正常に完了 |
-| `FAIL` | 失敗（リトライ上限超過含む） |
-| `SKIP` | 先行ステップの失敗によりスキップ |
-| `INCOMPLETE` | 完了チェックの上限到達（`on_iterations_exhausted: continue`） |
-| `CANCELLED` | キャンセルされた |
+| `PASS` | completed successfully |
+| `FAIL` | failed (including retry exhaustion) |
+| `SKIP` | skipped due to upstream failure |
+| `INCOMPLETE` | hit completion-check iteration limit with `on_iterations_exhausted: continue` |
+| `CANCELLED` | cancelled |
 
-ループ実行したステップには `(N iterations)` と表示されます。
+Looped steps show `(N iterations)`.
 
 ---
 
-## サンプル解説
+## Sample walkthroughs
 
-`examples/` ディレクトリに 4 つのサンプルが用意されています。
+There are four samples under `examples/`.
 
-### hello-world.yaml — 最小構成
+### hello-world.yaml - minimal example
 
-もっとも単純なワークフローです。1ステップだけで、シェルコマンドを実行してファイルを作成します。
+The simplest workflow: one step that runs a shell command to create a file.
 
 ```yaml
 name: hello-world
@@ -543,7 +543,7 @@ timeout: "1m"
 
 steps:
   greet:
-    description: "Hello World ファイルを作成する"
+    description: "Create a Hello World file"
     worker: CUSTOM
     instructions: |
       echo "Hello from AgentCore Workflow!" > hello.txt
@@ -557,17 +557,17 @@ steps:
         type: text
 ```
 
-実行:
+Run:
 
 ```bash
 bun run src/workflow/run.ts examples/hello-world.yaml --verbose
 ```
 
-**ポイント:** ワークフローの基本構造（`name`, `version`, `timeout`, `steps`）を理解するのに最適です。
+Key point: best for learning the basic structure (`name`, `version`, `timeout`, `steps`).
 
-### build-test-report.yaml — 並列実行と合流
+### build-test-report.yaml - parallelism and join
 
-ビルド → テスト（2つ並列）→ レポート作成の流れを実演します。
+Demonstrates build -> (two tests in parallel) -> report.
 
 ```yaml
 name: build-test-report
@@ -634,23 +634,24 @@ steps:
         path: "report.md"
 ```
 
-DAG 構造:
+DAG:
 
 ```
 build
-  ├── test-math  ──┐
-  └── test-greet ──┴── report
+  +-- test-math --+
+  +-- test-greet -+-- report
 ```
 
-**ポイント:**
-- `test-math` と `test-greet` は `build` 完了後に**並列実行**される
-- `report` は両テストの完了を待ってから実行される
-- `concurrency: 2` で並列数を制限している
-- テストステップは `on_failure: continue` なので、失敗してもレポートは作成される
+Key points:
 
-### todo-loop.yaml — 完了チェックによるループ
+- `test-math` and `test-greet` run in parallel after `build`
+- `report` waits for both tests
+- `concurrency: 2` limits parallelism
+- test steps use `on_failure: continue`, so the report can still be produced
 
-タスクリストの全項目が完了するまでステップを繰り返す例です。
+### todo-loop.yaml - loop with completion_check
+
+Loops until all items in a task list are completed.
 
 ```yaml
 name: todo-loop
@@ -675,9 +676,9 @@ steps:
     depends_on: [setup]
     worker: CUSTOM
     instructions: |
-      # 最初の未完了タスクを見つけて処理する
+      # Find and process the first incomplete task
       TASK=$(grep -m1 '^\- \[ \]' todo.txt || true)
-      # ... タスクを実行して完了マークを付ける
+      # ... execute task and mark it complete
     capabilities: [READ, EDIT, RUN_COMMANDS]
 
     completion_check:
@@ -685,9 +686,9 @@ steps:
       instructions: |
         REMAINING=$(grep -c '^\- \[ \]' todo.txt || true)
         if [ "$REMAINING" -eq 0 ]; then
-          exit 0   # 全完了
+          exit 0   # all complete
         else
-          exit 1   # まだ残りあり
+          exit 1   # remaining tasks
         fi
       capabilities: [READ]
       timeout: "30s"
@@ -698,39 +699,40 @@ steps:
   verify:
     depends_on: [process-tasks]
     worker: CUSTOM
-    instructions: "成果物を検証する"
+    instructions: "Verify outputs"
     capabilities: [READ]
 ```
 
-実行フロー:
+Execution flow:
 
 ```
-setup → process-tasks (iteration 1)
-           │
-           ├─ Worker: タスク1を処理
-           ├─ Check: 残り2個 → 未完了
-           │
+setup -> process-tasks (iteration 1)
+           |
+           +-- Worker: process task 1
+           +-- Check: 2 remaining -> incomplete
+
          process-tasks (iteration 2)
-           │
-           ├─ Worker: タスク2を処理
-           ├─ Check: 残り1個 → 未完了
-           │
+           |
+           +-- Worker: process task 2
+           +-- Check: 1 remaining -> incomplete
+
          process-tasks (iteration 3)
-           │
-           ├─ Worker: タスク3を処理
-           ├─ Check: 残り0個 → 完了!
-           │
+           |
+           +-- Worker: process task 3
+           +-- Check: 0 remaining -> complete
+
          verify
 ```
 
-**ポイント:**
-- `completion_check` でループの終了条件を判定する
-- `max_iterations: 10` が安全弁として機能する（無限ループ防止）
-- メイン Worker とチェッカーは同じ workspace 上で動作するため、ファイルの変更が自然に引き継がれる
+Key points:
 
-### failure-recovery.yaml — 失敗ハンドリング
+- completion_check decides loop exit
+- `max_iterations: 10` prevents infinite loops
+- main worker and checker share the same workspace, so file changes carry over
 
-`retry`、`continue`、`abort` の各ポリシーの動作を確認できるサンプルです。
+### failure-recovery.yaml - failure handling
+
+Demonstrates `retry`, `continue`, and `abort` policies.
 
 ```yaml
 name: failure-recovery
@@ -740,10 +742,10 @@ concurrency: 2
 
 steps:
   flaky-step:
-    description: "不安定なステップ（1回目失敗、2回目成功）"
+    description: "Flaky step (fails first run, succeeds on the second)"
     worker: CUSTOM
     instructions: |
-      # 1回目は失敗し、2回目で成功するシミュレーション
+      # simulate: fail once, succeed on the second attempt
       ...
     max_retries: 2
     on_failure: retry
@@ -752,7 +754,7 @@ steps:
         path: "flaky-result.txt"
 
   optional-lint:
-    description: "Lint チェック（失敗しても続行）"
+    description: "Lint check (continue even if it fails)"
     worker: CUSTOM
     instructions: |
       echo "Lint failed"
@@ -766,7 +768,7 @@ steps:
     depends_on: [flaky-step, optional-lint]
     worker: CUSTOM
     instructions: |
-      # 両方の結果を集約する
+      # aggregate both results
       ...
     inputs:
       - from: flaky-step
@@ -775,55 +777,56 @@ steps:
         artifact: lint-report
 ```
 
-**ポイント:**
-- `flaky-step` は `on_failure: retry` で自動リトライ。1回目失敗→2回目成功で続行
-- `optional-lint` は `on_failure: continue` で、失敗しても後続の `summary` に影響しない
-- `summary` は両方に依存するが、`optional-lint` が `continue` なので実行される
+Key points:
+
+- `flaky-step` retries and continues after succeeding
+- `optional-lint` continues even on failure
+- `summary` depends on both; because `optional-lint` is `continue`, it still runs
 
 ---
 
-## ステップのステータス一覧
+## Step status list
 
-ワークフロー実行中、各ステップは以下のステータスを遷移します。
+During execution, steps transition across these statuses:
 
-| ステータス | 意味 |
+| Status | Meaning |
 |-----------|------|
-| `PENDING` | 依存するステップの完了を待機中 |
-| `READY` | 依存が解決済み、実行待ち |
-| `RUNNING` | メイン Worker が実行中 |
-| `CHECKING` | `completion_check` の Worker が実行中 |
-| `SUCCEEDED` | 正常に完了 |
-| `FAILED` | 失敗（リトライ上限超過を含む） |
-| `INCOMPLETE` | `max_iterations` の上限到達（`on_iterations_exhausted: continue` の場合） |
-| `SKIPPED` | 先行ステップの失敗により実行されなかった |
-| `CANCELLED` | タイムアウトまたは外部キャンセル |
+| `PENDING` | waiting on dependencies |
+| `READY` | dependencies resolved; waiting to run |
+| `RUNNING` | main worker running |
+| `CHECKING` | completion_check worker running |
+| `SUCCEEDED` | completed successfully |
+| `FAILED` | failed (including retry exhaustion) |
+| `INCOMPLETE` | hit `max_iterations` limit with `on_iterations_exhausted: continue` |
+| `SKIPPED` | not executed due to upstream abort |
+| `CANCELLED` | timeout or external cancellation |
 
-ワークフロー全体のステータス:
+Workflow-level statuses:
 
-| ステータス | 意味 |
+| Status | Meaning |
 |-----------|------|
-| `SUCCEEDED` | 全ステップが完了 |
-| `FAILED` | いずれかのステップが失敗で中断 |
-| `TIMED_OUT` | ワークフロー全体のタイムアウト |
-| `CANCELLED` | 外部からのキャンセル |
+| `SUCCEEDED` | all steps completed |
+| `FAILED` | aborted due to a step failure |
+| `TIMED_OUT` | workflow-level timeout |
+| `CANCELLED` | externally cancelled |
 
 ---
 
-## DAG バリデーション
+## DAG validation
 
-ワークフロー実行前に、以下の項目が自動で検証されます。問題がある場合はエラーメッセージとともに実行が中止されます。
+Before execution, the following are validated. If invalid, execution is aborted with an error.
 
-- **循環参照**: `depends_on` にサイクルがないこと
-- **参照整合性**: `depends_on` で指定したステップ ID が `steps` に存在すること
-- **入力整合性**: `inputs[].from` が `depends_on` に含まれていること
-- **出力名の一意性**: 同一ステップ内で `outputs[].name` が重複しないこと
-- **Worker 種別の有効性**: `worker` の値が有効な Worker 種別であること
-- **completion_check の整合性**: `completion_check` がある場合、`max_iterations` が 2 以上であること
+- **cycle detection**: `depends_on` has no cycle
+- **reference integrity**: step ids in `depends_on` exist under `steps`
+- **input integrity**: `inputs[].from` is listed in `depends_on`
+- **output name uniqueness**: no duplicate `outputs[].name` within a step
+- **worker kind validity**: `worker` is valid
+- **completion_check consistency**: if present, `max_iterations` must be >= 2
 
 ---
 
-## 次のステップ
+## Next steps
 
-- 設計の詳細 → [`docs/workflow-design.md`](../workflow-design.md)
-- クイックスタート → [`docs/guide/quickstart.md`](./quickstart.md)
-- サンプルファイル → `examples/` ディレクトリ
+- Design details: [`docs/workflow-design.md`](../workflow-design.md)
+- Quickstart: [`docs/guide/quickstart.md`](./quickstart.md)
+- Sample workflows: `examples/`
