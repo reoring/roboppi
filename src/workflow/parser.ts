@@ -17,6 +17,11 @@ function assertString(value: unknown, field: string): asserts value is string {
   }
 }
 
+function validateOptionalString(value: unknown, field: string): void {
+  if (value === undefined) return;
+  assertString(value, field);
+}
+
 function validateWorker(value: unknown, field: string): void {
   if (typeof value !== "string" || !VALID_WORKERS.has(value)) {
     throw new WorkflowParseError(
@@ -46,6 +51,7 @@ function validateCompletionCheck(check: unknown, stepId: string): CompletionChec
   assertString(obj["instructions"], `steps.${stepId}.completion_check.instructions`);
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
+  validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
   return obj as unknown as CompletionCheckDef;
 }
 
@@ -58,6 +64,7 @@ function validateStep(stepId: string, step: unknown): StepDefinition {
   assertString(obj["instructions"], `steps.${stepId}.instructions`);
   validateWorker(obj["worker"], `steps.${stepId}.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.capabilities`);
+  validateOptionalString(obj["model"], `steps.${stepId}.model`);
 
   // Validate depends_on is array of strings if present
   if (obj["depends_on"] !== undefined) {

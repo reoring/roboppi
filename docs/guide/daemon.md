@@ -146,6 +146,7 @@ events:
 
 | 形式 | 例 | 意味 |
 |------|----|----|
+| `Nms` | `"200ms"` | 200 ミリ秒 |
 | `Ns` | `"30s"` | 30 秒 |
 | `Nm` | `"5m"` | 5 分 |
 | `Nh` | `"1h"` | 1 時間 |
@@ -641,8 +642,14 @@ bun run src/daemon/cli.ts <daemon.yaml> [オプション]
 
 | オプション | 説明 |
 |-----------|------|
+| `--workspace`, `-w` | `workspace` を CLI で上書きする（起動ディレクトリに依存させたくない場合に便利） |
 | `--verbose`, `-v` | 詳細ログを有効にする |
 | `--help`, `-h` | ヘルプを表示 |
+
+補足:
+
+- `command` イベントのコマンド実行ディレクトリ（cwd）と `fswatch.paths` の相対パス解決は `workspace` を基準に行われます。
+- `workspace` / `state_dir` / `log_dir` / `triggers.*.workflow` では `${ENV_VAR}` 形式の環境変数展開が利用できます（未設定の場合は起動時にエラー）。
 
 例:
 

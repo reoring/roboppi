@@ -31,6 +31,16 @@ import type { WorkerTask, WorkerResult } from "../types/index.js";
 
 type LlmWorker = Exclude<StepDefinition["worker"], "CUSTOM">;
 
+type WorkerTaskDef = {
+  workspace?: string;
+  instructions: string;
+  capabilities: StepDefinition["capabilities"];
+  timeout?: StepDefinition["timeout"];
+  max_steps?: StepDefinition["max_steps"];
+  max_command_time?: StepDefinition["max_command_time"];
+  model?: StepDefinition["model"];
+};
+
 function toWorkerKind(worker: LlmWorker): WorkerKind {
   switch (worker) {
     case "OPENCODE":
@@ -115,7 +125,7 @@ export class MultiWorkerStepRunner implements StepRunner {
   }
 
   private buildWorkerTask(
-    def: Pick<StepDefinition, "instructions" | "capabilities" | "timeout" | "max_steps" | "max_command_time" | "workspace" | "model">,
+    def: WorkerTaskDef,
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,

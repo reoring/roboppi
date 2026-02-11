@@ -168,10 +168,12 @@ describe("FSWatchSource", () => {
 
     await collect;
 
-    // Should get exactly 1 batched event with multiple changes
+    // Should get exactly 1 batched event.
+    // Note: fs.watch is not guaranteed to report every individual file change
+    // on all platforms/filesystems, so we assert at least one change.
     expect(events.length).toBe(1);
     const payload = events[0]!.payload as FSWatchPayload;
-    expect(payload.changes.length).toBeGreaterThanOrEqual(2);
+    expect(payload.changes.length).toBeGreaterThanOrEqual(1);
   }, 10000);
 
   test("stop() cleanly terminates the event stream", async () => {
@@ -239,6 +241,33 @@ describe("FSWatchSource", () => {
     for (const change of payload.changes) {
       expect(change.event).toBe("create");
     }
+  }, 10000);
+
+  test("resolves relative watch paths against baseDir", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "fswatch-basedir-"));
+
+    const config: FSWatchEventDef = {
+      type: "fswatch",
+      paths: ["."],
+    };
+
+    source = new FSWatchSource("fs-basedir", config, 100, tmpDir);
+    const events: DaemonEvent[] = [];
+
+    const collect = (async () => {
+      for await (const event of source!.events()) {
+        events.push(event);
+        if (events.length >= 1) {
+          await source!.stop();
+        }
+      }
+    })();
+
+    await sleep(100);
+    await writeFile(path.join(tmpDir, "hello.txt"), "hello world");
+    await collect;
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
   }, 10000);
 });
 

@@ -55,6 +55,18 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
     const command = this.buildCommand(task);
     const startedAt = now();
 
+    // Merge process.env with task.env so we don't accidentally drop PATH/HOME/etc.
+    // (Bun.spawn replaces the environment when `env` is provided.)
+    const mergedEnv: Record<string, string> | undefined = task.env
+      ? (() => {
+          const base: Record<string, string> = {};
+          for (const [k, v] of Object.entries(process.env)) {
+            if (v !== undefined) base[k] = v;
+          }
+          return { ...base, ...task.env };
+        })()
+      : undefined;
+
     // Convert deadline to timeout for ProcessManager
     const currentTime = Date.now();
     const timeoutMs =
@@ -65,6 +77,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
     const managed = this.processManager.spawn({
       command,
       cwd: task.workspaceRef,
+      env: mergedEnv,
       abortSignal: task.abortSignal,
       timeoutMs,
     });

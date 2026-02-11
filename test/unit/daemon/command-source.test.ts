@@ -216,4 +216,36 @@ describe("CommandSource", () => {
     expect(payload.exitCode).toBe(42);
     expect(payload.stdout).toBe("");
   }, 5000);
+
+  test("runs command in provided cwd", async () => {
+    const tmpDir = await mkdtemp(path.join(tmpdir(), "cmd-cwd-"));
+    await writeFile(path.join(tmpDir, "foo.txt"), "hello");
+
+    const source = new CommandSource(
+      "cmd-cwd",
+      {
+        type: "command",
+        command: "cat foo.txt",
+        interval: "1s",
+        trigger_on: "always",
+      },
+      tmpDir,
+    );
+    sources.push(source);
+
+    const events: DaemonEvent[] = [];
+    const collect = (async () => {
+      for await (const event of source.events()) {
+        events.push(event);
+        await source.stop();
+      }
+    })();
+    await collect;
+
+    expect(events.length).toBe(1);
+    const payload = events[0]!.payload as CommandPayload;
+    expect(payload.stdout.trim()).toBe("hello");
+
+    await rm(tmpDir, { recursive: true, force: true });
+  }, 10000);
 });

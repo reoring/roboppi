@@ -31,8 +31,12 @@ export interface WorkerTask {
   workerKind: WorkerKind;
   workspaceRef: string;
   instructions: string;
+  /** Optional model identifier for LLM-backed workers (adapter-specific format). */
+  model?: string;
   capabilities: WorkerCapability[];
   outputMode: OutputMode;
   budget: WorkerBudget;
+  /** Optional environment variables to pass to the worker process. */
+  env?: Record<string, string>;
   abortSignal: AbortSignal;
 }

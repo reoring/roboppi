@@ -61,7 +61,7 @@ steps:
 | `context_dir` | string | いいえ | コンテキストディレクトリのパス |
 | `steps` | Record | はい | ステップの定義（キーがステップ ID） |
 
-**DurationString の書き方:** `"30s"`（30秒）、`"5m"`（5分）、`"2h"`（2時間）、`"1h30m"`（1時間30分）のように指定します。
+**DurationString の書き方:** `"200ms"`（200ミリ秒）、`"30s"`（30秒）、`"5m"`（5分）、`"2h"`（2時間）、`"1h30m"`（1時間30分）のように指定します。
 
 ---
 
@@ -87,6 +87,7 @@ steps:
 |-----------|-----|------|------|
 | `description` | string | いいえ | ステップの説明 |
 | `worker` | enum | はい | 使用する Worker（後述） |
+| `model` | string | いいえ | 使用するモデル ID（Worker/CLI によって形式が異なる） |
 | `instructions` | string | はい | Worker に渡す指示テキスト |
 | `capabilities` | enum[] | はい | Worker に許可する操作 |
 | `workspace` | string | いいえ | 作業ディレクトリ（デフォルト: `"."`） |
@@ -331,6 +332,7 @@ steps:
 | フィールド | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
 | `worker` | enum | はい | チェックに使う Worker |
+| `model` | string | いいえ | 使用するモデル ID（Worker/CLI によって形式が異なる） |
 | `instructions` | string | はい | チェック内容の指示 |
 | `capabilities` | enum[] | はい | チェッカーの権限（通常は `[READ]` で十分） |
 | `timeout` | DurationString | いいえ | チェック1回あたりのタイムアウト |

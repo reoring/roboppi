@@ -11,14 +11,16 @@ export class CommandSource implements EventSource {
   private readonly intervalMs: number;
   private readonly triggerOn: "change" | "always";
   private readonly commandTimeoutMs: number;
+  private readonly cwd: string;
   private abortController = new AbortController();
   private lastOutput: string | null = null;
 
-  constructor(id: string, config: CommandEventDef) {
+  constructor(id: string, config: CommandEventDef, cwd: string = process.cwd()) {
     this.id = id;
     this.command = config.command;
     this.intervalMs = parseDuration(config.interval);
     this.triggerOn = config.trigger_on ?? "change";
+    this.cwd = cwd;
     const configAny = config as unknown as Record<string, unknown>;
     this.commandTimeoutMs = typeof configAny["timeout"] === "string"
       ? parseDuration(configAny["timeout"])
@@ -94,6 +96,7 @@ export class CommandSource implements EventSource {
 
     try {
       const proc = Bun.spawn(["bash", "-c", this.command], {
+        cwd: this.cwd,
         stdout: "pipe",
         stderr: "pipe",
       });

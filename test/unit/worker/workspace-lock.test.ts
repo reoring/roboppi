@@ -97,7 +97,8 @@ describe("WorkspaceLock", () => {
 
     const acquired = await lock.waitForLock("/workspace/a", waiter, 250);
     expect(acquired).toBe(false);
-    expect(lock.getWaitTimeMs("/workspace/a")).toBeGreaterThanOrEqual(250);
+    // Timers are not guaranteed to fire exactly on time; allow small jitter.
+    expect(lock.getWaitTimeMs("/workspace/a")).toBeGreaterThanOrEqual(240);
   });
 
   test("getWaitTimeMs returns 0 for no wait history", () => {

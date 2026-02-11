@@ -37,6 +37,8 @@ export class Daemon {
   private webhookServer: WebhookServer | null = null;
 
   private readonly logger: Logger;
+  private readonly workspaceDir: string;
+  private readonly stateDir: string;
   private shutdownRequested = false;
   private runningWorkflows = 0;
   private readonly maxConcurrent: number;
@@ -48,8 +50,11 @@ export class Daemon {
   constructor(config: DaemonConfig, logger?: Logger) {
     this.config = config;
     this.logger = logger ?? new Logger("daemon");
-    const stateDir = config.state_dir ?? path.join(config.workspace, ".daemon-state");
-    this.stateStore = new DaemonStateStore(stateDir);
+    this.workspaceDir = path.resolve(config.workspace);
+    this.stateDir = config.state_dir
+      ? (path.isAbsolute(config.state_dir) ? config.state_dir : path.resolve(this.workspaceDir, config.state_dir))
+      : path.join(this.workspaceDir, ".daemon-state");
+    this.stateStore = new DaemonStateStore(this.stateDir);
     this.evaluateGate = new EvaluateGate();
     this.resultAnalyzer = new ResultAnalyzer();
     this.maxConcurrent = config.max_concurrent_workflows ?? 5;
@@ -57,9 +62,8 @@ export class Daemon {
 
   async start(): Promise<void> {
     // 1. Ensure workspace and state dirs exist
-    await mkdir(this.config.workspace, { recursive: true });
-    const stateDir = this.config.state_dir ?? path.join(this.config.workspace, ".daemon-state");
-    await mkdir(stateDir, { recursive: true });
+    await mkdir(this.workspaceDir, { recursive: true });
+    await mkdir(this.stateDir, { recursive: true });
 
     // 2. Save daemon state
     this.startedAt = Date.now();
@@ -80,7 +84,7 @@ export class Daemon {
           this.eventSources.push(new IntervalSource(eventId, eventDef.every));
           break;
         case "fswatch":
-          this.eventSources.push(new FSWatchSource(eventId, eventDef));
+          this.eventSources.push(new FSWatchSource(eventId, eventDef, 200, this.workspaceDir));
           break;
         case "webhook":
           if (!this.webhookServer) {
@@ -89,7 +93,7 @@ export class Daemon {
           this.eventSources.push(new WebhookSource(eventId, eventDef, this.webhookServer));
           break;
         case "command":
-          this.eventSources.push(new CommandSource(eventId, eventDef));
+          this.eventSources.push(new CommandSource(eventId, eventDef, this.workspaceDir));
           break;
         default:
           this.logger.warn(`Event type not yet supported, skipping`, { eventId });
@@ -290,7 +294,7 @@ export class Daemon {
     const safeTriggerId = triggerId.replace(/[\/\\\.]/g, '_');
 
     try {
-      const workspaceDir = path.resolve(this.config.workspace);
+      const workspaceDir = this.workspaceDir;
 
       // 1. Run evaluate gate if defined
       if (trigger.evaluate) {

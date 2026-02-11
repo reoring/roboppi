@@ -3,6 +3,11 @@
 # Start (from repo root):
 #   bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --verbose
 #
+# Start (from any directory):
+#   AGENTCORE_ROOT=/path/to/agentcore \
+#     bun run --cwd "$AGENTCORE_ROOT" src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml \
+#       --workspace "$AGENTCORE_ROOT" --verbose
+#
 # Kick it (in another terminal):
 #   mkdir -p .agentcore-loop
 #   date +%s > .agentcore-loop/kick.txt

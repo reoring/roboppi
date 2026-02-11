@@ -44,6 +44,7 @@ interface SharedOptions {
 interface RunOptions {
   worker: string;
   workspace: string;
+  model: string;
   capabilities: string;
   timeout: number;
   instructions: string;
@@ -64,8 +65,9 @@ IPC SERVER MODE
 RUN MODE OPTIONS
   --worker <kind>         Worker to use: opencode, claude-code, codex  (required)
   --workspace <path>      Working directory for the worker             (required)
+  --model <id>            Model identifier (adapter-specific)          (optional)
   --capabilities <csv>    Comma-separated: READ,EDIT,RUN_TESTS,RUN_COMMANDS
-                                                                       (default: EDIT)
+                                                                        (default: EDIT)
   --timeout <ms>          Task timeout in milliseconds                 (default: 120000)
 
 SHARED OPTIONS
@@ -145,6 +147,7 @@ function parseCliArgs(argv: string[]): CliMode {
     const run: RunOptions = {
       worker: "",
       workspace: "",
+      model: "",
       capabilities: "EDIT",
       timeout: 120000,
       instructions: "",
@@ -168,6 +171,7 @@ function parseCliArgs(argv: string[]): CliMode {
       if (arg === "--help" || arg === "-h") { shared.help = true; continue; }
       if (arg === "--worker") { run.worker = next(); continue; }
       if (arg === "--workspace") { run.workspace = next(); continue; }
+      if (arg === "--model") { run.model = next(); continue; }
       if (arg === "--capabilities") { run.capabilities = next(); continue; }
       if (arg === "--timeout") { run.timeout = nextInt(); continue; }
       if (arg === "--concurrency") { shared.concurrency = nextInt(); continue; }
@@ -356,6 +360,7 @@ async function executeRun(opts: SharedOptions, run: RunOptions): Promise<void> {
     workerKind,
     workspaceRef: run.workspace,
     instructions: run.instructions,
+    ...(run.model ? { model: run.model } : {}),
     capabilities,
     outputMode: OutputMode.BATCH,
     budget: { deadlineAt: Date.now() + run.timeout },

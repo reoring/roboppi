@@ -42,6 +42,23 @@ export function buildArgs(
 ): string[] {
   const args: string[] = [...config.defaultArgs];
 
+  if (task.model) {
+    // If defaultArgs already specify a model, prefer the task-level model.
+    const filtered: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === "--model") {
+        i++; // skip value
+        continue;
+      }
+      if (a.startsWith("--model=")) continue;
+      filtered.push(a);
+    }
+    filtered.push("--model", task.model);
+    args.length = 0;
+    args.push(...filtered);
+  }
+
   // Non-interactive print mode with instructions
   args.push("--print", task.instructions);
 
