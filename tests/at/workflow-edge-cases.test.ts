@@ -169,7 +169,7 @@ steps:
 // AT-9.5 — Special characters in instructions
 // ---------------------------------------------------------------------------
 describe("AT-9.5: special characters in instructions", () => {
-  it("multiline, Japanese, emoji, backslash are preserved", () => {
+  it("multiline, emoji, backslash are preserved", () => {
     const yaml = `
 name: special-chars
 version: "1"
@@ -179,7 +179,6 @@ steps:
     worker: CODEX_CLI
     instructions: |
       Line one
-      日本語テスト
       Emoji: 🚀🔥
       Backslash: C:\\Users\\test
     capabilities: [READ]
@@ -187,7 +186,6 @@ steps:
     const def = parseWorkflow(yaml);
     const instructions = def.steps["special"]!.instructions;
     expect(instructions).toContain("Line one");
-    expect(instructions).toContain("日本語テスト");
     expect(instructions).toContain("🚀🔥");
     expect(instructions).toContain("C:\\Users\\test");
   });

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AgentCore is an execution control runtime for AI agents. It prevents common failure modes in event-loop-based AI agent systems: duplicate LLM requests, infinite retries, cascading failures, and blocking from heavy processing.
 
-The design document is at `docs/design.md` (written in Japanese).
+The design document is at `docs/design.md`.
 
 ## Architecture
 

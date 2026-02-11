@@ -1,11 +1,12 @@
-# Smart Reviewer — LLM ゲート付き定期レビュー daemon
-# 5 分ごとに「レビューすべきか」をシェルで判定し、
-# 新しいコミットがあるときだけワークフローを実行する
+# Smart Reviewer daemon
+# Every 5 minutes, decide whether to run a code review.
+# The workflow runs only when there are new commits.
 #
-# 起動: bun run src/daemon/cli.ts examples/daemon/smart-reviewer.yaml --verbose
+# Start:
+#   bun run src/daemon/cli.ts examples/daemon/smart-reviewer.yaml --verbose
 name: smart-reviewer
 version: "1"
-description: "新しいコミットがあるときだけコードレビューを実行する daemon"
+description: "Daemon that runs a code review only when there are new commits"
 
 workspace: "/tmp/agentcore-daemon-reviewer"
 state_dir: "/tmp/agentcore-daemon-reviewer/.daemon-state"
@@ -22,18 +23,17 @@ triggers:
     workflow: ./workflows/code-review.yaml
     cooldown: "5m"
 
-    # --- 実行ゲート ---
-    # シェルで「新しいコミットがあるか」を判定
-    # exit 0 = 実行する / exit 1 = スキップ
+    # Evaluate gate: check whether there are new commits.
+    # exit 0 = run / exit 1 = skip
     evaluate:
       worker: CUSTOM
       instructions: |
         cd {{workspace}} 2>/dev/null || exit 1
 
-        # git リポジトリでなければスキップ
+        # Skip if not a git repository
         git rev-parse --git-dir > /dev/null 2>&1 || exit 1
 
-        # 前回レビュー時刻を記録するファイル
+        # Marker file to track last reviewed commit
         MARKER=".daemon-state/.last-review-commit"
 
         CURRENT=$(git rev-parse HEAD 2>/dev/null || echo "none")
@@ -43,7 +43,7 @@ triggers:
           echo "skip: no new commits since last review"
           exit 1
         else
-          echo "run: new commits detected ($LAST → $CURRENT)"
+          echo "run: new commits detected ($LAST -> $CURRENT)"
           mkdir -p .daemon-state
           echo "$CURRENT" > "$MARKER"
           exit 0
@@ -54,8 +54,7 @@ triggers:
     context:
       last_result: true
 
-    # --- 結果分析 ---
-    # レビュー結果のサマリーを生成する
+    # Analyze results: generate a small summary
     analyze:
       worker: CUSTOM
       instructions: |
