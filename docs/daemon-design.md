@@ -1,236 +1,233 @@
-# AgentCore Daemon 設計書
+# AgentCore Daemon Design
 
-**イベント駆動型の常駐プロセスによるワークフロー自動実行**
+**Automated workflow execution via an event-driven long-running process**
 
 ---
 
-## 1. 背景と目的
+## 1. Background and Goals
 
-AgentCore は現在、ワークフロー YAML を指定して **1 回きりの実行** を行う構成になっている。
-しかし現実のユースケースでは、エージェントは **常駐し、イベントに反応して自律的に動き続ける** 必要がある。
+AgentCore currently runs a workflow YAML as a **one-shot execution**.
+In real-world use cases, however, an agent often needs to **stay resident and keep acting autonomously in response to events**.
 
-- 5 分ごとにリポジトリの状態をチェックし、問題があれば修正する
-- ファイル変更を検知して自動テスト＋レビューを実行する
-- Webhook で外部イベントを受け取り、対応するワークフローを起動する
-- 前回のワークフロー結果を LLM が評価し、次のアクションを判断する
+- Check the repository state every 5 minutes and fix issues if found
+- Detect file changes and automatically run tests + reviews
+- Receive external events via webhooks and start the corresponding workflow
+- Let an LLM evaluate the previous workflow result and decide the next action
 
-本設計では **Daemon（デーモン）** を定義する。Daemon は YAML 設定に基づいて常駐し、イベントソースを監視し、トリガー条件を満たしたときにワークフローを起動する。さらに、ワークフローの実行判断と結果分析を LLM Worker に委譲することで、**インテリジェントな自律実行** を実現する。
+This document defines a **Daemon**. A Daemon stays resident based on a YAML configuration, monitors event sources, and starts workflows when trigger conditions are met. Additionally, it can delegate execution decisions and result analysis to an LLM worker to enable **intelligent autonomous execution**.
 
-### 解決する課題
+### Problems This Solves
 
-| 課題 | アプローチ |
+| Problem | Approach |
 |------|-----------|
-| ワークフローの手動起動が必要 | イベントソース（cron / ファイル監視 / Webhook）で自動トリガー |
-| 固定条件でしか起動できない | LLM による実行ゲート（evaluate）で動的判断 |
-| 実行結果の人手レビューが必要 | LLM による結果分析（analyze）で自動評価・レポート |
-| 単発実行で完結しない反復タスク | Daemon のイベントループで継続的に監視・実行 |
-| 複数のイベントソースの統合管理 | 1 つの YAML で全イベントソース＋トリガーを宣言的に定義 |
+| Manual workflow starts are required | Auto-trigger via event sources (cron / file watch / webhook) |
+| Only fixed conditions can start workflows | Dynamic decisions via an LLM execution gate (evaluate) |
+| Results require manual review | Automated evaluation/reporting via LLM result analysis (analyze) |
+| Repetitive tasks do not fit one-shot runs | Continuous monitoring/execution via the daemon event loop |
+| Integrating multiple event sources is hard | Declare all event sources + triggers in a single YAML |
 
 ---
 
-## 2. アーキテクチャ概要
+## 2. Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Daemon Process                                              │
-│                                                              │
-│  ┌──────────────────┐    ┌──────────────────────────────┐   │
-│  │  Event Sources    │    │  Trigger Engine              │   │
-│  │                   │    │                              │   │
-│  │  ┌─────────────┐ │    │  Event                       │   │
-│  │  │ CronSource  │─┼───▶│  ──▶ Filter                  │   │
-│  │  ├─────────────┤ │    │  ──▶ Debounce                │   │
-│  │  │ FSWatch     │─┼───▶│  ──▶ Evaluate (LLM Gate)     │   │
-│  │  ├─────────────┤ │    │  ──▶ Run Workflow             │   │
-│  │  │ Webhook     │─┼───▶│  ──▶ Analyze (LLM Result)    │   │
-│  │  ├─────────────┤ │    │                              │   │
-│  │  │ Custom      │─┼───▶│                              │   │
-│  │  └─────────────┘ │    └──────────┬───────────────────┘   │
-│  └──────────────────┘               │                        │
-│                                     ▼                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  Workflow Executor (既存)                             │   │
-│  │  ┌─────────────┐  ┌──────────┐  ┌─────────────────┐ │   │
-│  │  │ DAG Sched.  │  │ Context  │  │ Step Runners    │ │   │
-│  │  └─────────────┘  └──────────┘  └─────────────────┘ │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                     │                        │
-│                                     ▼                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  AgentCore (既存)                                     │   │
-│  │  Permit Gate │ Circuit Breaker │ Watchdog │ Budget    │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                     │                        │
-│                                     ▼                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  Workers (Claude Code / Codex CLI / OpenCode)         │   │
-│  └──────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------+
+| Daemon Process                                                   |
+|                                                                  |
+|  +--------------------+       +-------------------------------+  |
+|  | Event Sources      |       | Trigger Engine                 |  |
+|  |                    |       |                               |  |
+|  |  - CronSource      |  -->  | Event -> Filter               |  |
+|  |  - FSWatchSource   |  -->  |      -> Debounce             |  |
+|  |  - WebhookSource   |  -->  |      -> Evaluate (LLM Gate)  |  |
+|  |  - CommandSource   |  -->  |      -> Run Workflow         |  |
+|  |                    |       |      -> Analyze (LLM Result) |  |
+|  +--------------------+       +---------------+---------------+  |
+|                                              |                  |
+|                                              v                  |
+|  +------------------------------------------------------------+  |
+|  | Workflow Executor (existing)                                |  |
+|  |  - DAG scheduler                                            |  |
+|  |  - Context manager                                          |  |
+|  |  - Step runners                                             |  |
+|  +------------------------------------------------------------+  |
+|                                              |                  |
+|                                              v                  |
+|  +------------------------------------------------------------+  |
+|  | AgentCore (existing)                                        |  |
+|  |  Permit Gate | Circuit Breaker | Watchdog | Budgets          |  |
+|  +------------------------------------------------------------+  |
+|                                              |                  |
+|                                              v                  |
+|  +------------------------------------------------------------+  |
+|  | Workers (Claude Code / Codex CLI / OpenCode)                |  |
+|  +------------------------------------------------------------+  |
++------------------------------------------------------------------+
 ```
 
-### 設計原則
+### Design Principles
 
-1. **Daemon = orchestration policy**: Daemon はいつ何を起動するかの判断レイヤー。既存の WorkflowExecutor と AgentCore の安全機構はそのまま利用する
-2. **イベントソースはプラグイン**: CronSource / FSWatchSource / WebhookSource は共通インターフェースを実装し、新しいソースを追加可能
-3. **LLM によるインテリジェントゲート**: ワークフロー実行の判断（evaluate）と結果評価（analyze）を Worker に委譲できる。固定条件だけでなく、文脈に応じた動的判断が可能
-4. **1 YAML = 1 Daemon**: 設定ファイルが Daemon の全動作を宣言的に定義する
+1. **Daemon = orchestration policy**: the daemon is the decision layer that determines what to run and when. Existing safety mechanisms in WorkflowExecutor and AgentCore are reused as-is.
+2. **Event sources are plugins**: CronSource / FSWatchSource / WebhookSource share a common interface so new sources can be added.
+3. **LLM-based intelligent gate**: execution gating (evaluate) and result evaluation (analyze) can be delegated to a worker, enabling context-aware dynamic decisions.
+4. **One YAML = one daemon**: the configuration file declaratively defines the daemon's behavior.
 
 ---
 
-## 3. YAML スキーマ定義
+## 3. YAML Schema Definition
 
-### 3.1 トップレベル構造
+### 3.1 Top-Level Structure
 
 ```yaml
 # daemon.yaml
-name: string                    # Daemon 名（一意識別子）
-version: "1"                    # スキーマバージョン
-description?: string            # 説明
+name: string                       # daemon name (unique identifier)
+version: "1"                       # schema version
+description?: string               # optional description
 
-# Daemon 全体設定
-workspace: string               # 作業ディレクトリ（全トリガー共通のデフォルト）
-log_dir?: string                # ログ出力先（デフォルト: ./logs）
-max_concurrent_workflows?: number  # 同時実行ワークフロー数上限（デフォルト: 1）
+# daemon-wide defaults
+workspace: string                  # working directory (default shared by all triggers)
+log_dir?: string                   # log output dir (default: ./logs)
+max_concurrent_workflows?: number  # max concurrent workflows (default: 1)
 
-# Daemon の状態保存
-state_dir?: string              # 実行履歴・状態の保存先（デフォルト: ./.daemon-state）
+# daemon state persistence
+state_dir?: string                 # history/state directory (default: ./.daemon-state)
 
-# イベントソース定義
+# event source definitions
 events:
-  <event_id>:                   # イベント ID（Daemon 内で一意）
+  <event_id>:                      # event id (unique within the daemon)
     <EventSourceDef>
 
-# トリガー定義（イベント → ワークフロー）
+# trigger definitions (event -> workflow)
 triggers:
-  <trigger_id>:                 # トリガー ID（Daemon 内で一意）
+  <trigger_id>:                    # trigger id (unique within the daemon)
     <TriggerDef>
 ```
 
-### 3.2 EventSourceDef — イベントソース定義
+### 3.2 EventSourceDef
 
-#### Cron イベント
+#### Cron events
 
 ```yaml
 events:
   every-5min:
     type: cron
-    schedule: "*/5 * * * *"       # 標準 cron 式
+    schedule: "*/5 * * * *"        # standard cron expression
 
   daily-morning:
     type: cron
-    schedule: "0 9 * * *"         # 毎朝 9 時
+    schedule: "0 9 * * *"          # every day at 09:00
 
   every-30s:
     type: interval
-    every: "30s"                  # DurationString 形式（簡易指定）
+    every: "30s"                   # DurationString (simple interval)
 ```
 
-#### ファイルシステム監視イベント
+#### File system watch events
 
 ```yaml
 events:
   src-change:
     type: fswatch
-    paths:                        # 監視パス（glob 対応）
+    paths:                         # paths to watch (glob supported)
       - "src/**/*.ts"
       - "src/**/*.tsx"
-    ignore:                       # 除外パス（任意）
+    ignore:                        # ignore paths (optional)
       - "**/*.test.ts"
       - "**/node_modules/**"
-    events:                       # 監視するイベント種別（任意、デフォルト: 全て）
+    events:                        # event kinds to watch (optional; default: all)
       - create
       - modify
       - delete
 ```
 
-#### Webhook イベント
+#### Webhook events
 
 ```yaml
 events:
   github-push:
     type: webhook
-    path: "/hooks/github"         # エンドポイントパス
-    port?: number                 # リッスンポート（Daemon 全体で 1 つの HTTP サーバーを共有）
-    secret?: string               # HMAC 署名検証キー（環境変数参照可: ${GITHUB_WEBHOOK_SECRET}）
-    method?: string               # HTTP メソッド（デフォルト: POST）
+    path: "/hooks/github"          # endpoint path
+    port?: number                  # listen port (daemon shares one HTTP server)
+    secret?: string                # HMAC verification key (env ref allowed: ${GITHUB_WEBHOOK_SECRET})
+    method?: string                # HTTP method (default: POST)
 ```
 
-#### カスタムイベント（stdin / コマンド）
+#### Custom events (stdin / command)
 
 ```yaml
 events:
   manual-trigger:
     type: command
     command: "curl -s https://api.example.com/status"
-    interval: "1m"                # コマンド実行間隔
-    trigger_on: "change"          # change = 前回と出力が変わったとき / always = 毎回
+    interval: "1m"                 # command execution interval
+    trigger_on: "change"           # change = when stdout differs from previous / always = every run
 ```
 
-### 3.3 TriggerDef — トリガー定義
+### 3.3 TriggerDef
 
 ```yaml
 triggers:
   <trigger_id>:
-    # ---- 基本設定 ----
-    on: string                    # イベント ID（events セクションのキー）
-    workflow: string              # ワークフロー YAML パス
-    enabled?: boolean             # 有効/無効（デフォルト: true）
+    # ---- basics ----
+    on: string                     # event id (key under events)
+    workflow: string               # workflow YAML path
+    enabled?: boolean              # enabled/disabled (default: true)
 
-    # ---- フィルタリング ----
-    filter?:                      # イベントペイロードに対するフィルタ（任意）
-      <field>: <value>            # 単純一致
+    # ---- filtering ----
+    filter?:                       # optional payload filter
+      <field>: <value>             # exact match
       <field>:
-        pattern: string           # 正規表現マッチ
+        pattern: string            # regex match
       <field>:
-        in: [value1, value2]      # 値リスト一致
+        in: [value1, value2]       # list membership
 
-    # ---- レート制御 ----
-    debounce?: DurationString     # 連続イベントの抑制（例: "10s"）
-    cooldown?: DurationString     # 実行後のクールダウン期間（例: "5m"）
-    max_queue?: number            # 未実行キューの上限（超過分は破棄、デフォルト: 10）
+    # ---- rate control ----
+    debounce?: DurationString      # suppress burst events (e.g. "10s")
+    cooldown?: DurationString      # cooldown after execution (e.g. "5m")
+    max_queue?: number             # max pending queue size (discard overflow; default: 10)
 
-    # ---- 実行ゲート（LLM による判断） ----
+    # ---- execution gate (LLM decision) ----
     evaluate?:
-      worker: WorkerKind          # CLAUDE_CODE | CODEX_CLI | OPENCODE | CUSTOM
-      instructions: string        # LLM への指示（判断基準を記述）
-      capabilities: Capability[]  # [READ, RUN_COMMANDS] など
-      timeout?: DurationString    # ゲート判断のタイムアウト
-      # Worker が exit 0 → 実行、exit 1 → スキップ
-      # CUSTOM 以外: Worker 応答の "run" / "skip" で判定
+      worker: WorkerKind           # CLAUDE_CODE | CODEX_CLI | OPENCODE | CUSTOM
+      instructions: string         # instructions to the LLM (decision criteria)
+      capabilities: Capability[]   # e.g. [READ, RUN_COMMANDS]
+      timeout?: DurationString     # gate timeout
+      # Worker exit 0 -> run, exit 1 -> skip
+      # For non-CUSTOM: decide based on worker output containing "run" / "skip"
 
-    # ---- コンテキスト注入 ----
+    # ---- context injection ----
     context?:
-      env?:                       # ワークフローに渡す環境変数
+      env?:                        # env vars passed to the workflow
         <KEY>: <value>
-      last_result?: boolean       # 前回実行結果をコンテキストに注入（デフォルト: false）
-      event_payload?: boolean     # イベントペイロードをコンテキストに注入（デフォルト: false）
+      last_result?: boolean        # inject previous run result (default: false)
+      event_payload?: boolean      # inject event payload (default: false)
 
-    # ---- 結果分析（LLM による評価） ----
+    # ---- result analysis (LLM evaluation) ----
     analyze?:
       worker: WorkerKind
-      instructions: string        # 分析指示（結果を評価して何をするか）
+      instructions: string         # analysis instructions (how to evaluate and what to do)
       capabilities: Capability[]
       timeout?: DurationString
-      outputs?:                   # 分析結果の保存先
+      outputs?:                    # where to save analysis outputs
         - name: string
           path: string
-      # 分析 Worker はワークフローの context/ ディレクトリにアクセスできる
+      # analysis worker can access workflow context/ directory
 
-    # ---- 失敗ハンドリング ----
+    # ---- failure handling ----
     on_workflow_failure?: "ignore" | "retry" | "pause_trigger"
-                                  # ignore = 無視して次のイベントを待つ
-                                  # retry = 再実行（max_retries 回まで）
-                                  # pause_trigger = このトリガーを一時停止
-    max_retries?: number          # retry 時の最大回数（デフォルト: 3）
+                                  # ignore = wait for next event
+                                  # retry = rerun (up to max_retries)
+                                  # pause_trigger = pause this trigger
+    max_retries?: number           # max retry count (default: 3)
 ```
 
-### 3.4 完全な設定例
+### 3.4 Full Configuration Example
 
 ```yaml
-# daemon.yaml — リポジトリ監視＋定期レビュー Daemon
+# daemon.yaml - repository watch + periodic review daemon
 name: repo-guardian
 version: "1"
-description: "リポジトリを監視し、変更時にテストを実行、定期的にコードレビューを行う"
+description: "Monitor the repository; run tests on changes; run periodic code reviews"
 
 workspace: "/home/user/my-project"
 max_concurrent_workflows: 2
@@ -255,48 +252,48 @@ events:
     secret: "${GITHUB_WEBHOOK_SECRET}"
 
 triggers:
-  # --- ファイル変更時にテスト自動実行 ---
+  # --- run tests on file changes ---
   auto-test:
     on: code-change
     workflow: ./workflows/test-suite.yaml
     debounce: "10s"
     on_workflow_failure: ignore
 
-  # --- 5 分ごとのインテリジェントレビュー ---
+  # --- intelligent review every 5 minutes ---
   periodic-review:
     on: every-5min
     workflow: ./workflows/code-review.yaml
 
-    # LLM がレビューすべきか判断
+    # LLM decides whether a review is needed
     evaluate:
       worker: CLAUDE_CODE
       instructions: |
-        リポジトリの最新コミットを確認してください。
-        前回のレビュー以降に新しいコミットがあれば "run" と出力してください。
-        なければ "skip" と出力してください。
+        Check the latest commits in the repository.
+        If there are commits since the last review, output "run".
+        Otherwise, output "skip".
 
-        前回レビュー結果: {{last_result}}
+        Previous review result: {{last_result}}
       capabilities: [READ, RUN_COMMANDS]
       timeout: "30s"
 
     context:
       last_result: true
 
-    # ワークフロー完了後に LLM が結果を分析
+    # After workflow completion, LLM analyzes the result
     analyze:
       worker: CLAUDE_CODE
       instructions: |
-        ワークフローの実行結果を分析してください。
-        - コードレビューの指摘事項をまとめてください
-        - 重大な問題があれば、次回のレビューで重点的に確認すべき点を記録してください
-        - 結果を summary.md に出力してください
+        Analyze the workflow execution result.
+        - Summarize code review findings
+        - If there are critical issues, record what to focus on in the next review
+        - Write the result to summary.md
       capabilities: [READ, EDIT]
       timeout: "2m"
       outputs:
         - name: review-summary
           path: summary.md
 
-  # --- PR Webhook で CI 実行 ---
+  # --- run CI via PR webhook ---
   pr-check:
     on: github-pr
     workflow: ./workflows/ci-pipeline.yaml
@@ -310,28 +307,28 @@ triggers:
 
 ---
 
-## 4. コンポーネント設計
+## 4. Component Design
 
-### 4.1 EventSource インターフェース
+### 4.1 EventSource Interface
 
 ```typescript
-/** イベントソースの共通インターフェース */
+/** Common interface for event sources. */
 interface EventSource {
-  /** ソース ID（YAML の event_id） */
+  /** Source id (event_id in YAML). */
   readonly id: string;
 
-  /** イベントの非同期イテレータ。Daemon の寿命と同じ。 */
+  /** Async iterator of events; lives as long as the daemon. */
   events(): AsyncIterable<DaemonEvent>;
 
-  /** 停止 */
+  /** Stop the source. */
   stop(): Promise<void>;
 }
 
-/** Daemon が受け取るイベント */
+/** Event delivered to the daemon. */
 interface DaemonEvent {
-  sourceId: string;           // イベントソース ID
+  sourceId: string;           // event source id
   timestamp: number;          // epoch ms
-  payload: EventPayload;      // ソース固有のペイロード
+  payload: EventPayload;      // source-specific payload
 }
 
 type EventPayload =
@@ -342,7 +339,7 @@ type EventPayload =
 
 interface CronPayload {
   type: "cron";
-  schedule: string;           // 発火したスケジュール式
+  schedule: string;           // schedule expression that fired
   firedAt: number;
 }
 
@@ -366,14 +363,14 @@ interface CommandPayload {
   type: "command";
   stdout: string;
   exitCode: number;
-  changed: boolean;           // 前回出力との差分有無
+  changed: boolean;           // whether stdout differs from previous run
 }
 ```
 
 ### 4.2 TriggerEngine
 
 ```typescript
-/** トリガーの実行管理 */
+/** Trigger execution manager. */
 class TriggerEngine {
   constructor(
     private readonly config: DaemonConfig,
@@ -382,8 +379,8 @@ class TriggerEngine {
   ) {}
 
   /**
-   * イベントを受け取り、マッチするトリガーを評価・実行する。
-   * 1 イベントが複数トリガーにマッチすることがある。
+   * Accept an event, evaluate matching triggers, and enqueue execution.
+   * A single event may match multiple triggers.
    */
   async handleEvent(event: DaemonEvent): Promise<void> {
     const matchingTriggers = this.findMatchingTriggers(event);
@@ -399,19 +396,19 @@ class TriggerEngine {
   }
 
   /**
-   * トリガー実行パイプライン
-   * Filter → Debounce → Evaluate → Execute → Analyze
+   * Trigger execution pipeline
+   * Filter -> Debounce -> Evaluate -> Execute -> Analyze
    */
   private async executeTrigger(
     trigger: TriggerDef,
     event: DaemonEvent,
   ): Promise<TriggerResult> {
-    // 1. フィルタ
+    // 1. Filter
     if (!this.matchesFilter(trigger, event)) {
       return { action: "filtered" };
     }
 
-    // 2. LLM ゲート（evaluate）
+    // 2. LLM gate (evaluate)
     if (trigger.evaluate) {
       const shouldRun = await this.runEvaluateGate(trigger, event);
       if (!shouldRun) {
@@ -419,24 +416,24 @@ class TriggerEngine {
       }
     }
 
-    // 3. コンテキスト準備
+    // 3. Prepare context
     const context = await this.prepareContext(trigger, event);
 
-    // 4. ワークフロー実行
+    // 4. Run workflow
     const workflowResult = await this.workflowRunner.run(
       trigger.workflow,
       context,
     );
 
-    // 5. 結果保存
+    // 5. Persist result
     await this.stateStore.recordExecution(trigger.id, event, workflowResult);
 
-    // 6. LLM 分析（analyze）
+    // 6. LLM analysis (analyze)
     if (trigger.analyze && workflowResult.status === "SUCCEEDED") {
       await this.runAnalysis(trigger, workflowResult);
     }
 
-    // 7. 失敗ハンドリング
+    // 7. Failure handling
     if (workflowResult.status === "FAILED") {
       await this.handleWorkflowFailure(trigger, workflowResult);
     }
@@ -446,33 +443,33 @@ class TriggerEngine {
 }
 ```
 
-### 4.3 DaemonStateStore — 状態永続化
+### 4.3 DaemonStateStore (State persistence)
 
 ```typescript
 /**
- * Daemon の実行状態を永続化する。
- * state_dir 配下にファイルベースで保存。
+ * Persist daemon execution state.
+ * Store files under state_dir.
  */
 interface DaemonStateStore {
-  /** 最後の実行結果を取得 */
+  /** Get the last execution result. */
   getLastResult(triggerId: string): Promise<WorkflowState | null>;
 
-  /** 実行履歴を記録 */
+  /** Record an execution in history. */
   recordExecution(
     triggerId: string,
     event: DaemonEvent,
     result: WorkflowState,
   ): Promise<void>;
 
-  /** トリガーの debounce/cooldown タイムスタンプを管理 */
+  /** Track debounce/cooldown timestamps. */
   getLastFired(triggerId: string): Promise<number | null>;
   setLastFired(triggerId: string, timestamp: number): Promise<void>;
 
-  /** トリガーの有効/無効を動的に切り替え */
+  /** Dynamically enable/disable a trigger. */
   setTriggerEnabled(triggerId: string, enabled: boolean): Promise<void>;
   isTriggerEnabled(triggerId: string): Promise<boolean>;
 
-  /** 実行履歴の取得（直近 N 件） */
+  /** Fetch recent N records. */
   getHistory(triggerId: string, limit: number): Promise<ExecutionRecord[]>;
 }
 
@@ -487,17 +484,16 @@ interface ExecutionRecord {
 }
 ```
 
-### 4.4 Evaluate Gate — LLM による実行判断
+### 4.4 Evaluate Gate (LLM execution decision)
 
 ```typescript
 /**
- * evaluate フィールドが定義されている場合、
- * ワークフロー実行前に LLM Worker に実行可否を問い合わせる。
+ * If the evaluate field is defined, consult an LLM worker before running a workflow.
  *
- * Worker 種別による判定方法:
- * - CUSTOM: exit 0 → run, exit 1 → skip
+ * Decision rules by worker kind:
+ * - CUSTOM: exit 0 -> run, exit 1 -> skip
  * - CLAUDE_CODE / CODEX_CLI / OPENCODE:
- *   Worker 出力に "run" を含めば実行、"skip" を含めばスキップ
+ *   if output contains "run" -> run; if it contains "skip" -> skip
  */
 class EvaluateGate {
   async shouldRun(
@@ -506,14 +502,14 @@ class EvaluateGate {
     lastResult: WorkflowState | null,
     workspaceDir: string,
   ): Promise<boolean> {
-    // 1. instructions 内のテンプレート変数を展開
+    // 1. Expand template variables in instructions
     const instructions = this.expandTemplate(evaluate.instructions, {
       event: JSON.stringify(event.payload),
       last_result: lastResult ? JSON.stringify(lastResult) : "null",
       timestamp: new Date().toISOString(),
     });
 
-    // 2. Worker 実行
+    // 2. Run worker
     const result = await this.runWorker({
       worker: evaluate.worker,
       instructions,
@@ -522,7 +518,7 @@ class EvaluateGate {
       workspaceDir,
     });
 
-    // 3. 判定
+    // 3. Decide
     if (evaluate.worker === "CUSTOM") {
       return result.exitCode === 0;
     }
@@ -531,26 +527,24 @@ class EvaluateGate {
 
   private parseDecision(output: string): boolean {
     const lower = output.toLowerCase().trim();
-    // 最後の有効行を見る（LLM は説明の後に結論を書く傾向がある）
+    // Prefer the last non-empty line (LLMs often put the final decision last).
     const lines = lower.split("\n").filter((l) => l.trim().length > 0);
     const lastLine = lines[lines.length - 1] ?? "";
     if (lastLine.includes("run")) return true;
     if (lastLine.includes("skip")) return false;
-    // フォールバック: 出力全体を見る
+    // Fallback: scan the entire output.
     if (lower.includes("run")) return true;
-    return false; // デフォルトはスキップ（安全側）
+    return false; // default is skip (safer)
   }
 }
 ```
 
-### 4.5 ResultAnalyzer — LLM による結果分析
+### 4.5 ResultAnalyzer (LLM result analysis)
 
 ```typescript
 /**
- * analyze フィールドが定義されている場合、
- * ワークフロー完了後に LLM Worker に結果分析を依頼する。
- * Worker はワークフローの context/ ディレクトリにアクセスでき、
- * 分析結果をファイルとして出力する。
+ * If the analyze field is defined, request an LLM worker to analyze results after workflow completion.
+ * The worker can access the workflow context/ directory and write analysis artifacts as files.
  */
 class ResultAnalyzer {
   async analyze(
@@ -583,14 +577,14 @@ class ResultAnalyzer {
 
 ---
 
-## 5. イベントソース実装
+## 5. Event Source Implementations
 
 ### 5.1 CronSource
 
 ```typescript
 /**
- * cron 式に基づいて定期的にイベントを発火する。
- * 内部で cron-parser を使って次の発火時刻を計算し、setTimeout でスケジュール。
+ * Fires periodic events based on a cron expression.
+ * Internally uses cron-parser to compute the next fire time, then schedules via setTimeout.
  */
 class CronSource implements EventSource {
   readonly id: string;
@@ -633,20 +627,20 @@ class CronSource implements EventSource {
 }
 ```
 
-#### IntervalSource（簡易版）
+#### IntervalSource (simplified)
 
-`type: interval` は DurationString を受け取り、固定間隔で発火する CronSource の簡易版。内部的には `setInterval` 相当。
+`type: interval` accepts a DurationString and fires on a fixed interval. Internally it is equivalent to `setInterval`.
 
 ### 5.2 FSWatchSource
 
 ```typescript
 /**
- * ファイルシステムの変更を監視する。
- * Bun の fs.watch() または chokidar 相当の機能を使用。
- * glob パターンでフィルタリング、ignore パターンで除外。
+ * Watches filesystem changes.
+ * Uses Bun's fs.watch() or a chokidar-like mechanism.
+ * Applies glob filtering and ignore patterns.
  *
- * バッチング: 短時間に大量の変更が発生した場合、
- * 200ms のウィンドウで変更をバッチにまとめて 1 イベントとして発火。
+ * Batching: if many changes occur in a short time, batch them into a single event
+ * using a 200ms window.
  */
 class FSWatchSource implements EventSource {
   private watcher: FSWatcher | null = null;
@@ -654,8 +648,8 @@ class FSWatchSource implements EventSource {
 
   async *events(): AsyncIterable<DaemonEvent> {
     // Bun.file watcher or node:fs.watch with recursive option
-    // バッチング: 200ms ウィンドウで変更をまとめる
-    // glob マッチ + ignore フィルタを適用
+    // batching: aggregate changes within 200ms window
+    // apply glob match + ignore filter
   }
 }
 ```
@@ -664,16 +658,16 @@ class FSWatchSource implements EventSource {
 
 ```typescript
 /**
- * HTTP サーバーを起動し、指定パスで Webhook を受け付ける。
- * Daemon 内の全 WebhookSource で 1 つの HTTP サーバーを共有する。
+ * Starts an HTTP server and accepts webhooks on configured paths.
+ * A daemon shares a single HTTP server across all WebhookSources.
  *
- * HMAC 署名検証: secret が設定されている場合、
- * X-Hub-Signature-256 ヘッダーでリクエスト署名を検証する。
+ * HMAC verification: if secret is configured, validate request signatures
+ * via the X-Hub-Signature-256 header.
  */
 class WebhookServer {
   private routes = new Map<string, WebhookHandler>();
 
-  /** Bun.serve で HTTP サーバーを起動 */
+  /** Start the HTTP server via Bun.serve. */
   start(port: number): void {
     Bun.serve({
       port,
@@ -696,9 +690,9 @@ class WebhookSource implements EventSource {
 
 ```typescript
 /**
- * 定期的に外部コマンドを実行し、結果をイベントとして発火する。
- * trigger_on: "change" の場合、前回の stdout と差分があった場合のみ発火。
- * trigger_on: "always" の場合、毎回発火。
+ * Periodically runs an external command and emits the result as an event.
+ * If trigger_on: "change", emit only when stdout differs from the previous run.
+ * If trigger_on: "always", emit every time.
  */
 class CommandSource implements EventSource {
   private lastOutput: string | null = null;
@@ -730,26 +724,26 @@ class CommandSource implements EventSource {
 
 ---
 
-## 6. Daemon ライフサイクル
+## 6. Daemon Lifecycle
 
-### 6.1 起動フロー
+### 6.1 Startup Flow
 
 ```
-1. YAML 読み込み・バリデーション
-2. state_dir 初期化（前回状態の復元）
-3. EventSource インスタンス生成
-4. WebhookServer 起動（Webhook ソースがある場合）
-5. TriggerEngine 初期化
-6. イベントループ開始
-7. シグナルハンドラ登録（SIGTERM / SIGINT → graceful shutdown）
+1. Load YAML and validate
+2. Initialize state_dir (restore previous state)
+3. Create EventSource instances
+4. Start WebhookServer (if webhook sources exist)
+5. Initialize TriggerEngine
+6. Start event loop
+7. Register signal handlers (SIGTERM / SIGINT -> graceful shutdown)
 ```
 
-### 6.2 イベントループ
+### 6.2 Event Loop
 
 ```typescript
 class Daemon {
   async run(): Promise<void> {
-    // 全 EventSource のイベントを 1 つのストリームに合流
+    // Merge events from all EventSources into a single stream
     const merged = mergeAsyncIterables(
       ...this.sources.map((s) => s.events()),
     );
@@ -765,24 +759,23 @@ class Daemon {
 ### 6.3 Graceful Shutdown
 
 ```
-1. SIGTERM / SIGINT 受信
-2. shutdownRequested = true に設定
-3. 全 EventSource.stop() を呼び出し（新規イベント停止）
-4. 実行中のワークフローに AbortSignal を送信
-5. 実行中ワークフローの完了を待機（タイムアウト付き）
-6. DaemonStateStore をフラッシュ
-7. WebhookServer 停止
-8. プロセス終了
+1. Receive SIGTERM / SIGINT
+2. Set shutdownRequested = true
+3. Call EventSource.stop() for all sources (stop new events)
+4. Send AbortSignal to running workflows
+5. Wait for running workflows to finish (with timeout)
+6. Flush DaemonStateStore
+7. Stop WebhookServer
+8. Exit process
 ```
 
-### 6.4 ワークフロー同時実行管理
+### 6.4 Concurrent workflow scheduling
 
 ```typescript
 /**
- * max_concurrent_workflows で同時実行数を制限。
- * 上限到達時、新しいトリガーはキューに入り、
- * 実行中のワークフローが完了次第デキューされる。
- * max_queue を超えた場合は最古のキュー項目を破棄。
+ * Limit concurrency via max_concurrent_workflows.
+ * When at capacity, enqueue new triggers and dequeue when running workflows complete.
+ * If max_queue is exceeded, discard the oldest queued item.
  */
 class WorkflowScheduler {
   private running = 0;
@@ -804,55 +797,55 @@ class WorkflowScheduler {
 
 ---
 
-## 7. テンプレート変数
+## 7. Template Variables
 
-evaluate / analyze の `instructions` 内で使用可能なテンプレート変数:
+Template variables available in `evaluate` / `analyze` instructions:
 
-| 変数 | 説明 | 使用可能箇所 |
+| Variable | Description | Where |
 |------|------|-------------|
-| `{{event}}` | イベントペイロード（JSON） | evaluate, analyze |
-| `{{event.type}}` | イベント種別 | evaluate, analyze |
-| `{{last_result}}` | 前回実行結果（JSON）、`context.last_result: true` 時のみ | evaluate |
-| `{{last_result.status}}` | 前回のステータス | evaluate |
-| `{{timestamp}}` | 現在時刻（ISO 8601） | evaluate, analyze |
-| `{{trigger_id}}` | トリガー ID | evaluate, analyze |
-| `{{workflow_status}}` | ワークフロー実行結果ステータス | analyze |
-| `{{steps}}` | 各ステップの実行結果（JSON） | analyze |
-| `{{context_dir}}` | コンテキストディレクトリパス | analyze |
-| `{{execution_count}}` | このトリガーの累計実行回数 | evaluate, analyze |
+| `{{event}}` | event payload (JSON) | evaluate, analyze |
+| `{{event.type}}` | event type | evaluate, analyze |
+| `{{last_result}}` | previous execution result (JSON), only when `context.last_result: true` | evaluate |
+| `{{last_result.status}}` | previous status | evaluate |
+| `{{timestamp}}` | current time (ISO 8601) | evaluate, analyze |
+| `{{trigger_id}}` | trigger id | evaluate, analyze |
+| `{{workflow_status}}` | workflow status | analyze |
+| `{{steps}}` | step results (JSON) | analyze |
+| `{{context_dir}}` | context directory path | analyze |
+| `{{execution_count}}` | total execution count for this trigger | evaluate, analyze |
 
 ---
 
-## 8. CLI インターフェース
+## 8. CLI Interface
 
 ```bash
-# Daemon の起動
+# start daemon
 agentcore daemon start <daemon.yaml> [--verbose]
 
-# Daemon のステータス確認（別ターミナルから）
+# check daemon status (from another terminal)
 agentcore daemon status [--state-dir <dir>]
 
-# 手動トリガー（デバッグ用）
+# manual trigger (debug)
 agentcore daemon trigger <trigger_id> [--state-dir <dir>]
 
-# トリガーの一時停止/再開
+# pause/resume trigger
 agentcore daemon pause <trigger_id>
 agentcore daemon resume <trigger_id>
 
-# 実行履歴の確認
+# show execution history
 agentcore daemon history [--trigger <trigger_id>] [--limit 10]
 
-# Daemon の停止
+# stop daemon
 agentcore daemon stop [--state-dir <dir>]
 ```
 
 ---
 
-## 9. 状態ディレクトリ構造
+## 9. State Directory Layout
 
 ```
 .daemon-state/
-├── daemon.json                 # Daemon メタ情報（PID, 起動時刻, 状態）
+├── daemon.json                 # daemon metadata (PID, start time, status)
 ├── triggers/
 │   ├── auto-test/
 │   │   ├── state.json          # enabled, lastFired, cooldownUntil
@@ -861,69 +854,71 @@ agentcore daemon stop [--state-dir <dir>]
 │   │       └── 2024-01-15T09-35-00.json
 │   └── periodic-review/
 │       ├── state.json
-│       ├── last-result.json    # 前回のワークフロー実行結果
-│       ├── last-analyze.json   # 前回の LLM 分析結果
+│       ├── last-result.json    # last workflow result
+│       ├── last-analyze.json   # last LLM analysis result
 │       └── history/
 │           └── ...
-└── webhook-server.json         # Webhook サーバー情報（ポート等）
+└── webhook-server.json         # webhook server metadata (port, etc.)
 ```
 
 ---
 
-## 10. 既存コンポーネントとの統合
+## 10. Integration With Existing Components
 
-### 10.1 WorkflowExecutor との関係
+### 10.1 Relationship with WorkflowExecutor
 
-Daemon の TriggerEngine は既存の `WorkflowExecutor` をそのまま使用する。違いは **誰がいつ WorkflowExecutor を起動するか** だけ:
+The daemon's TriggerEngine reuses the existing `WorkflowExecutor` unchanged. The only difference is **who starts WorkflowExecutor and when**:
 
-- **現在**: CLI → `run.ts` → `WorkflowExecutor.execute()`
-- **Daemon**: `TriggerEngine` → `WorkflowRunner` → `WorkflowExecutor.execute()`
+- **Current**: CLI -> `run.ts` -> `WorkflowExecutor.execute()`
+- **Daemon**: `TriggerEngine` -> `WorkflowRunner` -> `WorkflowExecutor.execute()`
 
-### 10.2 AgentCore / Scheduler との関係
+### 10.2 Relationship with AgentCore / Scheduler
 
-Daemon は将来的に AgentCore の Permit Gate / Circuit Breaker / Watchdog を活用できる。ただし初期実装では WorkflowExecutor を直接使用し、AgentCore との統合は段階的に行う:
+In the future, the daemon can leverage AgentCore's Permit Gate / Circuit Breaker / Watchdog. In an initial implementation, the daemon can call WorkflowExecutor directly and integrate with AgentCore incrementally:
 
-**Phase 1（初期）**: Daemon → WorkflowExecutor → ShellStepRunner（現在の構成をそのまま利用）
+**Phase 1 (initial)**: Daemon -> WorkflowExecutor -> ShellStepRunner (keep the current setup as-is)
 
-**Phase 2（統合）**: Daemon → WorkflowExecutor → AgentCore → Workers（安全機構をフル活用）
+**Phase 2 (integrated)**: Daemon -> WorkflowExecutor -> AgentCore -> Workers (fully utilize safety mechanisms)
 
-### 10.3 Worker の利用
+### 10.3 Worker usage
 
-evaluate / analyze で使用する Worker は、WorkflowExecutor のステップと同じ Worker 基盤を使用する:
-- `CUSTOM`: シェルスクリプト実行（ShellStepRunner）
-- `CLAUDE_CODE` / `CODEX_CLI` / `OPENCODE`: AI Worker（Worker Delegation Gateway 経由）
+Workers used by evaluate/analyze reuse the same worker foundation as workflow steps:
+
+- `CUSTOM`: shell script execution (ShellStepRunner)
+- `CLAUDE_CODE` / `CODEX_CLI` / `OPENCODE`: AI workers (via Worker Delegation Gateway)
 
 ---
 
-## 11. 設計上の考慮事項
+## 11. Design Considerations
 
-### 11.1 冪等性
+### 11.1 Idempotency
 
-Daemon はクラッシュ後の再起動でも安全に動作する必要がある:
-- `state_dir` に実行状態を永続化し、起動時に復元
-- cron の「前回発火時刻」を記録し、起動直後に過去分を一気に発火しない
-- ワークフロー実行中にクラッシュした場合、再起動時に「実行中」状態を検出し、ユーザーに通知（自動リトライはしない）
+The daemon must be safe across crashes and restarts:
 
-### 11.2 メモリ管理
+- Persist execution state under `state_dir` and restore on startup
+- Record the "last fired time" for cron to avoid firing a backlog immediately after restart
+- If the daemon crashes mid-workflow, detect the "in progress" state on restart and notify the user (do not auto-retry)
 
-- 実行履歴は state_dir にファイルとして永続化し、メモリに保持しない
-- FSWatch のバッチングウィンドウ（200ms）で大量の変更イベントを集約
-- WebhookSource は body サイズ上限（デフォルト 1MB）を設ける
+### 11.2 Memory management
 
-### 11.3 セキュリティ
+- Persist execution history to files under state_dir rather than keeping it in memory
+- Aggregate large bursts of FSWatch events via a 200ms batching window
+- Set a body size limit for WebhookSource (default: 1MB)
 
-- Webhook の secret は環境変数参照（`${ENV_VAR}`）で指定し、YAML に直接書かない
-- HMAC-SHA256 署名検証を必須にする（secret 指定時）
-- ワークフローの workspace は Daemon の workspace 配下に限定
+### 11.3 Security
 
-### 11.4 可観測性
+- Configure webhook secrets via environment variables (`${ENV_VAR}`); do not put secrets directly into YAML
+- Require HMAC-SHA256 signature verification when a secret is configured
+- Restrict workflow workspaces to be under the daemon workspace
+
+### 11.4 Observability
 
 ```typescript
 interface DaemonMetrics {
-  eventsReceived: Record<string, number>;    // イベントソース別受信数
-  triggersEvaluated: Record<string, number>; // トリガー別評価数
-  triggersExecuted: Record<string, number>;  // トリガー別実行数
-  triggersSkipped: Record<string, number>;   // evaluate でスキップされた数
+  eventsReceived: Record<string, number>;     // received events by source id
+  triggersEvaluated: Record<string, number>;  // evaluated triggers by trigger id
+  triggersExecuted: Record<string, number>;   // executed triggers by trigger id
+  triggersSkipped: Record<string, number>;    // skipped by evaluate
   workflowsSucceeded: number;
   workflowsFailed: number;
   activeWorkflows: number;
@@ -931,41 +926,47 @@ interface DaemonMetrics {
 }
 ```
 
-ログ出力:
-- `[daemon:event]` — イベント受信ログ
-- `[daemon:trigger]` — トリガー評価・実行ログ
-- `[daemon:evaluate]` — LLM ゲート判断ログ
-- `[daemon:analyze]` — LLM 結果分析ログ
-- `[daemon:workflow]` — ワークフロー開始・完了ログ
+Log tags:
+
+- `[daemon:event]` - event reception
+- `[daemon:trigger]` - trigger evaluation/execution
+- `[daemon:evaluate]` - LLM gate decisions
+- `[daemon:analyze]` - LLM result analysis
+- `[daemon:workflow]` - workflow start/finish
 
 ---
 
-## 12. 実装計画
+## 12. Implementation Plan
 
-### Phase 1: コア基盤
-- [ ] YAML パーサー + バリデーション（DaemonConfig 型）
-- [ ] EventSource インターフェース + CronSource + IntervalSource
-- [ ] TriggerEngine（フィルタ + debounce + cooldown）
-- [ ] DaemonStateStore（ファイルベース永続化）
-- [ ] Daemon クラス（イベントループ + graceful shutdown）
+### Phase 1: Core foundation
+
+- [ ] YAML parser + validation (DaemonConfig types)
+- [ ] EventSource interface + CronSource + IntervalSource
+- [ ] TriggerEngine (filter + debounce + cooldown)
+- [ ] DaemonStateStore (file-based persistence)
+- [ ] Daemon class (event loop + graceful shutdown)
 - [ ] CLI: `agentcore daemon start`
 
-### Phase 2: イベントソース拡充
-- [ ] FSWatchSource（glob / ignore / バッチング）
-- [ ] WebhookSource + WebhookServer（HMAC 検証）
-- [ ] CommandSource（差分検知）
+### Phase 2: Expand event sources
 
-### Phase 3: インテリジェントレイヤー
-- [ ] EvaluateGate（CUSTOM + LLM Worker 対応）
-- [ ] ResultAnalyzer（context/ アクセス + 出力保存）
-- [ ] テンプレート変数展開
-- [ ] context 注入（last_result, event_payload）
+- [ ] FSWatchSource (glob / ignore / batching)
+- [ ] WebhookSource + WebhookServer (HMAC verification)
+- [ ] CommandSource (change detection)
 
-### Phase 4: 運用機能
+### Phase 3: Intelligent layer
+
+- [ ] EvaluateGate (CUSTOM + LLM worker support)
+- [ ] ResultAnalyzer (context/ access + output persistence)
+- [ ] Template variable expansion
+- [ ] Context injection (last_result, event_payload)
+
+### Phase 4: Operations features
+
 - [ ] CLI: status / trigger / pause / resume / history / stop
-- [ ] 可観測性（メトリクス + 構造化ログ）
-- [ ] ワークフロー同時実行管理（max_concurrent_workflows）
+- [ ] Observability (metrics + structured logs)
+- [ ] Concurrent workflow scheduling (max_concurrent_workflows)
 
-### Phase 5: AgentCore 統合
-- [ ] WorkflowExecutor → AgentCore → Worker パス
-- [ ] Circuit Breaker / Permit Gate の Daemon レベル適用
+### Phase 5: AgentCore integration
+
+- [ ] WorkflowExecutor -> AgentCore -> Worker path
+- [ ] Apply Circuit Breaker / Permit Gate at the daemon level
