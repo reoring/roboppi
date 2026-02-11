@@ -100,7 +100,7 @@ bun run src/cli.ts run --worker opencode --workspace /tmp/demo \
 - AgentCore CLI: `src/cli.ts` (IPC server + one-shot run)
 - Workflow runner: `src/workflow/run.ts`
 - Multi-worker step runner: `src/workflow/multi-worker-step-runner.ts`
-- Design document: `docs/design.md` (currently Japanese)
+- Design document: `docs/design.md`
 
 ## Status
 
