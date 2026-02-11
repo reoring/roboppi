@@ -1,4 +1,4 @@
-export type DurationString = string; // "5m", "30s", "2h", "1h30m"
+export type DurationString = string; // "200ms", "5m", "30s", "2h", "1h30m"
 
 export interface WorkflowDefinition {
   name: string;
@@ -13,6 +13,8 @@ export interface WorkflowDefinition {
 export interface StepDefinition {
   description?: string;
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  /** Optional model identifier for LLM-backed workers (adapter-specific format). */
+  model?: string;
   workspace?: string;
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
@@ -31,6 +33,8 @@ export interface StepDefinition {
 
 export interface CompletionCheckDef {
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  /** Optional model identifier for LLM-backed workers (adapter-specific format). */
+  model?: string;
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
   timeout?: DurationString;
