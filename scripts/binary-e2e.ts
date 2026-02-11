@@ -5,6 +5,8 @@
  * via CLI arguments — no driver script or IPC needed.
  */
 
+export {};
+
 const WORKSPACE = "/tmp/agentcore-binary-demo";
 const log = (msg: string) => console.log(`[demo] ${msg}`);
 
@@ -15,7 +17,8 @@ await Bun.$`rm -rf ${WORKSPACE} && mkdir -p ${WORKSPACE}`.quiet();
 log(`Workspace: ${WORKSPACE}`);
 
 // Run agentcore with the "run" subcommand
-const instructions = "countdown.ts を作って。CLI引数で数値Nを受け取り、NからカウントダウンしてLiftoff!と表示するプログラム。例: bun run countdown.ts 5 → 5,4,3,2,1,Liftoff!";
+const instructions =
+  "Create countdown.ts. It should accept a number N via CLI args, count down from N, then print Liftoff!. Example: bun run countdown.ts 5 -> 5,4,3,2,1,Liftoff!";
 
 log(`\nRunning: ./agentcore run --worker opencode --workspace ${WORKSPACE} "${instructions.slice(0, 60)}..."\n`);
 

@@ -1,6 +1,6 @@
 /**
- * ShellStepRunner — instructions をシェルスクリプトとして実行する StepRunner 実装。
- * CUSTOM worker 用。examples/ のワークフローを実際に動かすために使う。
+ * ShellStepRunner executes `instructions` as a shell script.
+ * Used for the CUSTOM worker to run workflows under examples/.
  */
 import { spawn } from "node:child_process";
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
