@@ -200,6 +200,20 @@ describe("buildArgs", () => {
     expect(args).toContain("--no-telemetry");
   });
 
+  test("includes --model when task.model is set (overrides defaultArgs)", () => {
+    const task = makeTask({ model: "claude-opus-4-6" });
+    const config = {
+      ...makeDefaultConfig(),
+      defaultArgs: ["--model", "claude-sonnet-4"],
+    };
+    const args = buildArgs(task, config);
+
+    const modelIdx = args.indexOf("--model");
+    expect(modelIdx).toBeGreaterThanOrEqual(0);
+    expect(args[modelIdx + 1]).toBe("claude-opus-4-6");
+    expect(args).not.toContain("claude-sonnet-4");
+  });
+
   test("omits --allowedTools when no capabilities", () => {
     const task = makeTask({ capabilities: [] });
     const config = makeDefaultConfig();

@@ -247,9 +247,11 @@ export class AgentCore {
       workerKind: string;
       workspaceRef: string;
       instructions: string;
+      model?: string;
       capabilities: string[];
       outputMode: string;
       budget: { deadlineAt: number; maxSteps?: number; maxCommandTimeMs?: number };
+      env?: Record<string, string>;
     };
 
     const workerTask = {
@@ -257,9 +259,11 @@ export class AgentCore {
       workerKind: payload.workerKind,
       workspaceRef: payload.workspaceRef,
       instructions: payload.instructions,
+      ...(payload.model ? { model: payload.model } : {}),
       capabilities: payload.capabilities ?? [],
       outputMode: payload.outputMode ?? "BATCH",
       budget: payload.budget ?? { deadlineAt: permit.deadlineAt },
+      ...(payload.env ? { env: payload.env } : {}),
       abortSignal: permit.abortController.signal,
     };
 

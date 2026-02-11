@@ -28,7 +28,24 @@ export class CodexCliAdapter extends BaseProcessAdapter {
   }
 
   buildCommand(task: WorkerTask): string[] {
-    const args: string[] = [this.config.codexCommand, ...this.config.defaultArgs];
+    const args: string[] = [this.config.codexCommand];
+
+    // Default args, with optional model override.
+    if (task.model) {
+      // Prefer task-level model over config default args.
+      for (let i = 0; i < this.config.defaultArgs.length; i++) {
+        const a = this.config.defaultArgs[i]!;
+        if (a === "--model") {
+          i++; // skip value
+          continue;
+        }
+        if (a.startsWith("--model=")) continue;
+        args.push(a);
+      }
+      args.push("--model", normalizeCodexModel(task.model));
+    } else {
+      args.push(...this.config.defaultArgs);
+    }
 
     // Map capabilities to approval mode
     const hasWrite = task.capabilities.includes(WorkerCapability.EDIT);
@@ -209,4 +226,15 @@ export class CodexCliAdapter extends BaseProcessAdapter {
       },
     ];
   }
+}
+
+function normalizeCodexModel(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return trimmed;
+  // Codex CLI may reject provider-prefixed strings like "openai/gpt-5.3-codex".
+  if (trimmed.includes("/")) {
+    const parts = trimmed.split("/").filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1]! : trimmed;
+  }
+  return trimmed;
 }

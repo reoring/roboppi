@@ -132,6 +132,18 @@ describe("OpenCodeAdapter", () => {
 
       expect(args[args.length - 1]).toBe("Do something special");
     });
+
+    test("includes --model when task.model is set (overrides defaultArgs)", () => {
+      const task = makeTask({ model: "openai/gpt-5.2" });
+      const config = { ...defaultConfig, defaultArgs: ["--model", "openai/gpt-4.1"] };
+      const args = buildArgs(task, config);
+
+      // Should contain the task-level model, and not the default model
+      const modelIdx = args.indexOf("--model");
+      expect(modelIdx).toBeGreaterThanOrEqual(0);
+      expect(args[modelIdx + 1]).toBe("openai/gpt-5.2");
+      expect(args).not.toContain("openai/gpt-4.1");
+    });
   });
 
   describe("startTask", () => {

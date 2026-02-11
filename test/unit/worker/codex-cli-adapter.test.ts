@@ -137,6 +137,23 @@ describe("CodexCliAdapter", () => {
       ]);
     });
 
+    test("should include --model from task and normalize provider prefix", () => {
+      const customAdapter = new CodexCliAdapter(mockPm.pm, {
+        defaultArgs: ["--model", "gpt-4.1-codex"],
+      });
+      const task = createTask({
+        model: "openai/gpt-5.3-codex",
+        capabilities: [WorkerCapability.READ],
+      });
+      const command = customAdapter.buildCommand(task);
+
+      // task-level model should override config, and provider prefix should be stripped
+      expect(command).toContain("--model");
+      const idx = command.indexOf("--model");
+      expect(command[idx + 1]).toBe("gpt-5.3-codex");
+      expect(command).not.toContain("gpt-4.1-codex");
+    });
+
     test("should set full-auto approval mode for EDIT + RUN_COMMANDS", () => {
       const task = createTask({
         capabilities: [
