@@ -57,24 +57,26 @@ export class FSWatchSource implements EventSource {
   private readonly abortController = new AbortController();
   private readonly watchers: FSWatcher[] = [];
   private readonly batchMs: number;
+  private readonly baseDir: string;
 
   private pendingChanges: PendingChange[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
   private emitResolve: ((event: DaemonEvent) => void) | null = null;
   private eventBuffer: DaemonEvent[] = [];
 
-  constructor(id: string, config: FSWatchEventDef, batchMs = 200) {
+  constructor(id: string, config: FSWatchEventDef, batchMs = 200, baseDir: string = process.cwd()) {
     this.id = id;
     this.config = config;
     this.batchMs = batchMs;
+    this.baseDir = baseDir;
   }
 
   async *events(): AsyncGenerator<DaemonEvent> {
     const signal = this.abortController.signal;
 
-    // Resolve paths relative to cwd
+    // Resolve paths relative to baseDir (typically daemon workspace)
     const resolvedPaths = this.config.paths.map((p) =>
-      path.isAbsolute(p) ? p : path.resolve(process.cwd(), p),
+      path.isAbsolute(p) ? p : path.resolve(this.baseDir, p),
     );
 
     // Start watchers
