@@ -13,7 +13,7 @@ import { parseWorkflow } from "./parser.js";
 import { validateDag } from "./dag-validator.js";
 import { ContextManager } from "./context-manager.js";
 import { WorkflowExecutor } from "./executor.js";
-import { ShellStepRunner } from "./shell-step-runner.js";
+import { MultiWorkerStepRunner } from "./multi-worker-step-runner.js";
 import { WorkflowStatus, StepStatus } from "./types.js";
 
 // ── Argument parsing ────────────────────────────────────────────
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   console.log("");
 
   // 4. Execute
-  const runner = new ShellStepRunner(verbose);
+  const runner = new MultiWorkerStepRunner(verbose);
   const ctx = new ContextManager(contextDir);
   const executor = new WorkflowExecutor(definition, ctx, runner, ws);
 

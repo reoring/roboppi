@@ -17,7 +17,7 @@ import { mergeEventSources } from "./events/event-source.js";
 import type { EventSource } from "./events/event-source.js";
 import { parseWorkflow } from "../workflow/parser.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
-import { ShellStepRunner } from "../workflow/shell-step-runner.js";
+import { MultiWorkerStepRunner } from "../workflow/multi-worker-step-runner.js";
 import { ContextManager } from "../workflow/context-manager.js";
 import { Logger } from "../core/observability.js";
 
@@ -350,7 +350,7 @@ export class Daemon {
 
       // 4. Create executor and run
       const ctx = new ContextManager(contextDir);
-      const runner = new ShellStepRunner(false);
+      const runner = new MultiWorkerStepRunner(false);
       const executor = new WorkflowExecutor(definition, ctx, runner, workspaceDir, workflowEnv);
       const result = await executor.execute();
 

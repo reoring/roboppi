@@ -88,14 +88,20 @@ export class ShellStepRunner implements StepRunner {
     env?: Record<string, string>,
   ): Promise<{ exitCode: number; stdout: string; stderr: string; cancelled: boolean }> {
     return new Promise((resolve) => {
+      const mergedEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined) mergedEnv[k] = v;
+      }
+
       const proc = spawn("bash", ["-e", "-c", script], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
+          ...mergedEnv,
           PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
           HOME: process.env.HOME ?? "",
           SHELL: process.env.SHELL ?? "/bin/sh",
-          ...env,
+          ...(env ?? {}),
         },
       });
 

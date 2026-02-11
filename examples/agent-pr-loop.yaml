@@ -1,0 +1,183 @@
+# Agent PR Loop — design -> todo -> implement -> (review <-> fix)* -> (optional) PR
+#
+# Readability goals:
+# - LLM steps use `worker: OPENCODE | CLAUDE_CODE | CODEX_CLI` directly.
+# - Small orchestration lives in scripts.
+#
+# Run on another workspace (any git repo directory):
+#   AGENTCORE_ROOT=/path/to/agentcore
+#   TARGET=/path/to/your/repo
+#   AGENTCORE_ROOT="$AGENTCORE_ROOT" bun run --cwd "$AGENTCORE_ROOT" ./src/workflow/run.ts \
+#     "$AGENTCORE_ROOT/examples/agent-pr-loop.yaml" --workspace "$TARGET" --verbose
+
+name: agent-pr-loop
+version: "1"
+description: "Design+Todo by OpenCode, implement by Claude Code, review by OpenCode, fix by Codex CLI, then (optionally) create a PR."
+timeout: "90m"
+concurrency: 1
+
+steps:
+  bootstrap:
+    description: "Validate inputs/tools and initialize loop state"
+    worker: CUSTOM
+    instructions: |
+      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/bootstrap.sh"
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "2m"
+
+  branch:
+    description: "Create or reuse a working branch"
+    worker: CUSTOM
+    depends_on: [bootstrap]
+    instructions: |
+      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/branch.sh"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "1m"
+
+  design:
+    description: "Design (OpenCode / GPT-5.2)"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    depends_on: [branch]
+    instructions: |
+      You are OpenCode.
+
+      Task: Produce a design doc ONLY (no implementation).
+
+      Read:
+      - .agentcore-loop/request.md
+
+      Write/update:
+      - .agentcore-loop/design.md
+
+      Design doc requirements:
+      - Problem statement + goals/non-goals
+      - Proposed approach + alternatives considered
+      - Data model / interfaces (as needed)
+      - Execution plan at high level
+      - Risks/edge cases + observability/testing notes
+      - Explicit acceptance criteria checklist
+    capabilities: [READ, EDIT]
+    timeout: "20m"
+    on_failure: retry
+    max_retries: 2
+    outputs:
+      - name: design
+        path: ".agentcore-loop/design.md"
+        type: review
+
+  todo:
+    description: "Turn design into an implementation TODO (OpenCode / GPT-5.2)"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    depends_on: [design]
+    instructions: |
+      You are OpenCode.
+
+      Task: Convert the design into a concrete TODO checklist.
+
+      Read:
+      - .agentcore-loop/request.md
+      - .agentcore-loop/design.md
+
+      Write/update:
+      - .agentcore-loop/todo.md
+
+      TODO requirements:
+      - Use Markdown checklist items: "- [ ] ..."
+      - Group tasks by milestones (small batches)
+      - Include file paths when possible
+      - Include at least 1 testing task (how to run + expected outcome)
+      - Include at least 1 validation step (manual or automated)
+      - Include rollback/escape hatch notes if risky
+
+      If .agentcore-loop/todo.md already exists, improve it to satisfy the requirements.
+    capabilities: [READ, EDIT]
+    timeout: "20m"
+    on_failure: retry
+    max_retries: 2
+
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/todo-check.sh"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "30s"
+
+    max_iterations: 3
+    on_iterations_exhausted: abort
+    outputs:
+      - name: todo
+        path: ".agentcore-loop/todo.md"
+        type: code
+
+  implement:
+    description: "Implementation (Claude Code; main: Opus 4.6)"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    depends_on: [todo]
+    instructions: |
+      You are Claude Code.
+
+      Use Claude's team feature if available (split into implement/test/review roles internally).
+
+      Read:
+      - .agentcore-loop/request.md
+      - .agentcore-loop/design.md
+      - .agentcore-loop/todo.md
+
+      Task:
+      - Implement the TODO checklist.
+      - Update the TODO checkboxes as you complete items.
+      - Run the repo's tests (or the best available test command) and fix failures.
+      - Keep changes focused on the request.
+
+      At the end, briefly report what was implemented and how to verify.
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
+    timeout: "45m"
+    on_failure: retry
+    max_retries: 1
+
+  review_fix_loop:
+    description: "Review by OpenCode; if fixes needed, apply via Codex CLI; repeat until PASS"
+    worker: CUSTOM
+    depends_on: [implement]
+    instructions: |
+      bun run "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/review-fix-once.ts"
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
+    timeout: "30m"
+    on_failure: retry
+    max_retries: 2
+
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/verdict-check.sh"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "30s"
+
+    max_iterations: 5
+    on_iterations_exhausted: abort
+    outputs:
+      - name: review
+        path: ".agentcore-loop/review.md"
+        type: review
+      - name: verdict
+        path: ".agentcore-loop/review.verdict"
+        type: text
+      - name: fix
+        path: ".agentcore-loop/fix.md"
+        type: code
+
+  create_pr:
+    description: "Create a PR (optional; requires .agentcore-loop/enable_pr)"
+    worker: CUSTOM
+    depends_on: [review_fix_loop]
+    instructions: |
+      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/create-pr.sh"
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "10m"
+    outputs:
+      - name: pr
+        path: ".agentcore-loop/pr-url.txt"
+        type: text

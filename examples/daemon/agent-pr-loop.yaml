@@ -1,0 +1,65 @@
+# Agent PR Loop Daemon — manual kick + workflow loop
+#
+# Start (from repo root):
+#   bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --verbose
+#
+# Kick it (in another terminal):
+#   mkdir -p .agentcore-loop
+#   date +%s > .agentcore-loop/kick.txt
+
+name: agent-pr-loop-daemon
+version: "1"
+description: "Manual kick daemon that runs the agent-pr-loop workflow"
+
+# Keep workflow YAML resolvable relative to this repo
+workspace: "."
+state_dir: "/tmp/agentcore-daemon-agent-pr-loop/.daemon-state"
+max_concurrent_workflows: 1
+
+events:
+  kick:
+    type: command
+    command: "cat .agentcore-loop/kick.txt 2>/dev/null || echo 0"
+    interval: "2s"
+    trigger_on: change
+
+triggers:
+  run-loop:
+    on: kick
+    workflow: "examples/agent-pr-loop.yaml"
+    cooldown: "5s"
+    on_workflow_failure: ignore
+
+    # Command event emits a baseline event on first run (changed=false).
+    # Gate execution so this trigger behaves like a true manual kick.
+    evaluate:
+      worker: CUSTOM
+      instructions: |
+        set -euo pipefail
+        echo "${AGENTCORE_EVENT:-}" | grep -q '"changed":true'
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "5s"
+
+    context:
+      env:
+        BASE_BRANCH: "main"
+      last_result: true
+      event_payload: true
+
+    analyze:
+      worker: CUSTOM
+      instructions: |
+        set -e
+        echo "=== Agent PR Loop (last run) ===" > .agentcore-loop/daemon-summary.txt
+        echo "Status: $AGENTCORE_WORKFLOW_STATUS" >> .agentcore-loop/daemon-summary.txt
+        echo "Trigger: $AGENTCORE_TRIGGER_ID" >> .agentcore-loop/daemon-summary.txt
+        echo "At: $AGENTCORE_TIMESTAMP" >> .agentcore-loop/daemon-summary.txt
+        if [ -f .agentcore-loop/pr-url.txt ]; then
+          echo "PR: $(cat .agentcore-loop/pr-url.txt)" >> .agentcore-loop/daemon-summary.txt
+        fi
+        cat .agentcore-loop/daemon-summary.txt
+      capabilities: [READ, EDIT, RUN_COMMANDS]
+      timeout: "30s"
+      outputs:
+        - name: summary
+          path: ".agentcore-loop/daemon-summary.txt"
