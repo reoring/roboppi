@@ -18,7 +18,7 @@ The workflow's `bootstrap` step will also validate that the worker CLIs exist in
 
 ## Run
 
-From the AgentCore repo root:
+From the Roboppi repo root:
 
 ```bash
 bash examples/agent-pr-loop-demo/run-in-tmp.sh
@@ -29,7 +29,7 @@ By default, this creates a unique workspace directory under `/tmp/` and prints t
 ### Use a fixed workspace path
 
 ```bash
-TARGET=/tmp/agentcore-prloop-bun-linalg \
+TARGET=/tmp/roboppi-prloop-bun-linalg \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 

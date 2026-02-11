@@ -1,6 +1,10 @@
-# AgentCore
+# Roboppi
 
-AgentCore is an execution-control runtime for AI agents. It delegates heavy work (code edits, commands, tests) to external worker CLIs (OpenCode / Claude Code / Codex CLI), while AgentCore focuses on the safety mechanics:
+Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for AI agents.
+
+"Roboppi" is a cute, nickname-style Japanese name: "robo" (robot) + a playful diminutive-style ending ("-ppi") that can feel a bit like saying "little" or "mini". The vibe is a small robot sidekick that keeps your automation safe and on track.
+
+It delegates heavy work (code edits, commands, tests) to external worker CLIs (OpenCode / Claude Code / Codex CLI), while Roboppi focuses on the safety mechanics:
 
 - stop (timeouts, cancellation)
 - limit (concurrency/RPS/budgets)
@@ -31,6 +35,8 @@ bun install
 ```
 
 ## Example: Agent PR Loop
+
+Note: some paths and environment variables in the examples still use the legacy `agentcore` prefix (e.g. `.agentcore-loop/`, `AGENTCORE_ROOT`).
 
 This is the default multi-worker loop:
 
@@ -97,7 +103,7 @@ bun run src/cli.ts run --worker opencode --workspace /tmp/demo \
 
 ## Project Layout
 
-- AgentCore CLI: `src/cli.ts` (IPC server + one-shot run)
+- Roboppi CLI: `src/cli.ts` (IPC server + one-shot run)
 - Workflow runner: `src/workflow/run.ts`
 - Multi-worker step runner: `src/workflow/multi-worker-step-runner.ts`
 - Design document: `docs/design.md`
