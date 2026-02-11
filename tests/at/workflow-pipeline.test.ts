@@ -22,17 +22,17 @@ describe("AT-1.1: implement-review-fix full pipeline", () => {
   const yaml = `
 name: implement-review-fix
 version: "1"
-description: "機能実装後にレビューし、指摘を修正する"
+description: "Implement a feature, review it, and fix feedback"
 timeout: "1h"
 concurrency: 2
 
 steps:
   implement:
-    description: "機能の初期実装を行う"
+    description: "Implement the initial version"
     worker: CODEX_CLI
     instructions: |
-      src/feature.ts に新しいユーティリティ関数を追加してください。
-      仕様は instructions.md を参照。
+      Add a new utility function to src/feature.ts.
+      See instructions.md for the spec.
     capabilities: [READ, EDIT]
     timeout: "15m"
     max_retries: 1
@@ -43,11 +43,11 @@ steps:
         type: code
 
   test:
-    description: "実装のテストを実行する"
+    description: "Run tests for the implementation"
     worker: CODEX_CLI
     depends_on: [implement]
     instructions: |
-      テストスイートを実行し、結果を報告してください。
+      Run the test suite and report results.
     capabilities: [READ, RUN_TESTS]
     inputs:
       - from: implement
@@ -60,12 +60,12 @@ steps:
         type: test-report
 
   review:
-    description: "実装コードをレビューする"
+    description: "Review the implementation"
     worker: CLAUDE_CODE
     depends_on: [implement]
     instructions: |
-      src/feature.ts のコードレビューを行ってください。
-      コード品質、エラーハンドリング、テストの観点で指摘をまとめてください。
+      Review src/feature.ts.
+      Provide feedback on code quality, error handling, and tests.
     capabilities: [READ]
     inputs:
       - from: implement
@@ -78,12 +78,12 @@ steps:
         type: review
 
   fix:
-    description: "レビュー指摘とテスト結果に基づき修正する"
+    description: "Fix issues from review and test results"
     worker: CODEX_CLI
     depends_on: [review, test]
     instructions: |
-      review.md の指摘事項を反映してください。
-      テストが失敗していた場合はそれも修正してください。
+      Apply feedback from review.md.
+      If tests failed, fix those issues too.
     capabilities: [READ, EDIT, RUN_TESTS]
     inputs:
       - from: review
@@ -190,16 +190,16 @@ describe("AT-1.2: implement-from-todo completion_check loop", () => {
   const yaml = `
 name: implement-from-todo
 version: "1"
-description: "todo.md のタスクをすべて完了するまで繰り返し実装する"
+description: "Repeat implementation until all tasks in todo.md are complete"
 timeout: "2h"
 
 steps:
   implement-all:
-    description: "todo.md の未完了タスクをすべて実装する"
+    description: "Implement tasks from todo.md until done"
     worker: CODEX_CLI
     instructions: |
-      todo.md を読み、- [ ] でマークされた未完了タスクを1つ選んで実装してください。
-      実装が完了したら、該当行を - [x] に更新してください。
+      Read todo.md and pick one incomplete task marked with - [ ].
+      Implement it, then update the line to - [x].
     capabilities: [READ, EDIT, RUN_TESTS]
     timeout: "10m"
     max_retries: 1
@@ -207,9 +207,9 @@ steps:
     completion_check:
       worker: CLAUDE_CODE
       instructions: |
-        todo.md を確認してください。
-        - [ ] が1つでも残っていれば「未完了」と判定してください。
-        すべて - [x] であれば「完了」と判定してください。
+        Check todo.md.
+        If any - [ ] remains, mark as incomplete.
+        If all are - [x], mark as complete.
       capabilities: [READ]
       timeout: "2m"
     max_iterations: 20
@@ -223,10 +223,10 @@ steps:
         type: review
 
   verify:
-    description: "全タスク完了後にテストを実行"
+    description: "Run tests after all tasks complete"
     worker: CODEX_CLI
     depends_on: [implement-all]
-    instructions: "全テストスイートを実行し、結果を報告してください"
+    instructions: "Run the full test suite and report results"
     capabilities: [READ, RUN_TESTS]
     inputs:
       - from: implement-all

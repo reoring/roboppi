@@ -1,12 +1,12 @@
-# コードレビュー — git diff を分析してレポートを生成
+# Code review — collect git diff and generate report
 name: code-review
 version: "1"
-description: "直近のコミットの diff を取得し、レビューレポートを作成する"
+description: "Fetch recent diffs and generate a review report"
 timeout: "3m"
 
 steps:
   collect-diff:
-    description: "直近 5 コミットの diff を収集"
+    description: "Collect diff for the last 5 commits"
     worker: CUSTOM
     instructions: |
       echo "=== Code Review Diff ===" > diff.txt
@@ -29,7 +29,7 @@ steps:
         path: "diff.txt"
 
   generate-report:
-    description: "diff を元にレビューレポートを作成"
+    description: "Generate report from diff"
     worker: CUSTOM
     depends_on: [collect-diff]
     instructions: |

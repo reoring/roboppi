@@ -1,12 +1,12 @@
-# Hello World — 最小ワークフロー
-# 1ステップだけのシンプルな例
+# Hello World — minimal workflow
+# A single-step example
 name: hello-world
 version: "1"
 timeout: "1m"
 
 steps:
   greet:
-    description: "Hello World ファイルを作成する"
+    description: "Create a Hello World file"
     worker: CUSTOM
     instructions: |
       echo "Hello from AgentCore Workflow!" > hello.txt

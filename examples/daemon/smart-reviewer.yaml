@@ -1,11 +1,11 @@
-# Smart Reviewer — LLM ゲート付き定期レビュー daemon
-# 5 分ごとに「レビューすべきか」をシェルで判定し、
-# 新しいコミットがあるときだけワークフローを実行する
+# Smart Reviewer — periodic review daemon with an execution gate
+# Every 5 minutes, a shell-based gate decides whether to run.
+# The workflow executes only when new commits are detected.
 #
-# 起動: bun run src/daemon/cli.ts examples/daemon/smart-reviewer.yaml --verbose
+# Run: bun run src/daemon/cli.ts examples/daemon/smart-reviewer.yaml --verbose
 name: smart-reviewer
 version: "1"
-description: "新しいコミットがあるときだけコードレビューを実行する daemon"
+description: "Run code review only when new commits exist"
 
 workspace: "/tmp/agentcore-daemon-reviewer"
 state_dir: "/tmp/agentcore-daemon-reviewer/.daemon-state"
@@ -22,18 +22,18 @@ triggers:
     workflow: ./workflows/code-review.yaml
     cooldown: "5m"
 
-    # --- 実行ゲート ---
-    # シェルで「新しいコミットがあるか」を判定
-    # exit 0 = 実行する / exit 1 = スキップ
+    # --- Execution gate ---
+    # Decide whether new commits exist.
+    # exit 0 = run / exit 1 = skip
     evaluate:
       worker: CUSTOM
       instructions: |
         cd {{workspace}} 2>/dev/null || exit 1
 
-        # git リポジトリでなければスキップ
+        # Skip if not a git repository.
         git rev-parse --git-dir > /dev/null 2>&1 || exit 1
 
-        # 前回レビュー時刻を記録するファイル
+        # File that stores the last reviewed commit.
         MARKER=".daemon-state/.last-review-commit"
 
         CURRENT=$(git rev-parse HEAD 2>/dev/null || echo "none")
@@ -54,8 +54,8 @@ triggers:
     context:
       last_result: true
 
-    # --- 結果分析 ---
-    # レビュー結果のサマリーを生成する
+    # --- Result analysis ---
+    # Generate a short summary of the workflow run.
     analyze:
       worker: CUSTOM
       instructions: |

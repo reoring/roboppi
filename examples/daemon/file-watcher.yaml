@@ -1,13 +1,13 @@
-# File Watcher — ファイル変更検知でテスト自動実行
-# src/**/*.ts の変更を検知し、debounce 付きでテストを実行する
+# File Watcher — run tests on file changes
+# Watches src/**/*.ts and runs tests with debounce
 #
-# ※ FSWatch イベントソースは Phase 2 で実装予定
-# この例は設定の書き方のリファレンスとして使用
+# NOTE: the fswatch event source is planned for Phase 2.
+# This file is a configuration reference.
 #
-# 起動: bun run src/daemon/cli.ts examples/daemon/file-watcher.yaml --verbose
+# Run: bun run src/daemon/cli.ts examples/daemon/file-watcher.yaml --verbose
 name: file-watcher
 version: "1"
-description: "TypeScript ファイルの変更を検知して自動テストを実行する daemon"
+description: "Run tests automatically when TypeScript files change"
 
 workspace: "/tmp/agentcore-daemon-watcher"
 state_dir: "/tmp/agentcore-daemon-watcher/.daemon-state"

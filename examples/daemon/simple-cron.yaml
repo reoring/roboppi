@@ -1,10 +1,10 @@
-# Simple Cron Daemon — 定期実行の最小例
-# 30 秒ごとにヘルスチェックワークフローを実行する
+# Simple Cron Daemon — minimal periodic run
+# Runs the health-check workflow every 30 seconds
 #
-# 起動: bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
+# Run: bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
 name: simple-cron
 version: "1"
-description: "30 秒ごとにヘルスチェックを実行するシンプルな daemon"
+description: "A simple daemon that runs a health-check every 30 seconds"
 
 workspace: "/tmp/agentcore-daemon-simple"
 state_dir: "/tmp/agentcore-daemon-simple/.daemon-state"

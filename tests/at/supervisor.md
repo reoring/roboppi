@@ -1,119 +1,119 @@
-# Workflow システム 受け入れテスト設計
+# Workflow System Acceptance Test Plan
 
-## テスト方針
+## Test Strategy
 
-- **テストレベル**: YAML 文字列を入力、`WorkflowState` を出力として検証する E2E テスト
-- **Worker**: `MockStepRunner` を使用。実プロセスは起動しない（プロセス統合はスコープ外）
-- **ファイル I/O**: 実際のファイルシステム操作を行う（`ContextManager` が実ファイルを扱うため）
-- **全テストを temp ディレクトリ内で実行し、テスト後にクリーンアップする**
-
----
-
-## AT-1: YAML パース → DAG バリデーション → 実行 フルパイプライン
-
-### AT-1.1 正常系: 設計書の「実装→レビュー→修正」例を完走
-
-**入力 YAML**: `docs/workflow-design.md` セクション 3.1 の `implement-review-fix` ワークフロー
-
-**MockStepRunner の振る舞い**:
-- 全ステップ SUCCEEDED を返す
-- 各ステップで `outputs[].path` に該当するファイルを workspace に書き出す
-
-**検証項目**:
-| # | 検証内容 | 期待値 |
-|---|---------|--------|
-| 1 | `WorkflowState.status` | `SUCCEEDED` |
-| 2 | 全ステップの `StepState.status` | `SUCCEEDED` |
-| 3 | 実行順序 | `implement` → (`test`, `review` 並列) → `fix` |
-| 4 | `context/implement/implementation/` にファイルが存在 | true |
-| 5 | `context/review/review-comments/` にファイルが存在 | true |
-| 6 | `context/test/test-report/` にファイルが存在 | true |
-| 7 | `context/_workflow.json` が存在し、name が正しい | `"implement-review-fix"` |
-| 8 | 各ステップの `_meta.json` が存在する | true |
-
-### AT-1.2 正常系: 設計書の「completion_check ループ」例を完走
-
-**入力 YAML**: `docs/workflow-design.md` セクション 3.3 の `implement-from-todo` ワークフロー
-
-**MockStepRunner の振る舞い**:
-- `implement-all` ステップ: 毎回 SUCCEEDED
-- `completion_check`: 3 回目で `complete: true` を返す
-- `verify` ステップ: SUCCEEDED
-
-**検証項目**:
-| # | 検証内容 | 期待値 |
-|---|---------|--------|
-| 1 | `WorkflowState.status` | `SUCCEEDED` |
-| 2 | `implement-all` の `StepState.iteration` | `3` |
-| 3 | `implement-all` の `StepState.status` | `SUCCEEDED` |
-| 4 | `verify` の `StepState.status` | `SUCCEEDED` |
-| 5 | StepRunner の `runStep` 呼び出し回数（implement-all） | `3` |
-| 6 | StepRunner の `runCheck` 呼び出し回数（implement-all） | `3` |
-
-### AT-1.3 異常系: 不正な YAML は早期にリジェクト
-
-**入力 YAML**: 各パターン
-
-| ケース | YAML の問題 | 期待動作 |
-|--------|-----------|---------|
-| a | `version: "2"` | `WorkflowParseError`（version must be "1"） |
-| b | `steps` が空オブジェクト | `WorkflowParseError`（at least one step） |
-| c | ステップの `worker: "INVALID"` | `WorkflowParseError`（invalid worker） |
-| d | `capabilities: ["DESTROY"]` | `WorkflowParseError`（invalid capability） |
-| e | `completion_check` あり + `max_iterations` なし | `WorkflowParseError`（max_iterations required） |
-| f | `completion_check` あり + `max_iterations: 1` | `WorkflowParseError`（must be >= 2） |
-| g | `on_failure: "explode"` | `WorkflowParseError`（invalid on_failure） |
-| h | YAML 構文エラー（インデント不正） | `WorkflowParseError`（Invalid YAML） |
-
-### AT-1.4 異常系: DAG バリデーションエラー
-
-| ケース | DAG の問題 | 期待動作 |
-|--------|-----------|---------|
-| a | A → B → A（循環） | `validateDag` がサイクルエラーを返す |
-| b | A → B → C → A（3 ノード循環） | `validateDag` がサイクルエラーを返す |
-| c | `depends_on: ["nonexistent"]` | 参照整合性エラー |
-| d | `inputs[].from` が `depends_on` にない | 入力整合性エラー |
-| e | 同一ステップ内で `outputs[].name` が重複 | 出力名一意性エラー |
-| f | 自己参照 `depends_on: ["self"]` | サイクルエラー |
+- **Test level**: E2E tests that take YAML strings as input and assert on the resulting `WorkflowState`
+- **Worker**: use `MockStepRunner`; do not spawn real processes (process integration is out of scope)
+- **File I/O**: use real filesystem operations (because `ContextManager` works with real files)
+- **Run all tests in a temp directory and clean up afterwards**
 
 ---
 
-## AT-2: DAG 実行トポロジー
+## AT-1: Full pipeline (YAML parse -> DAG validate -> execute)
 
-### AT-2.1 線形チェーン (A → B → C → D)
+### AT-1.1 Happy path: complete the design-doc "implement -> review -> fix" example
 
-**検証項目**:
-- 実行順序が厳密に `[A, B, C, D]` であること
-- 各ステップ開始時に先行ステップが SUCCEEDED であること
-- 全ステップ SUCCEEDED → `WorkflowStatus.SUCCEEDED`
+**Input YAML**: the `implement-review-fix` workflow from `docs/workflow-design.md` section 3.1
 
-### AT-2.2 ダイヤモンド (A → {B, C} → D)
+**MockStepRunner behavior**:
+- Return `SUCCEEDED` for all steps
+- For each step, write the file corresponding to `outputs[].path` into the workspace
 
-**検証項目**:
-- A 完了後に B, C が並列起動すること
-- B, C 両方完了後に D が起動すること
-- MockStepRunner の `maxConcurrentObserved >= 2`
+**Assertions**:
+| # | What | Expected |
+|---|---------|--------|
+| 1 | `WorkflowState.status` | `SUCCEEDED` |
+| 2 | `StepState.status` for all steps | `SUCCEEDED` |
+| 3 | Execution order | `implement` -> (`test`, `review` in parallel) -> `fix` |
+| 4 | File exists at `context/implement/implementation/` | true |
+| 5 | File exists at `context/review/review-comments/` | true |
+| 6 | File exists at `context/test/test-report/` | true |
+| 7 | `context/_workflow.json` exists with correct `name` | `"implement-review-fix"` |
+| 8 | Each step has `_meta.json` | true |
 
-### AT-2.3 ワイドファンアウト (A → {B, C, D, E})
+### AT-1.2 Happy path: complete the design-doc `completion_check` loop example
 
-**検証項目**:
-- 4 ステップが並列起動可能であること（concurrency 制限なし時）
-- concurrency: 2 の場合、同時実行が 2 以下であること
+**Input YAML**: the `implement-from-todo` workflow from `docs/workflow-design.md` section 3.3
 
-### AT-2.4 独立グラフ (A, B, C 相互依存なし)
+**MockStepRunner behavior**:
+- `implement-all`: always `SUCCEEDED`
+- `completion_check`: return `complete: true` on the 3rd call
+- `verify`: `SUCCEEDED`
 
-**検証項目**:
-- 全ステップが即座に READY になること
-- 並列実行されること
-- いずれかが FAILED でも他は影響を受けないこと（on_failure のポリシーによる）
+**Assertions**:
+| # | What | Expected |
+|---|---------|--------|
+| 1 | `WorkflowState.status` | `SUCCEEDED` |
+| 2 | `StepState.iteration` for `implement-all` | `3` |
+| 3 | `StepState.status` for `implement-all` | `SUCCEEDED` |
+| 4 | `StepState.status` for `verify` | `SUCCEEDED` |
+| 5 | StepRunner `runStep` call count (`implement-all`) | `3` |
+| 6 | StepRunner `runCheck` call count (`implement-all`) | `3` |
 
-### AT-2.5 深い依存チェーン (A → B → C → ... → J, 10段)
+### AT-1.3 Negative cases: invalid YAML is rejected early
 
-**検証項目**:
-- 全 10 ステップが順番に完走すること
-- 中間ステップの失敗が後続全てを SKIPPED にすること（on_failure: abort 時）
+**Input YAML**: each case below
 
-### AT-2.6 複雑 DAG（複数合流点）
+| Case | Problem | Expected |
+|--------|-----------|---------|
+| a | `version: "2"` | `WorkflowParseError` (version must be "1") |
+| b | `steps` is an empty object | `WorkflowParseError` (at least one step) |
+| c | step has `worker: "INVALID"` | `WorkflowParseError` (invalid worker) |
+| d | `capabilities: ["DESTROY"]` | `WorkflowParseError` (invalid capability) |
+| e | `completion_check` present + missing `max_iterations` | `WorkflowParseError` (max_iterations required) |
+| f | `completion_check` present + `max_iterations: 1` | `WorkflowParseError` (must be >= 2) |
+| g | `on_failure: "explode"` | `WorkflowParseError` (invalid on_failure) |
+| h | YAML syntax error (bad indentation) | `WorkflowParseError` (Invalid YAML) |
+
+### AT-1.4 Negative cases: DAG validation errors
+
+| Case | DAG issue | Expected |
+|--------|-----------|---------|
+| a | A -> B -> A (cycle) | `validateDag` returns a cycle error |
+| b | A -> B -> C -> A (3-node cycle) | `validateDag` returns a cycle error |
+| c | `depends_on: ["nonexistent"]` | reference integrity error |
+| d | `inputs[].from` not listed in `depends_on` | input integrity error |
+| e | duplicate `outputs[].name` within a step | output-name uniqueness error |
+| f | self dependency `depends_on: ["self"]` | cycle error |
+
+---
+
+## AT-2: DAG execution topology
+
+### AT-2.1 Linear chain (A -> B -> C -> D)
+
+**Assertions**:
+- Execution order is exactly `[A, B, C, D]`
+- Each step starts only after its dependencies are `SUCCEEDED`
+- All steps `SUCCEEDED` -> `WorkflowStatus.SUCCEEDED`
+
+### AT-2.2 Diamond (A -> {B, C} -> D)
+
+**Assertions**:
+- B and C start in parallel after A completes
+- D starts only after both B and C complete
+- `MockStepRunner.maxConcurrentObserved >= 2`
+
+### AT-2.3 Wide fan-out (A -> {B, C, D, E})
+
+**Assertions**:
+- All 4 steps can start in parallel when no concurrency limit is set
+- With `concurrency: 2`, observed parallelism is <= 2
+
+### AT-2.4 Independent graph (A, B, C have no dependencies)
+
+**Assertions**:
+- All steps become READY immediately
+- Steps run in parallel
+- A FAILED step does not block others (depending on `on_failure` policy)
+
+### AT-2.5 Deep dependency chain (A -> B -> C -> ... -> J, depth 10)
+
+**Assertions**:
+- All 10 steps run to completion in order
+- With `on_failure: abort`, a failure causes all dependents to become SKIPPED
+
+### AT-2.6 Complex DAG (multiple join points)
 
 ```
 A → B → D → F
@@ -121,318 +121,318 @@ A → C → D
 A → C → E → F
 ```
 
-**検証項目**:
-- D は B と C の両方が完了してから起動
-- F は D と E の両方が完了してから起動
-- E は C のみに依存
+**Assertions**:
+- D starts only after both B and C complete
+- F starts only after both D and E complete
+- E depends only on C
 
 ---
 
-## AT-3: コンテキスト受け渡し（ContextManager）
+## AT-3: Context hand-off (ContextManager)
 
-### AT-3.1 ステップ間のファイル受け渡し
+### AT-3.1 Passing a file between steps
 
-**シナリオ**:
-1. ステップ A が workspace に `output.txt` を書き出す
-2. ステップ A の `outputs: [{name: "result", path: "output.txt"}]`
-3. ステップ B が `inputs: [{from: "A", artifact: "result"}]` で参照
-4. ステップ B の workspace に `result/output.txt` が存在することを検証
+**Scenario**:
+1. step A writes `output.txt` into its workspace
+2. step A declares `outputs: [{name: "result", path: "output.txt"}]`
+3. step B declares `inputs: [{from: "A", artifact: "result"}]`
+4. verify that `result/output.txt` exists in step B's workspace
 
-**MockStepRunner の振る舞い**:
-- A の `runStep` 内で `fs.writeFile(workspace + "/output.txt", "hello")` を実行
-- B の `runStep` 内で `fs.readFile(workspace + "/result/output.txt")` を読んで内容を検証
+**MockStepRunner behavior**:
+- In A's `runStep`, run `fs.writeFile(workspace + "/output.txt", "hello")`
+- In B's `runStep`, read `fs.readFile(workspace + "/result/output.txt")` and assert the content
 
-**検証項目**:
-| # | 検証内容 | 期待値 |
+**Assertions**:
+| # | What | Expected |
 |---|---------|--------|
-| 1 | `context/A/result/output.txt` が存在 | true |
-| 2 | B の workspace に `result/output.txt` が存在 | true |
-| 3 | ファイルの内容 | `"hello"` |
+| 1 | `context/A/result/output.txt` exists | true |
+| 2 | `result/output.txt` exists in B workspace | true |
+| 3 | file content | `"hello"` |
 
-### AT-3.2 ディレクトリ成果物の受け渡し
+### AT-3.2 Passing a directory artifact
 
-**シナリオ**: ステップ A が `src/` ディレクトリを出力し、ステップ B が参照する
+**Scenario**: step A outputs a `src/` directory and step B consumes it
 
-**検証項目**:
-- ディレクトリごと `context/A/<artifactName>/` にコピーされること
-- B の workspace にディレクトリ構造が再現されること
+**Assertions**:
+- The directory is copied under `context/A/<artifactName>/`
+- The directory structure is recreated in B's workspace
 
-### AT-3.3 `as` によるリネーム
+### AT-3.3 Renaming with `as`
 
-**シナリオ**: `inputs: [{from: "A", artifact: "result", as: "prev-output"}]`
+**Scenario**: `inputs: [{from: "A", artifact: "result", as: "prev-output"}]`
 
-**検証項目**:
-- B の workspace に `prev-output/` として配置されること（`result/` ではない）
+**Assertions**:
+- The directory is placed in B's workspace as `prev-output/` (not `result/`)
 
-### AT-3.4 存在しないアーティファクトの参照
+### AT-3.4 Referencing a missing artifact
 
-**シナリオ**: A が outputs で宣言したパスにファイルを書かなかった場合
+**Scenario**: step A does not write the file declared in its outputs
 
-**検証項目**:
-- `collectOutputs` がエラーにならないこと（スキップ）
-- B の `resolveInputs` で該当ディレクトリが空であること
+**Assertions**:
+- `collectOutputs` does not error (it skips missing artifacts)
+- In B's `resolveInputs`, the corresponding input directory is empty
 
-### AT-3.5 on_failure: continue 時の欠落入力
+### AT-3.5 Missing inputs with on_failure: continue
 
-**シナリオ**:
-- A が FAILED（on_failure: continue）
-- B が A の成果物を inputs で参照
+**Scenario**:
+- A FAILED (on_failure: continue)
+- B references A's artifacts via inputs
 
-**検証項目**:
-- B は起動されること
-- B の workspace に A の成果物が存在しないこと（空）
-- B がそれでも正常に実行可能なこと
+**Assertions**:
+- B is still started
+- A's artifacts do not exist in B's workspace (empty)
+- B can still execute successfully
 
-### AT-3.6 `_meta.json` の内容検証
+### AT-3.6 Verifying `_meta.json`
 
-**シナリオ**: 成功したステップの `_meta.json` を読み取る
+**Scenario**: read `_meta.json` for a successful step
 
-**検証項目**:
-| フィールド | 期待値 |
+**Assertions**:
+| Field | Expected |
 |-----------|--------|
-| `stepId` | ステップ ID と一致 |
+| `stepId` | matches the step id |
 | `status` | `"SUCCEEDED"` |
-| `startedAt` | 0 より大きい数値 |
-| `completedAt` | `startedAt` 以上 |
-| `attempts` | 1 以上 |
-| `workerKind` | ステップの `worker` と一致 |
-| `artifacts` | `outputs` 定義と対応 |
+| `startedAt` | number > 0 |
+| `completedAt` | >= `startedAt` |
+| `attempts` | >= 1 |
+| `workerKind` | matches the step's `worker` |
+| `artifacts` | corresponds to the `outputs` definition |
 
-### AT-3.7 `_workflow.json` の内容検証
+### AT-3.7 Verifying `_workflow.json`
 
-**検証項目**:
-| フィールド | 期待値 |
+**Assertions**:
+| Field | Expected |
 |-----------|--------|
-| `id` | UUID 形式 |
-| `name` | ワークフロー名と一致 |
-| `startedAt` | 0 より大きい数値 |
-| `status` | `"RUNNING"`（実行中に書き込まれるため） |
+| `id` | UUID format |
+| `name` | matches the workflow name |
+| `startedAt` | number > 0 |
+| `status` | `"RUNNING"` (written while executing) |
 
 ---
 
-## AT-4: completion_check ループ
+## AT-4: completion_check loop
 
-### AT-4.1 初回で完了（ループなし）
+### AT-4.1 Complete on first check (no loop)
 
-**シナリオ**: completion_check が 1 回目で `complete: true`
+**Scenario**: completion_check returns `complete: true` on the first call
 
-**検証項目**:
-- `runStep` 1 回、`runCheck` 1 回
+**Assertions**:
+- `runStep` called once, `runCheck` called once
 - `StepState.iteration` = 1
 - `StepState.status` = `SUCCEEDED`
 
-### AT-4.2 N 回目で完了
+### AT-4.2 Complete on the Nth iteration
 
-**シナリオ**: completion_check が N 回目（N = 5）で `complete: true`、`max_iterations: 10`
+**Scenario**: completion_check returns `complete: true` on the Nth call (N = 5), with `max_iterations: 10`
 
-**検証項目**:
-- `runStep` 5 回、`runCheck` 5 回
+**Assertions**:
+- `runStep` called 5 times, `runCheck` called 5 times
 - `StepState.iteration` = 5
-- ワークフロー全体 SUCCEEDED
+- workflow status is SUCCEEDED
 
-### AT-4.3 max_iterations 到達 + abort
+### AT-4.3 Hit max_iterations + abort
 
-**シナリオ**: completion_check が常に `complete: false`、`max_iterations: 3`、`on_iterations_exhausted: "abort"`
+**Scenario**: completion_check always returns `complete: false`, with `max_iterations: 3` and `on_iterations_exhausted: "abort"`
 
-**検証項目**:
-- `runStep` 3 回、`runCheck` 3 回
-- ステップ FAILED
-- 後続ステップ SKIPPED
-- ワークフロー FAILED
+**Assertions**:
+- `runStep` called 3 times, `runCheck` called 3 times
+- step FAILED
+- dependent steps SKIPPED
+- workflow FAILED
 
-### AT-4.4 max_iterations 到達 + continue
+### AT-4.4 Hit max_iterations + continue
 
-**シナリオ**: completion_check が常に `complete: false`、`max_iterations: 3`、`on_iterations_exhausted: "continue"`
+**Scenario**: completion_check always returns `complete: false`, with `max_iterations: 3` and `on_iterations_exhausted: "continue"`
 
-**検証項目**:
-- ステップ INCOMPLETE
-- 後続ステップが実行されること
-- ワークフロー SUCCEEDED（他に失敗がなければ）
+**Assertions**:
+- step INCOMPLETE
+- dependent steps still execute
+- workflow SUCCEEDED (if there are no other failures)
 
-### AT-4.5 チェッカー自体が失敗
+### AT-4.5 Checker itself fails
 
-**シナリオ**: completion_check が `{complete: false, failed: true}` を返す
+**Scenario**: completion_check returns `{complete: false, failed: true}`
 
-**検証項目**:
-- ステップ FAILED
-- ループは即座に終了（max_iterations に関わらず）
-- on_failure ポリシーに基づき後続が SKIPPED or 実行
+**Assertions**:
+- step FAILED
+- loop stops immediately (regardless of max_iterations)
+- dependents are SKIPPED or executed based on on_failure policy
 
-### AT-4.6 ループ中のステップ失敗 + retry 後に completion_check
+### AT-4.6 Step failure during loop + retry before completion_check
 
-**シナリオ**:
-- iteration 1: `runStep` FAILED (RETRYABLE_TRANSIENT) → retry → SUCCEEDED → check 未完了
-- iteration 2: `runStep` SUCCEEDED → check 完了
+**Scenario**:
+- iteration 1: `runStep` FAILED (RETRYABLE_TRANSIENT) -> retry -> SUCCEEDED -> check incomplete
+- iteration 2: `runStep` SUCCEEDED -> check complete
 
-**検証項目**:
-- `runStep` 3 回（失敗 1 + リトライ成功 1 + iteration 2 で 1）
-- `runCheck` 2 回
-- ステップ SUCCEEDED、iteration = 2
+**Assertions**:
+- `runStep` called 3 times (1 failure + 1 retry success + 1 for iteration 2)
+- `runCheck` called 2 times
+- step SUCCEEDED, iteration = 2
 
-### AT-4.7 ループ中のイテレーション間でファイル状態が引き継がれる
+### AT-4.7 File state persists across loop iterations
 
-**シナリオ**:
-- iteration 1: Worker が `progress.txt` に "step1" を書く
-- iteration 2: Worker が `progress.txt` を読み、"step1\nstep2" に追記
-- completion_check: iteration 2 で完了
+**Scenario**:
+- iteration 1: worker writes "step1" to `progress.txt`
+- iteration 2: worker reads `progress.txt` and appends, producing "step1\nstep2"
+- completion_check: completes on iteration 2
 
-**検証項目**:
-- 同一 workspace 上で動作しているため、ファイルの状態が蓄積されること
-- 最終的な `progress.txt` の内容が "step1\nstep2" であること
+**Assertions**:
+- file state accumulates because execution uses the same workspace
+- final `progress.txt` content is "step1\nstep2"
 
 ---
 
-## AT-5: エラーハンドリング
+## AT-5: Error handling
 
-### AT-5.1 on_failure: abort — 後続が全て SKIPPED
+### AT-5.1 on_failure: abort - all dependents are SKIPPED
 
-**シナリオ**: A → B → C、B が FAILED (on_failure: abort)
+**Scenario**: A -> B -> C, B FAILED (on_failure: abort)
 
-**検証項目**:
-- A: SUCCEEDED、B: FAILED、C: SKIPPED
-- ワークフロー: FAILED
+**Assertions**:
+- A: SUCCEEDED, B: FAILED, C: SKIPPED
+- workflow: FAILED
 
-### AT-5.2 on_failure: continue — 後続が実行される
+### AT-5.2 on_failure: continue - dependents still execute
 
-**シナリオ**: A → B → C、A が FAILED (on_failure: continue)
+**Scenario**: A -> B -> C, A FAILED (on_failure: continue)
 
-**検証項目**:
-- A: FAILED、B: SUCCEEDED、C: SUCCEEDED
-- ワークフロー: FAILED（FAILED ステップがあるため）
+**Assertions**:
+- A: FAILED, B: SUCCEEDED, C: SUCCEEDED
+- workflow: FAILED (because a step FAILED)
 
-### AT-5.3 on_failure: retry — リトライ成功
+### AT-5.3 on_failure: retry - retry succeeds
 
-**シナリオ**: A (max_retries: 2)、1 回目 FAILED (RETRYABLE_TRANSIENT)、2 回目 SUCCEEDED
+**Scenario**: A (max_retries: 2), first attempt FAILED (RETRYABLE_TRANSIENT), second attempt SUCCEEDED
 
-**検証項目**:
+**Assertions**:
 - A: SUCCEEDED
-- `runStep` 呼び出し回数: 2
-- ワークフロー: SUCCEEDED
+- `runStep` call count: 2
+- workflow: SUCCEEDED
 
-### AT-5.4 on_failure: retry — リトライ上限到達
+### AT-5.4 on_failure: retry - hit retry limit
 
-**シナリオ**: A (max_retries: 2, on_failure: retry)、全回 FAILED
+**Scenario**: A (max_retries: 2, on_failure: retry), all attempts FAILED
 
-**検証項目**:
-- `runStep` 呼び出し回数: 3（初回 + リトライ 2 回）
+**Assertions**:
+- `runStep` call count: 3 (initial + 2 retries)
 - A: FAILED
-- 後続: SKIPPED
+- dependents: SKIPPED
 
-### AT-5.5 ErrorClass.FATAL が on_failure 設定を上書き
+### AT-5.5 ErrorClass.FATAL overrides on_failure
 
-| ケース | on_failure 設定 | ErrorClass | 期待動作 |
+| Case | on_failure | ErrorClass | Expected behavior |
 |--------|---------------|-----------|---------|
-| a | `continue` | `FATAL` | ステップ FAILED、後続 SKIPPED |
-| b | `retry` (max_retries: 5) | `FATAL` | リトライなし（runStep 1回）、後続 SKIPPED |
-| c | `abort` | `FATAL` | ステップ FAILED、後続 SKIPPED |
+| a | `continue` | `FATAL` | step FAILED, dependents SKIPPED |
+| b | `retry` (max_retries: 5) | `FATAL` | no retry (`runStep` once), dependents SKIPPED |
+| c | `abort` | `FATAL` | step FAILED, dependents SKIPPED |
 
-### AT-5.6 ErrorClass ごとの on_failure: retry 動作
+### AT-5.6 Retry behavior by ErrorClass (on_failure: retry)
 
-| ErrorClass | on_failure: retry 時の動作 |
+| ErrorClass | Behavior with on_failure: retry |
 |-----------|--------------------------|
-| `RETRYABLE_TRANSIENT` | リトライされる |
-| `RETRYABLE_RATE_LIMIT` | リトライされる |
-| `NON_RETRYABLE` | リトライされない（即 FAILED） |
-| `FATAL` | リトライされない（即 abort） |
+| `RETRYABLE_TRANSIENT` | retries |
+| `RETRYABLE_RATE_LIMIT` | retries |
+| `NON_RETRYABLE` | no retry (immediate FAILED) |
+| `FATAL` | no retry (immediate abort) |
 
-### AT-5.7 並列ステップの一方が abort した場合
+### AT-5.7 One of parallel steps aborts
 
-**シナリオ**: A → {B, C} → D、B が FAILED (abort)、C は実行中
+**Scenario**: A -> {B, C} -> D, B FAILED (abort), C is running
 
-**検証項目**:
+**Assertions**:
 - B: FAILED
-- C: 実行中なら完走する（実行中ステップはキャンセルされない）
-- D: SKIPPED（B の abort により）
-- ワークフロー: FAILED
+- C: if already running, it runs to completion (running steps are not cancelled)
+- D: SKIPPED (due to B abort)
+- workflow: FAILED
 
-### AT-5.8 デフォルト on_failure の確認
+### AT-5.8 Default on_failure
 
-**シナリオ**: on_failure 未指定のステップが FAILED
+**Scenario**: a step without on_failure specified FAILED
 
-**検証項目**:
-- abort として扱われること（後続 SKIPPED）
+**Assertions**:
+- treated as abort (dependents are SKIPPED)
 
 ---
 
-## AT-6: タイムアウト
+## AT-6: Timeout
 
-### AT-6.1 ワークフロー全体タイムアウト
+### AT-6.1 Workflow-level timeout
 
-**シナリオ**: workflow.timeout = "1s"、ステップ A が 5 秒かかる
+**Scenario**: workflow.timeout = "1s", step A takes 5 seconds
 
-**検証項目**:
+**Assertions**:
 - A: CANCELLED
-- 未実行ステップ: SKIPPED
-- ワークフロー: TIMED_OUT
-- 実行時間が timeout 付近で終了すること（±500ms）
+- not-started steps: SKIPPED
+- workflow: TIMED_OUT
+- total time ends near timeout (+/- 500ms)
 
-### AT-6.2 タイムアウト時に複数ステップが実行中
+### AT-6.2 Multiple steps running when timeout fires
 
-**シナリオ**: A, B, C が並列実行中にタイムアウト
+**Scenario**: A, B, C run in parallel and the workflow times out
 
-**検証項目**:
-- 実行中の全ステップ: CANCELLED
-- PENDING のステップ: SKIPPED
-- ワークフロー: TIMED_OUT
+**Assertions**:
+- all running steps: CANCELLED
+- pending steps: SKIPPED
+- workflow: TIMED_OUT
 
-### AT-6.3 completion_check ループ中のタイムアウト
+### AT-6.3 Timeout during completion_check loop
 
-**シナリオ**: completion_check ループの途中（iteration 3/10）でワークフロータイムアウト
+**Scenario**: workflow times out mid loop (iteration 3/10)
 
-**検証項目**:
-- ステップ: CANCELLED
-- ループが中断されること
-- ワークフロー: TIMED_OUT
+**Assertions**:
+- step: CANCELLED
+- loop is interrupted
+- workflow: TIMED_OUT
 
-### AT-6.4 タイムアウト後に AbortSignal が発火する
+### AT-6.4 AbortSignal fires on timeout
 
-**シナリオ**: Worker が `abortSignal.addEventListener("abort", ...)` で監視
+**Scenario**: worker listens via `abortSignal.addEventListener("abort", ...)`
 
-**検証項目**:
-- abort イベントが発火すること
-- Worker が abort を検知して処理を中断できること
+**Assertions**:
+- abort event fires
+- worker can detect abort and stop work
 
 ---
 
-## AT-7: 並行制御
+## AT-7: Concurrency control
 
-### AT-7.1 concurrency: 1 で逐次実行
+### AT-7.1 concurrency: 1 runs sequentially
 
-**シナリオ**: A, B, C（依存なし）、concurrency: 1
+**Scenario**: A, B, C (no dependencies), concurrency: 1
 
-**検証項目**:
+**Assertions**:
 - `maxConcurrentObserved` = 1
-- 全ステップ SUCCEEDED
+- all steps SUCCEEDED
 
-### AT-7.2 concurrency: 2 で 4 ステップ
+### AT-7.2 concurrency: 2 with 4 steps
 
-**シナリオ**: A, B, C, D（依存なし）、concurrency: 2
+**Scenario**: A, B, C, D (no dependencies), concurrency: 2
 
-**検証項目**:
+**Assertions**:
 - `maxConcurrentObserved` <= 2
-- 全ステップ SUCCEEDED
+- all steps SUCCEEDED
 
-### AT-7.3 concurrency 未指定（デフォルト無制限）
+### AT-7.3 concurrency omitted (default: unlimited)
 
-**シナリオ**: A, B, C, D, E（依存なし）、concurrency 未指定
+**Scenario**: A, B, C, D, E (no dependencies), concurrency omitted
 
-**検証項目**:
-- 全ステップが同時起動可能であること
+**Assertions**:
+- all steps can start concurrently
 - `maxConcurrentObserved` >= 4
 
-### AT-7.4 concurrency とDAG 依存の組み合わせ
+### AT-7.4 concurrency combined with DAG dependencies
 
-**シナリオ**: A → {B, C, D}、concurrency: 2
+**Scenario**: A -> {B, C, D}, concurrency: 2
 
-**検証項目**:
-- A 完了後、B, C, D のうち最大 2 つが同時実行
-- 3 つ目は前の 2 つのいずれかが完了してから起動
+**Assertions**:
+- after A completes, at most 2 of B/C/D run concurrently
+- the 3rd starts only after one of the first two completes
 
 ---
 
-## AT-8: DurationString パーサー
+## AT-8: DurationString parser
 
-| 入力 | 期待値 (ms) |
+| Input | Expected (ms) |
 |-----|------------|
 | `"5s"` | 5000 |
 | `"30s"` | 30000 |
@@ -448,91 +448,91 @@ A → C → E → F
 
 ---
 
-## AT-9: エッジケース
+## AT-9: Edge cases
 
-### AT-9.1 ステップが 1 つだけのワークフロー
+### AT-9.1 Workflow with a single step
 
-**検証項目**:
-- 正常に実行・完了すること
-- DAG バリデーション通過
+**Assertions**:
+- executes and completes successfully
+- passes DAG validation
 
-### AT-9.2 ステップの outputs が空の場合
+### AT-9.2 Step with no outputs
 
-**シナリオ**: ステップに `outputs` が定義されていない
+**Scenario**: step has no `outputs` defined
 
-**検証項目**:
-- `context/<stepId>/` ディレクトリは作成されるが成果物は空
-- 後続ステップの実行に影響しないこと
+**Assertions**:
+- `context/<stepId>/` directory is created but artifacts are empty
+- does not affect execution of dependent steps
 
-### AT-9.3 同一ファイルパスを複数ステップが出力
+### AT-9.3 Multiple steps output the same file path
 
-**シナリオ**: A と B がそれぞれ `outputs: [{name: "code", path: "src/main.ts"}]`
+**Scenario**: A and B each declare `outputs: [{name: "code", path: "src/main.ts"}]`
 
-**検証項目**:
-- 各ステップの context ディレクトリに個別にコピーされること（衝突しない）
-- `context/A/code/main.ts` と `context/B/code/main.ts` が独立
+**Assertions**:
+- copied into each step's context directory independently (no collision)
+- `context/A/code/main.ts` and `context/B/code/main.ts` are independent
 
-### AT-9.4 非常に長いステップ ID
+### AT-9.4 Very long step id
 
-**シナリオ**: ステップ ID が 200 文字
+**Scenario**: step id is 200 characters long
 
-**検証項目**:
-- パース・バリデーション・実行がエラーにならないこと
+**Assertions**:
+- parse/validate/execute do not error
 
-### AT-9.5 instructions に特殊文字を含む
+### AT-9.5 instructions include special characters
 
-**シナリオ**: YAML の複数行テキスト、日本語、絵文字、バックスラッシュ
+**Scenario**: YAML multiline text includes unicode, emoji, and backslashes
 
-**検証項目**:
-- パース後の `instructions` が元のテキストを正確に保持
+**Assertions**:
+- parsed `instructions` preserves the original text exactly
 
-### AT-9.6 全ステップが SKIPPED
+### AT-9.6 All steps are SKIPPED
 
-**シナリオ**: A (on_failure: abort) が FAILED、B, C, D が全て A に依存
+**Scenario**: A FAILED (on_failure: abort), and B, C, D all depend on A
 
-**検証項目**:
-- ワークフロー: FAILED
-- B, C, D: 全て SKIPPED
+**Assertions**:
+- workflow: FAILED
+- B, C, D: all SKIPPED
 
 ---
 
-## AT-10: 現行ユニットテストとのカバレッジ差分
+## AT-10: Coverage delta vs existing unit tests
 
-以下は現行のユニットテストで**カバーされていない**ため、受け入れテストで重点的に検証するべき項目:
+The following are not covered by existing unit tests, and should be emphasized in acceptance tests:
 
-| # | 不足箇所 | 対応 AT |
+| # | Gap | AT |
 |---|---------|---------|
-| 1 | YAML パース → バリデーション → 実行のフルパイプライン | AT-1.1, AT-1.2 |
-| 2 | `ContextManager.resolveInputs()` / `collectOutputs()` による実ファイル受け渡し | AT-3.1 〜 AT-3.5 |
-| 3 | `_meta.json` / `_workflow.json` の内容検証 | AT-3.6, AT-3.7 |
-| 4 | completion_check + retry の組み合わせ | AT-4.6 |
-| 5 | ループ間のファイル状態引き継ぎ | AT-4.7 |
-| 6 | 並列ステップの一方が abort した場合の他方の振る舞い | AT-5.7 |
-| 7 | ErrorClass ごとの retry 可否マトリクス | AT-5.6 |
-| 8 | 深い依存チェーン（10 段以上） | AT-2.5 |
-| 9 | concurrency と DAG 依存の組み合わせ | AT-7.4 |
-| 10 | completion_check ループ中のタイムアウト | AT-6.3 |
+| 1 | Full pipeline: YAML parse -> validate -> execute | AT-1.1, AT-1.2 |
+| 2 | Real file hand-off via `ContextManager.resolveInputs()` / `collectOutputs()` | AT-3.1 to AT-3.5 |
+| 3 | Validate `_meta.json` / `_workflow.json` contents | AT-3.6, AT-3.7 |
+| 4 | completion_check combined with retry | AT-4.6 |
+| 5 | File state persistence across loop iterations | AT-4.7 |
+| 6 | One parallel step aborting: behavior of the other | AT-5.7 |
+| 7 | Retry matrix by ErrorClass | AT-5.6 |
+| 8 | Deep dependency chains (10+ depth) | AT-2.5 |
+| 9 | Combining concurrency limits with DAG dependencies | AT-7.4 |
+| 10 | Timeout during completion_check loop | AT-6.3 |
 
 ---
 
-## テスト実装ファイル構成（案）
+## Proposed test file layout
 
 ```
 tests/at/
-├── supervisor.md                              # 本設計書
-├── workflow-pipeline.test.ts                  # AT-1: フルパイプライン
-├── workflow-dag-topology.test.ts              # AT-2: DAG トポロジー
-├── workflow-context-passing.test.ts           # AT-3: コンテキスト受け渡し
-├── workflow-completion-check.test.ts          # AT-4: completion_check ループ
-├── workflow-error-handling.test.ts            # AT-5: エラーハンドリング
-├── workflow-timeout.test.ts                   # AT-6: タイムアウト
-├── workflow-concurrency.test.ts              # AT-7: 並行制御
-├── workflow-duration-parser.test.ts           # AT-8: DurationString パーサー
-└── workflow-edge-cases.test.ts               # AT-9: エッジケース
+├── supervisor.md                              # This document
+├── workflow-pipeline.test.ts                  # AT-1: full pipeline
+├── workflow-dag-topology.test.ts              # AT-2: DAG topology
+├── workflow-context-passing.test.ts           # AT-3: context hand-off
+├── workflow-completion-check.test.ts          # AT-4: completion_check loop
+├── workflow-error-handling.test.ts            # AT-5: error handling
+├── workflow-timeout.test.ts                   # AT-6: timeout
+├── workflow-concurrency.test.ts              # AT-7: concurrency control
+├── workflow-duration-parser.test.ts           # AT-8: DurationString parser
+└── workflow-edge-cases.test.ts               # AT-9: edge cases
 ```
 
-## 合格基準
+## Acceptance criteria
 
-- 上記全テストケースが PASS であること
-- `bun x tsc --noEmit` が 0 エラーであること
-- 既存の 408 テストが引き続き PASS であること
+- all test cases above PASS
+- `bun x tsc --noEmit` returns zero errors
+- the existing 408 tests continue to PASS

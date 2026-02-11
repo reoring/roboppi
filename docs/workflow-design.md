@@ -1,44 +1,44 @@
-# Workflow YAML 設計書
+# Workflow YAML Design
 
-**複数 AgentCore ステップの DAG ワークフロー定義**
+**Declarative DAG workflows for multiple AgentCore steps**
 
 ---
 
-## 1. 背景と目的
+## 1. Background and Goals
 
-AgentCore は現在、1 つの Scheduler が 1 つの AgentCore を管理する構成で動作する。
-しかし現実のタスクは「実装 → レビュー → 修正 → テスト」のように複数ステップの連携を必要とする。
+AgentCore currently runs in a configuration where one Scheduler manages one AgentCore.
+In practice, many tasks require multi-step coordination, such as "implement -> review -> fix -> test".
 
-本設計では **YAML でワークフローを宣言的に定義** し、ステップ間の依存関係（DAG）とコンテキスト受け渡し（ファイルベース）を可能にする。
+This design introduces a **declarative workflow definition in YAML**, enabling step dependencies (DAG) and file-based context hand-off.
 
-### 解決する課題
+### Problems Addressed
 
-| 課題 | アプローチ |
+| Problem | Approach |
 |------|-----------|
-| 複数ステップの手動オーケストレーション | YAML でワークフローを宣言、Scheduler が自動実行 |
-| ステップ間のコンテキスト断絶 | `context/` ディレクトリでファイルベースの受け渡し |
-| 逐次実行しかできない | `depends_on` による DAG 表現で並列実行・合流 |
-| ステップ失敗時の手動復旧 | `on_failure` ポリシーで自動リトライ・スキップ・中断 |
+| Manual orchestration of multiple steps | Define the workflow in YAML; Scheduler runs it automatically |
+| Context discontinuity between steps | File-based hand-off via a `context/` directory |
+| Only sequential execution is possible | Represent DAG via `depends_on` for parallelism and joins |
+| Manual recovery after step failure | `on_failure` policy for retry/continue/abort |
 
 ---
 
-## 2. YAML スキーマ定義
+## 2. YAML Schema
 
-### 2.1 トップレベル構造
+### 2.1 Top-level structure
 
 ```yaml
 # workflow.yaml
-name: string                    # ワークフロー名（一意識別子）
-version: "1"                    # スキーマバージョン
-description?: string            # 説明（任意）
+name: string                    # workflow name (unique identifier)
+version: "1"                    # schema version
+description?: string            # optional description
 
-timeout: string                 # ワークフロー全体のタイムアウト（例: "30m", "2h"）
-concurrency?: number            # ステップの最大同時実行数（デフォルト: 制限なし）
+timeout: string                 # workflow-level timeout (e.g. "30m", "2h")
+concurrency?: number            # max parallel steps (default: unlimited)
 
-context_dir?: string            # コンテキストディレクトリ（デフォルト: "./context"）
+context_dir?: string            # context directory (default: "./context")
 
 steps:
-  <step_id>:                    # ステップ ID（YAML キー、ワークフロー内で一意）
+  <step_id>:                    # step id (YAML key, unique within the workflow)
     <StepDefinition>
 ```
 
@@ -47,79 +47,79 @@ steps:
 ```yaml
 steps:
   <step_id>:
-    description?: string                    # ステップの説明
+    description?: string                    # step description
 
-    # ---- Worker 設定 ----
+    # ---- Worker config ----
     worker: enum                            # CODEX_CLI | CLAUDE_CODE | OPENCODE | CUSTOM
-    workspace?: string                      # 作業ディレクトリ（デフォルト: "."）
-    instructions: string                    # Worker に渡す指示テキスト
-    capabilities:                           # Worker に許可する操作
+    workspace?: string                      # working directory (default: ".")
+    instructions: string                    # instructions passed to the worker
+    capabilities:                           # allowed operations
       - enum                                # READ | EDIT | RUN_TESTS | RUN_COMMANDS
 
-    # ---- DAG 依存 ----
-    depends_on?: string[]                   # 先行ステップ ID のリスト
+    # ---- DAG dependencies ----
+    depends_on?: string[]                   # list of prerequisite step ids
 
-    # ---- コンテキスト入出力 ----
-    inputs?: InputRef[]                     # 先行ステップの成果物参照
-    outputs?: OutputDef[]                   # このステップの出力定義
+    # ---- context I/O ----
+    inputs?: InputRef[]                     # references to upstream artifacts
+    outputs?: OutputDef[]                   # outputs produced by this step
 
-    # ---- 制約 ----
-    timeout?: string                        # ステップのタイムアウト（例: "5m"）
-    max_retries?: number                    # 最大リトライ回数（デフォルト: 0）
-    max_steps?: number                      # Worker の最大ステップ数
-    max_command_time?: string               # Worker のコマンド実行タイムアウト
+    # ---- constraints ----
+    timeout?: string                        # step timeout (e.g. "5m")
+    max_retries?: number                    # max retries (default: 0)
+    max_steps?: number                      # max steps for the worker
+    max_command_time?: string               # timeout per command executed by the worker
 
-    # ---- 完了チェック（ループ） ----
-    completion_check?: CompletionCheckDef   # Worker 成功後の完了判定（未完了なら再実行）
-    max_iterations?: number                 # completion_check ループの上限（デフォルト: 1 = ループなし）
-    on_iterations_exhausted?: enum          # 上限到達時: abort | continue（デフォルト: abort）
+    # ---- completion check (loop) ----
+    completion_check?: CompletionCheckDef   # post-success completion check (rerun if incomplete)
+    max_iterations?: number                 # completion_check loop limit (default: 1 = no loop)
+    on_iterations_exhausted?: enum          # when limit is hit: abort | continue (default: abort)
 
-    # ---- 失敗ハンドリング ----
-    on_failure?: enum                       # retry | continue | abort（デフォルト: abort）
+    # ---- failure handling ----
+    on_failure?: enum                       # retry | continue | abort (default: abort)
 ```
 
-### 2.3 InputRef — コンテキスト入力参照
+### 2.3 InputRef - context input reference
 
 ```yaml
 inputs:
-  - from: string                # 参照元ステップ ID
-    artifact: string            # アーティファクト名（出力で定義した名前）
-    as?: string                 # ローカルでの参照名（省略時は artifact と同じ）
+  - from: string                # upstream step id
+    artifact: string            # artifact name (as defined by outputs[].name)
+    as?: string                 # local name (default: same as artifact)
 ```
 
-### 2.4 OutputDef — コンテキスト出力定義
+### 2.4 OutputDef - context output definition
 
 ```yaml
 outputs:
-  - name: string                # アーティファクト名（後段ステップから参照するキー）
-    path: string                # context_dir 内の相対パス
-    type?: string               # ファイルタイプのヒント（例: "code", "review", "test-report"）
+  - name: string                # artifact name (key referenced by downstream steps)
+    path: string                # relative path under context_dir
+    type?: string               # optional hint (e.g. "code", "review", "test-report")
 ```
 
-### 2.5 CompletionCheckDef — 完了チェック定義
+### 2.5 CompletionCheckDef - completion check
 
 ```yaml
 completion_check:
-  worker: enum                  # チェックに使用する Worker（CLAUDE_CODE 等）
-  instructions: string          # チェック内容の指示
-  capabilities:                 # チェッカー Worker の権限（通常は READ のみ）
+  worker: enum                  # worker used for checking (e.g. CLAUDE_CODE)
+  instructions: string          # check instructions
+  capabilities:                 # checker capabilities (usually READ only)
     - enum
-  timeout?: string              # チェック 1 回あたりのタイムアウト（デフォルト: ステップ timeout の 1/4）
+  timeout?: string              # timeout per check (default: 1/4 of step timeout)
 ```
 
-チェッカー Worker は成果物の状態を評価し、**完了 / 未完了** を返す。
-未完了の場合、メイン Worker が再実行される（`max_iterations` まで）。
+The checker worker evaluates artifact state and returns **complete / incomplete**.
+If incomplete, the main worker is rerun (up to `max_iterations`).
 
-チェッカーとメイン Worker は同一 `workspace` 上で動作するため、ファイルの状態は自然に引き継がれる。
+Because the checker and main worker run in the same `workspace`, file state naturally carries over across iterations.
 
-### 2.6 完全な型定義（TypeScript 表現）
+### 2.6 Full type definition (TypeScript representation)
 
 ```typescript
 interface WorkflowDefinition {
   name: string;
   version: "1";
   description?: string;
-  timeout: DurationString;        // "30m", "2h" など
+  timeout: DurationString;        // e.g. "30m", "2h"
   concurrency?: number;
   context_dir?: string;
   steps: Record<string, StepDefinition>;
@@ -139,7 +139,7 @@ interface StepDefinition {
   max_steps?: number;
   max_command_time?: DurationString;
   completion_check?: CompletionCheckDef;
-  max_iterations?: number;              // デフォルト: 1（ループなし）
+  max_iterations?: number;              // default: 1 (no loop)
   on_iterations_exhausted?: "abort" | "continue";
   on_failure?: "retry" | "continue" | "abort";
 }
@@ -163,29 +163,29 @@ interface OutputDef {
   type?: string;
 }
 
-type DurationString = string;   // "5m", "30s", "2h" など
+type DurationString = string;   // e.g. "5m", "30s", "2h"
 ```
 
 ---
 
-## 3. 具体例
+## 3. Examples
 
-### 3.1 実装 → レビュー → 修正 ワークフロー
+### 3.1 Implement -> review -> fix workflow
 
 ```yaml
 name: implement-review-fix
 version: "1"
-description: "機能実装後にレビューし、指摘を修正する"
+description: "Review after implementation and fix review comments"
 timeout: "1h"
 concurrency: 2
 
 steps:
   implement:
-    description: "機能の初期実装を行う"
+    description: "Perform an initial implementation"
     worker: CODEX_CLI
     instructions: |
-      src/feature.ts に新しいユーティリティ関数を追加してください。
-      仕様は instructions.md を参照。
+      Add a new utility function to src/feature.ts.
+      See instructions.md for the spec.
     capabilities: [READ, EDIT]
     timeout: "15m"
     max_retries: 1
@@ -196,11 +196,11 @@ steps:
         type: code
 
   test:
-    description: "実装のテストを実行する"
+    description: "Run tests for the implementation"
     worker: CODEX_CLI
     depends_on: [implement]
     instructions: |
-      テストスイートを実行し、結果を報告してください。
+      Run the test suite and report the results.
     capabilities: [READ, RUN_TESTS]
     inputs:
       - from: implement
@@ -213,12 +213,12 @@ steps:
         type: test-report
 
   review:
-    description: "実装コードをレビューする"
+    description: "Review the implementation"
     worker: CLAUDE_CODE
     depends_on: [implement]
     instructions: |
-      src/feature.ts のコードレビューを行ってください。
-      コード品質、エラーハンドリング、テストの観点で指摘をまとめてください。
+      Review the code in src/feature.ts.
+      Provide findings focusing on code quality, error handling, and tests.
     capabilities: [READ]
     inputs:
       - from: implement
@@ -231,12 +231,12 @@ steps:
         type: review
 
   fix:
-    description: "レビュー指摘とテスト結果に基づき修正する"
+    description: "Fix based on review comments and test results"
     worker: CODEX_CLI
     depends_on: [review, test]
     instructions: |
-      review.md の指摘事項を反映してください。
-      テストが失敗していた場合はそれも修正してください。
+      Apply the feedback in review.md.
+      If tests failed, fix them as well.
     capabilities: [READ, EDIT, RUN_TESTS]
     inputs:
       - from: review
@@ -252,31 +252,31 @@ steps:
         type: code
 ```
 
-このワークフローの DAG 構造:
+DAG structure:
 
 ```
 implement
-  ├── test ──┐
-  └── review ┴── fix
+  +-- test ---+
+  +-- review -+-- fix
 ```
 
-`test` と `review` は `implement` 完了後に **並列実行** される。
-`fix` は `test` と `review` の **両方が完了**してから実行される。
+`test` and `review` run in parallel after `implement` completes.
+`fix` runs only after both `test` and `review` complete.
 
-### 3.2 並列マルチリポジトリ適用
+### 3.2 Parallel multi-repo application
 
 ```yaml
 name: multi-repo-migration
 version: "1"
-description: "複数リポジトリに同じリファクタリングを適用"
+description: "Apply the same refactoring to multiple repositories"
 timeout: "2h"
 concurrency: 3
 
 steps:
   plan:
-    description: "移行計画を作成"
+    description: "Create a migration plan"
     worker: CLAUDE_CODE
-    instructions: "リファクタリング計画を migration-plan.md に出力"
+    instructions: "Write the refactoring plan to migration-plan.md"
     capabilities: [READ]
     timeout: "10m"
     outputs:
@@ -285,11 +285,11 @@ steps:
         type: review
 
   apply-repo-a:
-    description: "リポジトリ A に適用"
+    description: "Apply to repo A"
     worker: CODEX_CLI
     workspace: "../repo-a"
     depends_on: [plan]
-    instructions: "migration-plan.md の計画に従ってリファクタリングを実行"
+    instructions: "Apply the refactoring according to migration-plan.md"
     capabilities: [READ, EDIT, RUN_TESTS]
     inputs:
       - from: plan
@@ -299,11 +299,11 @@ steps:
     on_failure: retry
 
   apply-repo-b:
-    description: "リポジトリ B に適用"
+    description: "Apply to repo B"
     worker: CODEX_CLI
     workspace: "../repo-b"
     depends_on: [plan]
-    instructions: "migration-plan.md の計画に従ってリファクタリングを実行"
+    instructions: "Apply the refactoring according to migration-plan.md"
     capabilities: [READ, EDIT, RUN_TESTS]
     inputs:
       - from: plan
@@ -313,29 +313,29 @@ steps:
     on_failure: continue
 
   verify:
-    description: "全リポジトリの整合性を確認"
+    description: "Verify overall consistency"
     worker: CLAUDE_CODE
     depends_on: [apply-repo-a, apply-repo-b]
-    instructions: "各リポジトリの変更差分を確認し、整合性レポートを作成"
+    instructions: "Compare diffs across repositories and write a consistency report"
     capabilities: [READ]
     timeout: "10m"
 ```
 
-### 3.3 completion_check によるループ実行
+### 3.3 Loop execution via completion_check
 
 ```yaml
 name: implement-from-todo
 version: "1"
-description: "todo.md のタスクをすべて完了するまで繰り返し実装する"
+description: "Iteratively implement tasks from todo.md until all are complete"
 timeout: "2h"
 
 steps:
   implement-all:
-    description: "todo.md の未完了タスクをすべて実装する"
+    description: "Implement one incomplete item in todo.md"
     worker: CODEX_CLI
     instructions: |
-      todo.md を読み、- [ ] でマークされた未完了タスクを1つ選んで実装してください。
-      実装が完了したら、該当行を - [x] に更新してください。
+      Read todo.md and pick one unfinished task marked with - [ ].
+      Implement it, then update the line to - [x].
     capabilities: [READ, EDIT, RUN_TESTS]
     timeout: "10m"
     max_retries: 1
@@ -344,9 +344,9 @@ steps:
     completion_check:
       worker: CLAUDE_CODE
       instructions: |
-        todo.md を確認してください。
-        - [ ] が1つでも残っていれば「未完了」と判定してください。
-        すべて - [x] であれば「完了」と判定してください。
+        Check todo.md.
+        If any - [ ] remains, decide "incomplete".
+        If all tasks are - [x], decide "complete".
       capabilities: [READ]
       timeout: "2m"
 
@@ -362,10 +362,10 @@ steps:
         type: review
 
   verify:
-    description: "全タスク完了後にテストを実行"
+    description: "Run tests after all tasks are complete"
     worker: CODEX_CLI
     depends_on: [implement-all]
-    instructions: "全テストスイートを実行し、結果を報告してください"
+    instructions: "Run the full test suite and report the results"
     capabilities: [READ, RUN_TESTS]
     inputs:
       - from: implement-all
@@ -374,79 +374,79 @@ steps:
     on_failure: abort
 ```
 
-実行フロー:
+Execution flow:
 
 ```
-implement-all ステップ
-  │
-  │  iteration 1
-  ├─→ Worker 実行 (CODEX_CLI): todo の1項目を実装
-  │     ↓ SUCCEEDED
-  ├─→ completion_check (CLAUDE_CODE): "- [ ] が3個残っています → 未完了"
-  │     ↓ 未完了 → 再実行
-  │
-  │  iteration 2
-  ├─→ Worker 実行 (CODEX_CLI): 次の1項目を実装
-  │     ↓ SUCCEEDED
-  ├─→ completion_check (CLAUDE_CODE): "- [ ] が2個残っています → 未完了"
-  │     ↓ 未完了 → 再実行
-  │
-  │  ... (繰り返し)
-  │
-  │  iteration N
-  ├─→ Worker 実行 (CODEX_CLI): 最後の1項目を実装
-  │     ↓ SUCCEEDED
-  ├─→ completion_check (CLAUDE_CODE): "すべて - [x] です → 完了"
-  │     ↓ 完了
-  │
-  └─→ ステップ SUCCEEDED → verify へ
+implement-all step
+  |
+  | iteration 1
+  +-> Worker (CODEX_CLI): implement one todo item
+  |     SUCCEEDED
+  +-> completion_check (CLAUDE_CODE): "3 items remain -> incomplete"
+  |     incomplete -> rerun
+  |
+  | iteration 2
+  +-> Worker (CODEX_CLI): implement next item
+  |     SUCCEEDED
+  +-> completion_check (CLAUDE_CODE): "2 items remain -> incomplete"
+  |     incomplete -> rerun
+  |
+  | ... (repeat)
+  |
+  | iteration N
+  +-> Worker (CODEX_CLI): implement last item
+  |     SUCCEEDED
+  +-> completion_check (CLAUDE_CODE): "all are - [x] -> complete"
+  |     complete
+  |
+  +-> step SUCCEEDED -> proceed to verify
 ```
 
 ---
 
-## 4. コンテキスト受け渡しフロー
+## 4. Context hand-off flow
 
-### 4.1 ディレクトリ構造
+### 4.1 Directory structure
 
-ワークフロー実行時、Scheduler は以下のディレクトリ構造を作成する:
+During workflow execution, the Scheduler creates a directory structure like:
 
 ```
 <workspace>/
-├── context/                          # context_dir（デフォルト）
-│   ├── _workflow.json                # ワークフロー実行メタデータ
-│   ├── implement/                    # ステップ ID ごとのサブディレクトリ
-│   │   ├── _meta.json               # ステップ実行メタ（status, timing, etc.）
-│   │   └── implementation/           # outputs で定義した成果物
-│   │       └── src/feature.ts
-│   ├── review/
-│   │   ├── _meta.json
-│   │   └── review-comments/
-│   │       └── review.md
-│   └── test/
-│       ├── _meta.json
-│       └── test-report/
-│           └── test-results.txt
+  +-- context/                          # context_dir (default)
+  |    +-- _workflow.json               # workflow execution metadata
+  |    +-- implement/                   # per-step subdirectory (by step id)
+  |    |    +-- _meta.json              # step metadata (status, timing, etc.)
+  |    |    +-- implementation/         # artifacts defined in outputs
+  |    |         +-- src/feature.ts
+  |    +-- review/
+  |    |    +-- _meta.json
+  |    |    +-- review-comments/
+  |    |         +-- review.md
+  |    +-- test/
+  |         +-- _meta.json
+  |         +-- test-report/
+  |              +-- test-results.txt
 ```
 
-### 4.2 コンテキストのライフサイクル
+### 4.2 Context lifecycle
 
 ```
- ┌──────────────────────────────────────────────────────────┐
- │  ステップ A 実行                                          │
- │                                                          │
- │  1. Scheduler が context/<step_id>/ を作成                │
- │  2. inputs で指定された先行成果物を                        │
- │     Worker の作業ディレクトリにコピー/シンボリックリンク      │
- │  3. Worker が実行                                         │
- │  4. Worker 完了後、outputs で指定されたパスのファイルを       │
- │     context/<step_id>/<artifact_name>/ に収集              │
- │  5. _meta.json にステップ結果を記録                        │
- │                                                          │
- │  → 後続ステップの inputs が解決可能に                       │
- └──────────────────────────────────────────────────────────┘
++--------------------------------------------------------------+
+| Step A execution                                              |
+|                                                              |
+|  1. Scheduler creates context/<step_id>/                      |
+|  2. Copy/symlink upstream artifacts (declared in inputs)      |
+|     into the worker workspace                                 |
+|  3. Worker runs                                                |
+|  4. After completion, collect declared outputs into            |
+|     context/<step_id>/<artifact_name>/                         |
+|  5. Write step result to _meta.json                            |
+|                                                              |
+|  -> downstream steps can resolve inputs                        |
++--------------------------------------------------------------+
 ```
 
-### 4.3 `_meta.json` の構造
+### 4.3 `_meta.json` structure
 
 ```json
 {
@@ -475,156 +475,156 @@ implement-all ステップ
 }
 ```
 
-### 4.4 既存型との対応
+### 4.4 Mapping to existing types
 
-コンテキスト受け渡しは既存の `WorkerResult.artifacts` を拡張する形で実現する:
+Context hand-off can be implemented by extending existing `WorkerResult.artifacts`:
 
-| YAML 定義 | 実行時の内部表現 |
+| YAML definition | Runtime representation |
 |-----------|----------------|
-| `outputs[].name` | `Artifact.type`（アーティファクト名として使用） |
-| `outputs[].path` | `Artifact.ref`（ファイルパス参照） |
-| `outputs[].type` | `Artifact.content`（メタデータとして格納、またはフィールド追加） |
-| `inputs[].from` + `inputs[].artifact` | Scheduler がステップ開始前に `context/<from>/<artifact>/` から解決 |
+| `outputs[].name` | `Artifact.type` (used as artifact name) |
+| `outputs[].path` | `Artifact.ref` (file path reference) |
+| `outputs[].type` | `Artifact.content` (stored as metadata, or introduce a new field) |
+| `inputs[].from` + `inputs[].artifact` | resolved by Scheduler from `context/<from>/<artifact>/` before step start |
 
 ---
 
-## 5. 既存コードとの対応マッピング
+## 5. Mapping to existing code
 
-### 5.1 型の対応
+### 5.1 Type mapping
 
-| YAML 概念 | 既存の型/コード | 備考 |
+| YAML concept | Existing type/code | Notes |
 |-----------|---------------|------|
 | `step.worker` | `WorkerKind` enum | `CODEX_CLI`, `CLAUDE_CODE`, `OPENCODE`, `CUSTOM` |
 | `step.capabilities` | `WorkerCapability` enum | `READ`, `EDIT`, `RUN_TESTS`, `RUN_COMMANDS` |
-| `step.timeout` | `WorkerBudget.deadlineAt`, `BudgetLimits.timeoutMs` | DurationString → ms に変換して設定 |
-| `step.max_retries` | `RetryPolicyConfig.maxAttempts` | ステップレベルで RetryPolicy を個別生成 |
-| `step.max_steps` | `WorkerBudget.maxSteps` | そのまま対応 |
-| `step.max_command_time` | `WorkerBudget.maxCommandTimeMs` | DurationString → ms に変換 |
-| `step.on_failure` | `ErrorClass` → リトライ/DLQ 判定 | Scheduler の `handleJobCompleted` ロジックを拡張 |
-| `workflow.concurrency` | `ExecutionBudgetConfig.maxConcurrency` | ワークフロー全体の同時実行制御 |
-| context artifacts | `WorkerResult.artifacts` (`Artifact` 型) | `type` + `ref` + `content` |
-| `completion_check` | **新規** | ステップ内ループ。Worker 成功後に別 Worker で完了判定 |
-| `max_iterations` | `RetryPolicyConfig.maxAttempts` と同パターン | ループの安全弁。`maxAttempts` はエラーリトライ、`max_iterations` は完了ループ |
-| `depends_on` | **新規** | Scheduler の `processNext()` を DAG 対応に拡張 |
+| `step.timeout` | `WorkerBudget.deadlineAt`, `BudgetLimits.timeoutMs` | parse DurationString -> ms |
+| `step.max_retries` | `RetryPolicyConfig.maxAttempts` | create per-step retry policy |
+| `step.max_steps` | `WorkerBudget.maxSteps` | direct mapping |
+| `step.max_command_time` | `WorkerBudget.maxCommandTimeMs` | DurationString -> ms |
+| `step.on_failure` | `ErrorClass` -> retry/DLQ decisions | extend scheduler `handleJobCompleted` |
+| `workflow.concurrency` | `ExecutionBudgetConfig.maxConcurrency` | workflow-level concurrency |
+| context artifacts | `WorkerResult.artifacts` (`Artifact`) | `type` + `ref` + `content` |
+| `completion_check` | **new** | in-step loop: check completion after success |
+| `max_iterations` | same pattern as `RetryPolicyConfig.maxAttempts` | safety valve; `maxAttempts` is error retries, `max_iterations` is completion loop |
+| `depends_on` | **new** | extend Scheduler `processNext()` for DAG |
 
-### 5.2 Scheduler 拡張の概要
+### 5.2 Overview of Scheduler extensions
 
-現在の Scheduler は単一キューからジョブを取り出して逐次的に処理する（`processNext()`）。
-ワークフロー対応では以下の拡張が必要:
+The current Scheduler processes jobs sequentially from a single queue (`processNext()`).
+Workflow support requires:
 
-1. **WorkflowExecutor**: YAML をパースし、DAG を構築。各ステップを `Job` に変換
-2. **DAG スケジューラ**: `depends_on` の解決状態を追跡。依存が全て完了したステップをキューに投入
-3. **コンテキストマネージャ**: `context/` ディレクトリの作成、成果物の収集・配布
-4. **ワークフロー状態管理**: ステップごとの `on_failure` ポリシーに基づく制御フロー判定
+1. **WorkflowExecutor**: parse YAML, build a DAG, and convert steps into `Job`s
+2. **DAG scheduler**: track depends_on completion and enqueue steps whose dependencies are satisfied
+3. **Context manager**: create `context/`, collect outputs, distribute inputs
+4. **Workflow state management**: control flow based on per-step `on_failure` policies
 
 ```
-既存: Scheduler.processNext()
-  └── JobQueue.dequeue() → 1つの Job を処理
+Current: Scheduler.processNext()
+  +-- JobQueue.dequeue() -> process one Job
 
-拡張: Scheduler.processNext()
-  └── WorkflowExecutor.getReadySteps()     # 依存解決済みステップを取得
-      └── DAG の depends_on をチェック
-      └── 並列実行可能なステップを複数キューイング
-  └── JobQueue.dequeue() → Job を処理        # 既存ロジックは変更なし
+Extended: Scheduler.processNext()
+  +-- WorkflowExecutor.getReadySteps()        # get steps with satisfied dependencies
+      +-- check DAG depends_on
+      +-- queue multiple steps that can run in parallel
+  +-- JobQueue.dequeue() -> process Job       # existing logic remains
 ```
 
 ---
 
-## 6. エラーハンドリング仕様
+## 6. Error handling specification
 
-### 6.1 ステップレベルの失敗ポリシー
+### 6.1 Step-level failure policies
 
-`on_failure` フィールドで各ステップの失敗時動作を制御する:
+Use `on_failure` to control behavior when a step fails:
 
-| ポリシー | 動作 |
+| Policy | Behavior |
 |---------|------|
-| `retry` | `max_retries` 回までリトライ。既存の `RetryPolicy`（指数バックオフ + ジッター）を使用。上限超過後は `on_failure_exhausted` に遷移 |
-| `continue` | ステップを失敗としてマークし、後続ステップの実行を継続。後続ステップの inputs に該当成果物がない場合、空として扱う |
-| `abort` | ワークフロー全体を中断。未実行ステップはすべてスキップ。実行中ステップはキャンセル |
+| `retry` | retry up to `max_retries` using existing RetryPolicy (exponential backoff + jitter). After exhaustion, transition to `on_failure_exhausted` |
+| `continue` | mark step failed and continue executing downstream steps; missing inputs are treated as empty |
+| `abort` | abort the workflow; not-started steps become SKIPPED; running steps are cancelled |
 
-### 6.2 リトライ上限超過後の動作
+### 6.2 Behavior when retry limit is exceeded
 
-`on_failure: retry` で `max_retries` を超過した場合:
+If `on_failure: retry` exceeds `max_retries`:
 
-1. 既存の DLQ にジョブ情報を記録
-2. `ErrorClass` に基づいてエスカレーション判定:
-   - `RETRYABLE_TRANSIENT` / `RETRYABLE_RATE_LIMIT` → ステップを `FAILED` にし、`abort` と同じ動作
-   - `NON_RETRYABLE` / `FATAL` → 即座に `abort`（リトライせず）
-3. ワークフロー全体の結果に失敗理由を記録
+1. Record job info to the existing DLQ
+2. Escalate based on `ErrorClass`:
+   - `RETRYABLE_TRANSIENT` / `RETRYABLE_RATE_LIMIT` -> mark the step FAILED and behave like abort
+   - `NON_RETRYABLE` / `FATAL` -> abort immediately (no retry)
+3. Record failure reason in the workflow result
 
-### 6.3 ErrorClass との統合
+### 6.3 Integration with ErrorClass
 
-既存の `ErrorClass` 分類はステップ実行時にそのまま適用される:
+Existing `ErrorClass` classification applies as-is at step execution time:
 
 ```
-Worker 実行
-  ↓ WorkerResult.errorClass
-ErrorClass 判定
-  ├── FATAL              → 即座に abort（on_failure 設定を無視）
-  ├── NON_RETRYABLE      → on_failure に従う（retry 不可、continue or abort）
-  ├── RETRYABLE_TRANSIENT → on_failure: retry なら RetryPolicy でリトライ
-  └── RETRYABLE_RATE_LIMIT → on_failure: retry ならバックオフ付きリトライ
+Worker run
+  -> WorkerResult.errorClass
+ErrorClass decision
+  +-- FATAL               -> abort immediately (ignores on_failure)
+  +-- NON_RETRYABLE       -> follow on_failure (no retry; continue or abort)
+  +-- RETRYABLE_TRANSIENT -> if on_failure: retry, use RetryPolicy
+  +-- RETRYABLE_RATE_LIMIT-> if on_failure: retry, retry with backoff
 ```
 
-> **注**: `ErrorClass.FATAL` はステップの `on_failure` 設定に**関わらず**ワークフローを中断する。
-> これは Core の安全性不変条件（mechanism）として既存設計と一貫する。
+Note: `ErrorClass.FATAL` aborts the workflow regardless of the step's `on_failure` setting.
+This is consistent with Core safety invariants (mechanism).
 
-### 6.4 completion_check ループの仕様
+### 6.4 completion_check loop behavior
 
-#### retry との違い
+#### Difference from retry
 
-| | `on_failure: retry` | `completion_check` ループ |
+| | `on_failure: retry` | `completion_check` loop |
 |---|---|---|
-| トリガー | Worker が**失敗**（`WorkerStatus.FAILED`） | Worker は**成功**したがタスクが**未完了** |
-| 上限 | `max_retries` | `max_iterations` |
-| 判定者 | `ErrorClass` による自動分類 | チェッカー Worker による評価 |
-| バックオフ | 指数バックオフ + ジッター | なし（即座に再実行） |
-| 上限超過 | DLQ + abort | `on_iterations_exhausted` に従う |
+| Trigger | the worker **failed** (`WorkerStatus.FAILED`) | the worker **succeeded** but the task is **incomplete** |
+| Limit | `max_retries` | `max_iterations` |
+| Decider | automatic (ErrorClass) | checker worker evaluation |
+| Backoff | exponential backoff + jitter | none (immediate rerun) |
+| On exhaustion | DLQ + abort | follow `on_iterations_exhausted` |
 
-#### 実行の詳細フロー
+#### Detailed execution flow
 
 ```
-ステップ開始 (iteration = 1)
-  │
-  ├─→ メイン Worker 実行
-  │     ├── FAILED → on_failure ポリシーで処理（retry / continue / abort）
-  │     │              ※ retry 成功後は completion_check に進む
-  │     └── SUCCEEDED ↓
-  │
-  ├─→ completion_check が未定義 → ステップ SUCCEEDED（ループなし）
-  │
-  ├─→ completion_check Worker 実行
-  │     ├── チェッカー自体が FAILED → ステップを FAILED（on_failure で処理）
-  │     ├── 完了判定 → ステップ SUCCEEDED
-  │     └── 未完了判定 ↓
-  │
-  ├─→ iteration < max_iterations ?
-  │     ├── Yes → iteration++、メイン Worker を再実行
-  │     └── No  → on_iterations_exhausted で処理
-  │              ├── abort    → ステップ FAILED、ワークフロー中断
-  │              └── continue → ステップを INCOMPLETE としてマーク、後続へ
-  │
-  └─→ ステップ timeout に達した → 実行中の Worker をキャンセル、ステップ FAILED
+Step starts (iteration = 1)
+  |
+  +-> Run main worker
+  |     +-- FAILED -> handle by on_failure (retry / continue / abort)
+  |     |            (if retry eventually succeeds, proceed to completion_check)
+  |     +-- SUCCEEDED
+  |
+  +-> If completion_check is not defined -> step SUCCEEDED (no loop)
+  |
+  +-> Run completion_check worker
+  |     +-- checker FAILED -> mark step FAILED (handle via on_failure)
+  |     +-- checker says complete -> step SUCCEEDED
+  |     +-- checker says incomplete
+  |
+  +-> iteration < max_iterations ?
+  |     +-- Yes -> iteration++, rerun main worker
+  |     +-- No  -> handle by on_iterations_exhausted
+  |              +-- abort    -> step FAILED, abort workflow
+  |              +-- continue -> step INCOMPLETE, continue downstream
+  |
+  +-> If step timeout is reached -> cancel running worker(s), step FAILED
 ```
 
-#### チェッカー Worker の応答プロトコル
+#### Checker worker response protocol
 
-チェッカー Worker は `WorkerResult` を返す。完了判定は以下で行う:
+The checker worker returns a `WorkerResult`. Completion is determined as follows:
 
-- `WorkerStatus.SUCCEEDED` → **完了**（ループ終了）
-- `WorkerStatus.FAILED` かつ `ErrorClass.RETRYABLE_TRANSIENT` → **未完了**（ループ継続）
-- `WorkerStatus.FAILED` かつ `ErrorClass.NON_RETRYABLE` / `FATAL` → **チェック自体の失敗**（ステップ FAILED）
+- `WorkerStatus.SUCCEEDED` -> **complete** (stop looping)
+- `WorkerStatus.FAILED` with `ErrorClass.RETRYABLE_TRANSIENT` -> **incomplete** (continue looping)
+- `WorkerStatus.FAILED` with `ErrorClass.NON_RETRYABLE` / `FATAL` -> **checker failure** (step FAILED)
 
-> **設計意図**: 既存の `WorkerResult` / `ErrorClass` をそのまま利用し、新しいプロトコルを追加しない。
-> チェッカーは「未完了 = 一時的な失敗」として報告する。これは「まだ条件を満たしていない」の自然な表現である。
+Design intent: reuse existing `WorkerResult` / `ErrorClass` without introducing a new protocol.
+The checker reports "incomplete" as a temporary failure, which is a natural encoding of "condition not met yet".
 
-#### コンテキストの引き継ぎ
+#### Context carry-over
 
-ループ内のイテレーション間では:
+Across iterations within the loop:
 
-- **同一 workspace** 上で動作するため、ファイル変更は自動的に引き継がれる
-- `context/<step_id>/_meta.json` には最終イテレーションの結果のみ記録
-- `_meta.json` に `iterations` フィールドを追加し、実行回数を記録
+- because execution uses the **same workspace**, file changes carry over naturally
+- `context/<step_id>/_meta.json` records only the final iteration result
+- add an `iterations` field to `_meta.json` to record count
 
 ```json
 {
@@ -632,156 +632,156 @@ ErrorClass 判定
   "status": "SUCCEEDED",
   "iterations": 5,
   "maxIterations": 20,
-  ...
+  "...": "..."
 }
 ```
 
-### 6.5 ワークフロータイムアウト
+### 6.5 Workflow timeout
 
-ワークフロー全体の `timeout` に達した場合:
+When workflow-level `timeout` is reached:
 
-1. 実行中の全ステップにキャンセルを送信（既存の `CancellationManager` 経由）
-2. 未実行ステップをスキップ
-3. ワークフロー状態を `TIMED_OUT` に設定
+1. send cancellation to all running steps (via existing `CancellationManager`)
+2. skip not-started steps
+3. set workflow status to `TIMED_OUT`
 
-### 6.6 ワークフロー実行状態
+### 6.6 Workflow execution statuses
 
 ```typescript
 enum WorkflowStatus {
   PENDING = "PENDING",
   RUNNING = "RUNNING",
-  SUCCEEDED = "SUCCEEDED",     // 全ステップが SUCCEEDED または SKIPPED（continue による）
-  FAILED = "FAILED",           // いずれかのステップが FAILED で abort
-  TIMED_OUT = "TIMED_OUT",     // ワークフロー全体のタイムアウト
-  CANCELLED = "CANCELLED",     // 外部からのキャンセル
+  SUCCEEDED = "SUCCEEDED",     // all steps SUCCEEDED or SKIPPED (due to continue)
+  FAILED = "FAILED",           // some step FAILED and aborted
+  TIMED_OUT = "TIMED_OUT",     // workflow-level timeout
+  CANCELLED = "CANCELLED",     // external cancellation
 }
 
 enum StepStatus {
-  PENDING = "PENDING",         // 依存未解決で待機中
-  READY = "READY",             // 依存解決済み、実行待ち
-  RUNNING = "RUNNING",         // メイン Worker 実行中
-  CHECKING = "CHECKING",       // completion_check Worker 実行中
-  SUCCEEDED = "SUCCEEDED",     // 正常完了（completion_check 合格含む）
-  FAILED = "FAILED",           // 失敗（リトライ上限超過含む）
-  INCOMPLETE = "INCOMPLETE",   // max_iterations 超過 + on_iterations_exhausted: continue
-  SKIPPED = "SKIPPED",         // 先行ステップの失敗で未実行
-  CANCELLED = "CANCELLED",     // キャンセルされた
+  PENDING = "PENDING",         // waiting on unresolved dependencies
+  READY = "READY",             // dependencies satisfied, waiting to run
+  RUNNING = "RUNNING",         // main worker running
+  CHECKING = "CHECKING",       // completion_check worker running
+  SUCCEEDED = "SUCCEEDED",     // complete (including passing completion_check)
+  FAILED = "FAILED",           // failed (including retry exhaustion)
+  INCOMPLETE = "INCOMPLETE",   // hit max_iterations with on_iterations_exhausted: continue
+  SKIPPED = "SKIPPED",         // not executed due to upstream abort
+  CANCELLED = "CANCELLED",     // cancelled
 }
 ```
 
 ---
 
-## 7. DAG 実行アルゴリズム
+## 7. DAG execution algorithm
 
-### 7.1 ステップ状態遷移
-
-```
-PENDING → READY → RUNNING → SUCCEEDED
-                     │  ↑
-                     │  └── (completion_check 未完了) ── CHECKING → RUNNING  ※ループ
-                     │
-                     ├── CHECKING → SUCCEEDED  ※完了判定
-                     │
-                     ├── FAILED → (retry) → RUNNING
-                     │     ↓
-                     │   (abort) → 後続ステップを SKIPPED に
-                     │
-                     └── INCOMPLETE  ※max_iterations 超過 + continue
-
-PENDING → SKIPPED  （先行ステップの失敗 + abort 時）
-RUNNING → CANCELLED（タイムアウトまたは外部キャンセル時）
-```
-
-### 7.2 スケジューリングループ
+### 7.1 Step state transitions
 
 ```
-毎 tick（100ms 間隔、既存の processLoop と同期）:
+PENDING -> READY -> RUNNING -> SUCCEEDED
+                     |   ^
+                     |   +-- (completion_check incomplete) CHECKING -> RUNNING  (loop)
+                     |
+                     +-- CHECKING -> SUCCEEDED  (complete)
+                     |
+                     +-- FAILED -> (retry) -> RUNNING
+                     |     |
+                     |   (abort) -> downstream steps become SKIPPED
+                     |
+                     +-- INCOMPLETE  (max_iterations exceeded + continue)
 
-1. 全ステップの depends_on を走査
-   - depends_on の全ステップが SUCCEEDED → ステップを READY に遷移
-   - depends_on のいずれかが FAILED:
-     - 失敗ステップの on_failure が continue → READY に遷移（成果物は空）
-     - 失敗ステップの on_failure が abort → このステップを SKIPPED に
-   - depends_on が未完了のものがある → PENDING のまま
+PENDING -> SKIPPED   (upstream failure + abort)
+RUNNING -> CANCELLED (timeout or external cancellation)
+```
 
-2. READY ステップを concurrency 制限内で RUNNING に遷移
-   - Job を生成し既存の JobQueue に投入
-   - ExecutionBudget の maxConcurrency で並列数を制御
+### 7.2 Scheduling loop
 
-3. RUNNING ステップの完了イベントを処理
+```
+On every tick (100ms interval, synchronized with existing processLoop):
+
+1. Scan all steps' depends_on
+   - if all dependencies SUCCEEDED -> transition step to READY
+   - if any dependency FAILED:
+     - if that failed step had on_failure=continue -> transition to READY (artifacts are empty)
+     - if that failed step had on_failure=abort -> transition this step to SKIPPED
+   - if any dependency is unfinished -> remain PENDING
+
+2. Transition READY steps to RUNNING within concurrency limits
+   - create Jobs and enqueue to existing JobQueue
+   - control parallelism via ExecutionBudget maxConcurrency
+
+3. Process completion events for RUNNING steps
    - SUCCEEDED:
-     - completion_check なし → outputs を context/ に収集、ステップ SUCCEEDED
-     - completion_check あり → ステップを CHECKING に遷移、チェッカー Worker を起動
-   - FAILED: on_failure ポリシーに基づき retry / continue / abort
+     - no completion_check -> collect outputs to context/, step SUCCEEDED
+     - has completion_check -> transition to CHECKING and start checker worker
+   - FAILED: handle by on_failure policy (retry / continue / abort)
 
-4. CHECKING ステップの完了イベントを処理
-   - 完了判定 → outputs を context/ に収集、ステップ SUCCEEDED
-   - 未完了判定:
-     - iteration < max_iterations → iteration++、ステップを RUNNING に戻しメイン Worker を再起動
-     - iteration >= max_iterations → on_iterations_exhausted に従い abort / continue
-   - チェッカー自体の失敗 → ステップ FAILED
+4. Process completion events for CHECKING steps
+   - complete -> collect outputs to context/, step SUCCEEDED
+   - incomplete:
+     - iteration < max_iterations -> iteration++, transition back to RUNNING and restart main worker
+     - iteration >= max_iterations -> handle by on_iterations_exhausted (abort/continue)
+   - checker fails -> step FAILED
 
-5. 全ステップが終端状態（SUCCEEDED / FAILED / INCOMPLETE / SKIPPED / CANCELLED）→ ワークフロー完了
+5. When all steps are terminal (SUCCEEDED / FAILED / INCOMPLETE / SKIPPED / CANCELLED) -> workflow completes
 ```
 
-### 7.3 DAG バリデーション（ワークフロー読み込み時）
+### 7.3 DAG validation (on workflow load)
 
-YAML パース後、実行前に以下を検証:
+After YAML parse and before execution, validate:
 
-- **循環検出**: `depends_on` にサイクルがないこと（トポロジカルソート可能）
-- **参照整合性**: `depends_on` のステップ ID が `steps` に存在すること
-- **入力整合性**: `inputs[].from` が `depends_on` に含まれていること
-- **出力名の一意性**: 同一ステップ内で `outputs[].name` が重複しないこと
-- **Worker 種別の有効性**: `worker` が `WorkerKind` enum の値であること
-- **Capability の有効性**: `capabilities` が `WorkerCapability` enum の値であること
-- **completion_check の整合性**: `completion_check` がある場合、`max_iterations` が 2 以上であること（1 以下はループの意味がない）
-- **completion_check の Worker 有効性**: `completion_check.worker` が `WorkerKind` enum の値であること
-
----
-
-## 8. 実装ロードマップ
-
-本設計は段階的に実装可能。以下は推奨する実装順序:
-
-### Phase 1: YAML パーサーと DAG バリデーション
-
-- YAML パーサー（`WorkflowDefinition` 型への変換）
-- DAG バリデーション（循環検出、参照整合性）
-- DurationString のパーサー
-
-### Phase 2: ワークフロー実行エンジン
-
-- `WorkflowExecutor` クラス（ステップ状態管理、DAG スケジューリング）
-- 既存 Scheduler の `processLoop` への統合
-- ステップ → Job 変換ロジック
-- `completion_check` ループ実行（RUNNING → CHECKING → RUNNING サイクル）
-
-### Phase 3: コンテキスト管理
-
-- `context/` ディレクトリの作成・管理
-- 成果物の収集（Worker 完了後）
-- 成果物の配布（Worker 開始前に inputs を解決）
-
-### Phase 4: エラーハンドリングとオブザーバビリティ
-
-- ステップレベルの `on_failure` ポリシー実行
-- ワークフロータイムアウト
-- ワークフロー実行ログ・メトリクス
+- **cycle detection**: `depends_on` has no cycles (topological sort possible)
+- **reference integrity**: all step ids referenced by `depends_on` exist
+- **input integrity**: `inputs[].from` is included in `depends_on`
+- **output name uniqueness**: no duplicate `outputs[].name` within a step
+- **worker kind validity**: `worker` is a valid `WorkerKind` enum value
+- **capability validity**: `capabilities` are valid `WorkerCapability` enum values
+- **completion_check consistency**: if present, `max_iterations` must be >= 2 (<= 1 is meaningless)
+- **completion_check worker validity**: `completion_check.worker` is a valid `WorkerKind`
 
 ---
 
-## 9. 制約と将来の拡張
+## 8. Implementation roadmap
 
-### 現在のスコープ外
+This design can be implemented incrementally. Recommended order:
 
-- **条件分岐** (`if` / `when`): ステップの実行をランタイム条件で制御する機能。将来的にステップに `when` フィールドを追加して対応可能
-- **動的展開ループ** (`for_each`): 入力リストに基づいてステップを動的に N 個生成する機能（`completion_check` による条件ループは対応済み）
-- **サブワークフロー**: ワークフローの入れ子・再利用
-- **外部イベントトリガー**: Webhook や cron によるワークフロー起動
-- **ステップ間の変数**: ファイル以外の軽量なデータ受け渡し
+### Phase 1: YAML parser + DAG validation
 
-### 設計上の判断
+- YAML parser (convert into `WorkflowDefinition`)
+- DAG validation (cycle detection, reference integrity)
+- DurationString parser
 
-- **ファイルベースのコンテキスト受け渡しを選択した理由**: Worker はプロセス分離されており、共有メモリは使えない。ファイルシステムは Worker 種別に依存しない汎用的なインターフェースであり、デバッグ時に中間成果物を直接確認できる利点がある
-- **YAML を選択した理由**: 複数行テキスト（instructions）の記述が JSON より自然。人間が読み書きしやすく、Git での差分管理に適している
-- **ワークフロー全体の concurrency を設ける理由**: Worker プロセスはリソースを消費するため、無制限の並列実行はシステムを圧迫する。`ExecutionBudgetConfig.maxConcurrency` と連携して制御する
+### Phase 2: Workflow execution engine
+
+- `WorkflowExecutor` class (step state management, DAG scheduling)
+- integrate into existing Scheduler `processLoop`
+- step -> Job conversion logic
+- completion_check loop execution (RUNNING -> CHECKING -> RUNNING cycle)
+
+### Phase 3: Context management
+
+- create/manage `context/`
+- collect artifacts after worker completion
+- distribute artifacts by resolving inputs before worker start
+
+### Phase 4: Error handling and observability
+
+- execute step-level `on_failure` policies
+- workflow timeout handling
+- workflow execution logs and metrics
+
+---
+
+## 9. Constraints and future extensions
+
+### Out of scope for now
+
+- **conditional branching** (`if` / `when`): control step execution based on runtime conditions (future `when` field)
+- **dynamic fan-out loops** (`for_each`): generate N steps from an input list (completion_check loop is supported)
+- **sub-workflows**: nesting/reuse
+- **external event triggers**: start workflows via webhook/cron
+- **step-to-step variables**: lightweight data hand-off besides files
+
+### Design decisions
+
+- **Why file-based context**: workers are process-isolated and cannot share memory. The filesystem is a worker-kind-agnostic interface and makes debugging easy (inspect intermediate artifacts).
+- **Why YAML**: multiline text for instructions is more natural than JSON, and diffing in Git is cleaner.
+- **Why workflow-level concurrency**: worker processes consume resources; unbounded parallelism can overload the system. Control it in conjunction with `ExecutionBudgetConfig.maxConcurrency`.

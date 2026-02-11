@@ -1,526 +1,528 @@
-# AgentCore 実行制御 設計書
+# AgentCore Execution-Control Design
 
-**Core / Scheduler 分離 ＋ Worker Delegation ＋ Scheduler 起動版**
-
----
-
-## はじめに ― この設計書が解決すること
-
-AI エージェントをイベントループで動かすと、よくある問題にぶつかります。LLM への同じリクエストが何度も飛んで処理が詰まる、リトライが止まらなくなる、障害が連鎖してシステム全体が止まる、といったものです。
-
-この設計書は、そうした問題を **仕組みとして防ぐ** ためのアーキテクチャを定義します。
-
-### 解決する課題
-
-| 課題 | 設計上のアプローチ |
-|------|-------------------|
-| 同一 LLM リクエストの重複実行・スタック | Idempotency Key ＋ 重複制御ポリシー |
-| 無限リトライ | 回数上限・バックオフ・ジッター・エラー分類 |
-| 致命的障害の連鎖 | Circuit Breaker ＋ エスカレーション ＋ 隔離 |
-| 重い処理がエージェント本体を巻き込む | Worker への委譲（プロセス分離） |
-| エージェント自体のクラッシュ・ハング | Scheduler による子プロセス監督 |
-
-### 設計の前提
-
-- 実行系を **Core（mechanism）** と **Scheduler（policy）** に分離し、ポリシーだけを差し替え可能にする
-- AgentCore は計画・許可・中断・観測に集中し、実作業は **Worker（OpenCode / Codex CLI / Claude Code）** に委譲する
-- **Scheduler が AgentCore を子プロセスとして起動・監督**する
+**Core/Scheduler separation + Worker Delegation + Scheduler-supervised launch**
 
 ---
 
-## 1. 設計原則
+## Introduction - What This Design Solves
 
-### 1.1 mechanism と policy の分離
+When you run AI agents in an event loop, you tend to hit predictable failure modes: the same LLM request is issued repeatedly and the system gets stuck, retries never stop, failures cascade across dependencies and the whole system stalls, etc.
 
-この設計の根幹は「仕組み（mechanism）」と「判断（policy）」を分けることにあります。
+This document defines an architecture that prevents those problems **mechanically**.
 
-**Core（mechanism）** は「止める」「制限する」「観測する」「隔離する」といった原語を提供し、安全性の不変条件を強制します。どんなポリシーに差し替えても、Core が守る制約は破れません。
+### Problems Addressed
 
-**Scheduler（policy）** は「どの順番で実行するか」「重複をどう扱うか」「リトライをどう判断するか」といった意思決定を担います。運用方針に合わせて差し替えられます。
+| Problem | Architectural approach |
+|------|-------------------------|
+| Duplicate execution / stacking of identical LLM requests | Idempotency Keys + dedup policies |
+| Infinite retries | Hard limits, backoff, jitter, error classification |
+| Cascading fatal failures | Circuit Breaker + escalation + isolation |
+| Heavy work blocks the agent runtime | Delegate work to Workers (process isolation) |
+| The agent process itself crashes / hangs | Scheduler supervises the child process |
 
-### 1.2 "実行を抱えない" 原則（delegation-first）
+### Assumptions
 
-AgentCore は **計画・許可・中断・観測** に専念します。
-
-リポジトリ操作、コマンド実行、コード生成・修正・検証といった実作業はすべて **外部 Worker** に委譲します。重い処理をプロセス境界で分離することで、詰まりの伝搬を遮断できます。
+- Separate the execution system into **Core (mechanism)** and **Scheduler (policy)** so only policy is swappable.
+- AgentCore focuses on plan/permit/cancel/observe; actual work is delegated to **Workers (OpenCode / Codex CLI / Claude Code)**.
+- The **Scheduler launches and supervises AgentCore as a child process**.
 
 ---
 
-## 2. コンポーネント構成
+## 1. Design Principles
 
-システムは 3 つの層で構成されます。
+### 1.1 Separate mechanism and policy
+
+The foundation of this design is splitting "mechanism" (enforcement) from "policy" (decisions).
+
+**Core (mechanism)** provides primitives such as "stop", "limit", "observe", and "isolate" and enforces safety invariants. No matter what policy is swapped in, the constraints the Core enforces cannot be broken.
+
+**Scheduler (policy)** makes decisions like execution order, how to handle duplicates, and whether/how to retry. You can swap it depending on operational needs.
+
+### 1.2 Delegation-first (do not hold execution inside the runtime)
+
+AgentCore focuses on **plan, permit, cancel, observe**.
+
+Repository operations, command execution, code generation/edits, and verification are delegated to **external Worker processes**. Isolating heavy work behind a process boundary prevents event-loop stalls from propagating.
+
+---
+
+## 2. Components
+
+The system has three layers.
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Scheduler（親プロセス / Supervisor）              │
-│  ┌───────────────────────────────────────────┐   │
-│  │  AgentCore（子プロセス / Runtime）          │   │
-│  │  ┌─────────────┐  ┌─────────────────────┐│   │
-│  │  │ Permit Gate  │  │ Worker Delegation   ││   │
-│  │  │ Watchdog     │  │ Gateway             ││   │
-│  │  │ CB           │  │  ┌───┐ ┌───┐ ┌───┐ ││   │
-│  │  │ Escalation   │  │  │W1 │ │W2 │ │W3 │ ││   │
-│  │  └─────────────┘  │  └───┘ └───┘ └───┘ ││   │
-│  │                    └─────────────────────┘│   │
-│  └───────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
++---------------------------------------------------------------+
+| Scheduler (parent process / Supervisor)                        |
+|  +---------------------------------------------------------+  |
+|  | AgentCore (child process / Runtime)                     |  |
+|  |  +-------------+   +----------------------------------+ |  |
+|  |  | Permit Gate |   | Worker Delegation Gateway         | |  |
+|  |  | Watchdog    |   |  +----+ +----+ +----+             | |  |
+|  |  | CB          |   |  | W1 | | W2 | | W3 |             | |  |
+|  |  | Escalation  |   |  +----+ +----+ +----+             | |  |
+|  |  +-------------+   +----------------------------------+ |  |
+|  +---------------------------------------------------------+  |
++---------------------------------------------------------------+
 
 W1 = Codex CLI / W2 = Claude Code / W3 = OpenCode
 ```
 
-### 2.1 Scheduler（親プロセス / Supervisor）
+### 2.1 Scheduler (parent process / Supervisor)
 
-Scheduler は AgentCore を「1 つのワーカープロセス」として扱います。差し替え可能ですが、起動監督の役割は必須に近い位置づけです。
+The Scheduler treats AgentCore as "one worker process". It is swappable, but the supervision role is close to mandatory in practice.
 
-**責務一覧：**
+Responsibilities:
 
-- **AgentCore プロセスの起動・監督**
-  - プロセスの起動、stdin/stdout の IPC 接続
-  - ヘルスチェック（応答遅延・メモリ・CPU しきい値）
-  - ハング・高負荷・異常終了時の再起動
-  - ログ回収、クラッシュダンプ回収（任意）
-- **JobQueue の管理** ― 優先度、フェアネス、遅延実行
-- **InFlightRegistry** ― 重複制御（coalesce / latest-wins / reject）
-- **RetryPolicy** ― エラー分類に基づくリトライ判断（ただし上限は Core が強制）
-- **DLQ / 再投入戦略** ― 保存先・復旧フロー
+- **Launch and supervise the AgentCore process**
+  - spawn the process, connect stdin/stdout IPC
+  - health checks (latency, memory, CPU thresholds)
+  - restart on hang, overload, or abnormal exit
+  - log collection, crash-dump collection (optional)
+- **JobQueue management**: priority, fairness, delayed execution
+- **InFlightRegistry**: duplicate control (coalesce / latest-wins / reject)
+- **RetryPolicy**: retry decisions based on error classification (but hard limits are enforced by Core)
+- **DLQ / reinsertion strategy**: storage and recovery flow
 
-> **補足：** Out-of-process 構成の場合、Scheduler は複数の AgentCore を水平起動してスケールアウトや障害分離を担当することもできます。
+Note: In out-of-process deployments, the Scheduler can also horizontally scale multiple AgentCore instances for scale-out and failure isolation.
 
-### 2.2 Core（AgentCore Runtime / 子プロセス）
+### 2.2 Core (AgentCore runtime / child process)
 
-Core が持つ責務は固定です。ポリシーに依存せず、安全性の不変条件を守ります。
+Core responsibilities are fixed: it enforces safety invariants independent of policy.
 
-| # | 責務 | 概要 |
+| # | Responsibility | Summary |
 |---|------|------|
-| 1 | **Cancellation** | AbortSignal / AbortController による中断の統一 |
-| 2 | **Execution Budget Gate** | timeout / maxAttempts / concurrency / RPS / cost の強制 |
-| 3 | **Backpressure API** | 混雑時の拒否・延期・縮退の統一応答 |
-| 4 | **Watchdog** | 詰まり・遅延・失敗集中の検知 |
-| 5 | **Circuit Breaker（CB）** | 外部依存（LLM Provider / Worker Provider 等）の連鎖障害遮断。最終権限を持つ |
-| 6 | **Escalation Manager** | 致命度に応じた隔離・停止・通知イベント発行 |
-| 7 | **Observability** | 構造化ログ、traceId、メトリクス必須フィールド定義 |
-| 8 | **Worker Delegation Gateway** | 外部 Worker への委譲（実行要求・中断伝搬・結果回収） |
+| 1 | **Cancellation** | unify cancellation via AbortSignal/AbortController |
+| 2 | **Execution Budget Gate** | enforce timeout / maxAttempts / concurrency / RPS / cost |
+| 3 | **Backpressure API** | unified reject/defer/degrade behavior under load |
+| 4 | **Watchdog** | detect stalls, delays, and failure concentration |
+| 5 | **Circuit Breaker (CB)** | cut off cascading failures of dependencies (LLM providers, worker providers, etc.); final authority |
+| 6 | **Escalation Manager** | isolate/stop/notify based on severity |
+| 7 | **Observability** | structured logging, traceId, required metrics fields |
+| 8 | **Worker Delegation Gateway** | delegate to workers (start/cancel/result collection) |
 
-> **重要：** Core はキューを持つ必要はありませんが、**Permit（実行許可）の発行権限** と **中断権限** は必ず握ります。Worker 実行も「Permit が無い限り走らない」を徹底します。
+Important: Core does not have to hold a queue, but it must hold the authority to issue **Permits** (execution authorization) and the authority to cancel. Workers must not run without a Permit.
 
-### 2.3 Worker（外部エージェント群）
+### 2.3 Workers (external agents)
 
-Worker は「実行環境」と「能力」を提供し、AgentCore がそれらを統一プロトコルで呼び出します。
+Workers provide execution environments and capabilities. AgentCore calls them through a unified protocol.
 
-| Worker | 特徴 |
+| Worker | Characteristics |
 |--------|------|
-| **Codex CLI** | ローカル端末上でコード読解・編集・コマンド実行を行うエージェント |
-| **Claude Code** | ターミナル / IDE / CI 等で動作するコーディング支援エージェント |
-| **OpenCode** | primary agent から subagents を呼び出す構造を持ち、サブエージェントで分業が可能 |
+| **Codex CLI** | local agent that can read/edit code and run commands |
+| **Claude Code** | coding assistant that runs in terminals/IDEs/CI |
+| **OpenCode** | supports subagents invoked by a primary agent for specialization |
 
 ---
 
-## 3. 起動モデル ― Scheduler が AgentCore を起動する
+## 3. Launch Model - Scheduler launches AgentCore
 
-### 3.1 親子プロセスの関係
+### 3.1 Parent/child relationship
 
 ```
-Scheduler（親）
-  │
-  ├─ spawn(agentcore, args...)
-  ├─ stdin/stdout で JSON Lines IPC
-  ├─ heartbeat / health を定期監視
-  │
-  └─→ AgentCore（子）
-        ├─ 外部から与えられたジョブを処理
-        ├─ Permit を発行し、Worker へ委譲
-        └─ 監視・遮断・エスカレーションを担う
+Scheduler (parent)
+  |
+  +-- spawn(agentcore, args...)
+  +-- JSON Lines IPC over stdin/stdout
+  +-- periodic heartbeat/health monitoring
+  |
+  +-> AgentCore (child)
+       +-- processes externally submitted jobs
+       +-- issues permits and delegates to workers
+       +-- observes, limits, cuts off, escalates
 ```
 
-Scheduler は AgentCore を子プロセスとして `spawn` し、stdin/stdout を保持して **JSON Lines** で双方向通信します。heartbeat による応答遅延の監視、メモリ・CPU しきい値の確認を定期的に行います。
+The Scheduler spawns AgentCore as a child process, keeps stdin/stdout open, and uses **JSON Lines** for bidirectional communication. It monitors response latency via heartbeat and checks memory/CPU thresholds periodically.
 
-AgentCore は「外部から与えられたジョブ」を処理するランタイムとして振る舞い、Permit を発行し、必要に応じて Worker を起動して仕事を委譲します。
+AgentCore behaves as a runtime that processes "jobs given from outside", issues Permits, and spawns/uses workers as needed.
 
-### 3.2 クラッシュ・ハング時の扱い（Supervisor ポリシー）
+### 3.2 Crash / hang handling (Supervisor policy)
 
-| 状況 | 対応 |
+| Situation | Handling |
 |------|------|
-| **子プロセスが落ちた** | 未完了ジョブは Scheduler 側で in-flight を失敗扱いにし、再投入または DLQ へ送る |
-| **子がハングした** | 親が SIGTERM → 猶予期間 → SIGKILL（猶予時間はポリシーで設定） |
-| **連続クラッシュ** | Circuit Breaker 的に「AgentCore インスタンス自体」を隔離し、別インスタンスへフェイルオーバー |
+| **child process crashes** | treat in-flight jobs as failed on the scheduler side; re-enqueue or send to DLQ |
+| **child process hangs** | parent sends SIGTERM -> grace period -> SIGKILL (grace period is a policy setting) |
+| **crash loop** | isolate the AgentCore instance (CB-like), fail over to another instance |
 
 ---
 
-## 4. データモデル
+## 4. Data Model
 
-### 4.1 Job ― Scheduler が生成する「要求」
+### 4.1 Job - a request created by the Scheduler
 
-Job は Scheduler が生成し、AgentCore に投入する作業の単位です。
+A Job is the unit of work created by the Scheduler and submitted to AgentCore.
 
 ```
 Job {
   jobId         : UUID
   type          : LLM | TOOL | WORKER_TASK | PLUGIN_EVENT | MAINTENANCE ...
-  priority      : 整数 ＋ クラス（interactive / batch 等）
-  key?          : Idempotency Key（重複制御用）
-  payload       : 入力（プロンプト、ツール引数、ワーカー指示など）
-  limits        : 要求する予算（timeoutMs, maxAttempts, costHint）
+  priority      : integer + class (interactive / batch, etc.)
+  key?          : Idempotency Key (for dedup)
+  payload       : input (prompt, tool args, worker instructions, etc.)
+  limits        : requested budgets (timeoutMs, maxAttempts, costHint)
   context       : traceId, correlationId, userId?, sessionId?
 }
 ```
 
-### 4.2 Permit ― Core が発行する「実行許可」
+### 4.2 Permit - execution authorization issued by Core
 
-Permit は Core が発行する実行許可証です。これが無ければジョブも Worker も実行されません。
+A Permit is the execution authorization issued by Core. Without it, neither Jobs nor Workers run.
 
 ```
 Permit {
   permitId              : UUID
   jobId                 : UUID
-  deadlineAt            : タイムスタンプ
-  attemptIndex          : 何回目の試行か
-  abortController       : attempt ごとに新規作成
-  tokensGranted         : concurrency / RPS / コスト枠
-  circuitStateSnapshot  : 発行時点の CB 状態
+  deadlineAt            : timestamp
+  attemptIndex          : attempt number
+  abortController       : newly created per attempt
+  tokensGranted         : concurrency / RPS / cost quota
+  circuitStateSnapshot  : CB state at issuance
 }
 ```
 
-### 4.3 WorkerTask ― Core → Worker の委譲単位
+### 4.3 WorkerTask - delegation unit (Core -> Worker)
 
-WorkerTask は AgentCore から Worker に渡す指示書です。
+WorkerTask is the instruction packet passed from AgentCore to a Worker.
 
 ```
 WorkerTask {
   workerTaskId   : UUID
   workerKind     : CODEX_CLI | CLAUDE_CODE | OPENCODE | CUSTOM
-  workspaceRef   : 対象リポジトリ / ディレクトリ（マウントや chdir 方針）
-  instructions   : 実行指示（自然言語 ＋ 制約）
-  capabilities   : 許可する行為（例：read / edit / run_tests）
+  workspaceRef   : target repo/directory (mount/chdir strategy)
+  instructions   : instructions (natural language + constraints)
+  capabilities   : allowed actions (e.g. read / edit / run_tests)
   outputMode     : stream | batch
   budget         : deadlineAt, maxSteps?, maxCommandTimeMs?
-  abortSignal    : Permit 由来（中断伝搬）
+  abortSignal    : derived from Permit (propagate cancellation)
 }
 ```
 
-### 4.4 WorkerResult ― Worker → Core の結果
+### 4.4 WorkerResult - result (Worker -> Core)
 
-WorkerResult は Worker が返す実行結果です。
+WorkerResult is the execution result returned by the Worker.
 
 ```
 WorkerResult {
   status        : SUCCEEDED | FAILED | CANCELLED
-  artifacts     : パッチ、差分、ログ、生成物参照
-  observations  : 実行したコマンド、変更ファイル一覧（監査用）
-  cost          : 推定 / 実測（可能なら）
-  errorClass?   : retry 判断に使う分類
+  artifacts     : patches, diffs, logs, references to generated outputs
+  observations  : executed commands, changed file list (for audit)
+  cost          : estimated / measured (if available)
+  errorClass?   : classification for retry decisions
 }
 ```
 
 ---
 
-## 5. インタフェース設計（IPC / SPI）
+## 5. Interface Design (IPC / SPI)
 
-IPC は **stdin/stdout JSON Lines** を基本とし、将来 gRPC / HTTP に差し替え可能な設計です。
+IPC is based on **stdin/stdout JSON Lines**, but is designed to be replaceable with gRPC/HTTP later.
 
-### 5.1 Scheduler → AgentCore（ジョブ投入）
+### 5.1 Scheduler -> AgentCore (submit jobs)
 
-| メソッド | 説明 |
+| Method | Description |
 |---------|------|
-| `submit_job(job)` → `ack(jobId)` | ジョブを AgentCore に投入 |
-| `cancel_job(jobId \| key, reason)` | ジョブのキャンセル要求 |
-| `report_queue_metrics(...)` | キューの遅延・バックログ等のメトリクス報告（任意） |
+| `submit_job(job)` -> `ack(jobId)` | submit a job to AgentCore |
+| `cancel_job(jobId | key, reason)` | request job cancellation |
+| `report_queue_metrics(...)` | report queue lag/backlog metrics (optional) |
 
-### 5.2 Scheduler → Core（実行許可要求）
+### 5.2 Scheduler -> Core (request execution permit)
 
-| メソッド | 説明 |
+| Method | Description |
 |---------|------|
-| `request_permit(job, attemptIndex)` → `Permit \| Rejected(reason)` | 実行許可を Core に要求 |
+| `request_permit(job, attemptIndex)` -> `Permit | Rejected(reason)` | request a Permit from Core |
 
-**Rejected の理由として返り得る値：**
+Possible values for `Rejected.reason`:
 
 `QUEUE_STALL` / `CIRCUIT_OPEN` / `RATE_LIMIT` / `GLOBAL_SHED` / `FATAL_MODE`
 
-### 5.3 Core → Scheduler（結果通知）
+### 5.3 Core -> Scheduler (result notifications)
 
-| メソッド | 説明 |
+| Method | Description |
 |---------|------|
-| `on_job_completed(jobId, outcome, metrics, errorClass?)` | ジョブ完了の通知 |
-| `on_job_cancelled(jobId, reason)` | ジョブキャンセルの通知 |
-| `on_escalation(event)` | エスカレーションイベントの通知 |
+| `on_job_completed(jobId, outcome, metrics, errorClass?)` | notify job completion |
+| `on_job_cancelled(jobId, reason)` | notify job cancellation |
+| `on_escalation(event)` | notify escalation events |
 
-### 5.4 Core → Worker（委譲プロトコル：WorkerAdapter 経由）
+### 5.4 Core -> Worker (delegation protocol via WorkerAdapter)
 
-Core 内に **WorkerAdapter 層** を設けて、外部ツールごとの差異を吸収します。
+Core contains a **WorkerAdapter layer** to absorb differences across external tools.
 
-| メソッド | 説明 |
+| Method | Description |
 |---------|------|
-| `start_worker_task(workerTask)` → `handle` | Worker タスクの開始 |
-| `stream_events(handle)` → `{stdout, stderr, progress, patches...}` | イベントストリーム受信 |
-| `cancel(handle)` | タスク中断（Permit の abort と連動） |
-| `await_result(handle)` → `WorkerResult` | 結果の待機・回収 |
+| `start_worker_task(workerTask)` -> `handle` | start a worker task |
+| `stream_events(handle)` -> `{stdout, stderr, progress, patches...}` | stream events |
+| `cancel(handle)` | cancel the task (coupled to Permit abort) |
+| `await_result(handle)` -> `WorkerResult` | wait for and collect result |
 
-> WorkerAdapter は「プロセス起動 / 入出力 / 中断」を統一し、Codex CLI / Claude Code / OpenCode を同じ契約で扱います。
+Note: WorkerAdapter unifies process launch / IO / cancellation so Codex CLI / Claude Code / OpenCode are handled under the same contract.
 
 ---
 
-## 6. Worker Delegation 設計
+## 6. Worker Delegation
 
-### 6.1 なぜ Worker 委譲が必要か ― 暴走・詰まり対策として
+### 6.1 Why delegation is required (runaway/stall containment)
 
-AgentCore 内で「巨大 JSON 処理」「長時間 LLM 呼び出し」「外部コマンド実行」を直接抱えると、イベントループの遅延や詰まりが本体に直撃します。
+If AgentCore directly performs "huge JSON processing", "long-running LLM calls", or "external command execution", event-loop delays and stalls hit the runtime itself.
 
-Worker を **別プロセス** にすることで、次の効果が得られます。
+By running Workers as **separate processes**, we get:
 
-- **影響範囲の局所化** ― CPU / メモリ / FD 枯渇が AgentCore に波及しない
-- **OS レベルの強制停止** ― ハング時に kill できる
-- **同時実行数の制御** ― Permit で絞れる
+- **Localized blast radius**: CPU/memory/FD exhaustion does not propagate into AgentCore
+- **OS-level hard stop**: hung workers can be killed
+- **Precise concurrency control**: enforced via Permits
 
-### 6.2 各 Worker の扱い
+### 6.2 How each worker is used
 
-**Codex CLI の場合：**
-`workspaceRef` を作業ディレクトリに固定してそこで起動します。変更は diff / patch で回収し、必要なら PR / コミットを別ジョブで実施します。
+**Codex CLI:**
+Run inside a fixed `workspaceRef`. Collect changes via diff/patch, and optionally run PR/commit creation as separate jobs.
 
-**Claude Code の場合：**
-system prompt やエージェント設定を注入して起動します。再現性のためファイル指定を推奨します。
+**Claude Code:**
+Launch with injected system prompt and agent settings. Recommend explicit file targets for reproducibility.
 
-**OpenCode の場合：**
-subagent をタスク種別ごとに割り当てます（例：Explore＝調査、General＝編集）。複数の subagent を段階的に呼び出す構成（計画 → 探索 → 実装 → 検証）が取れます。
+**OpenCode:**
+Assign subagents by task kind (e.g. Explore for investigation, General for edits). A staged pattern (plan -> explore -> implement -> verify) is possible.
 
-### 6.3 中断伝搬の仕組み
+### 6.3 End-to-end cancellation propagation
 
-中断がシステム全体を貫通することが、この設計の重要なポイントです。
+Cancellation must flow through the entire system.
 
 ```
-Job 中断（latest-wins / cancel / timeout）
-  ↓
-Permit.abort が発火
-  ↓
-Core が WorkerAdapter.cancel を呼び出す
-  ↓
-Worker プロセスを安全停止（不可なら強制 kill）
+Job cancelled (latest-wins / cancel / timeout)
+  |
+  v
+Permit.abort fires
+  |
+  v
+Core calls WorkerAdapter.cancel
+  |
+  v
+Worker process stops safely (or force-killed)
 ```
 
-> **設計方針：**「止められない Worker」は設計上の欠陥として扱います。採用しないか、サンドボックス隔離します。
+Design stance: "Workers that cannot be stopped" are a design defect. Do not adopt them, or isolate them in a sandbox.
 
-### 6.4 セキュリティ・安全境界（推奨）
+### 6.4 Security boundaries (recommended)
 
-| 対策 | 内容 |
+| Mitigation | Description |
 |------|------|
-| **workspace の限定** | 専用ディレクトリに読み書き範囲を制約 |
-| **コマンドの allowlist** | 実行可能コマンドを限定（例：`go test`, `cargo test`, `npm test`） |
-| **秘密情報の隔離** | 環境変数で渡さず、vault 参照ジョブを別系統で管理 |
-| **監査ログ必須** | 実行コマンド、変更ファイル、差分要約、実行時間を記録 |
+| **Constrain workspace** | limit read/write scope to a dedicated directory |
+| **Command allowlist** | restrict runnable commands (e.g. `go test`, `cargo test`, `npm test`) |
+| **Secret isolation** | avoid passing secrets as env vars; use separate vault-fetch jobs |
+| **Audit logging required** | record executed commands, changed files, diff summary, execution time |
 
 ---
 
-## 7. 同一内容 LLM 実行のスタック抑止
+## 7. Preventing duplicate LLM execution stacks
 
-同じ内容のリクエストが繰り返し飛ぶ問題を **Idempotency Key** で防ぎます。
+Use **Idempotency Keys** to prevent repeated identical requests.
 
-### 7.1 Idempotency Key の構成
+### 7.1 Idempotency Key formats
 
-**LLM リクエストの場合：**
+**For LLM requests:**
 
 ```
 {provider}:{model}:{promptHash}:{toolStateHash}:{userTurnId?}
 ```
 
-**Worker タスクの場合：**
+**For worker tasks:**
 
 ```
 {workerKind}:{workspaceHash}:{taskHash}:{inputsHash}
 ```
 
-### 7.2 重複制御の流れ
+### 7.2 Dedup control flow
 
-Scheduler 側の InFlightRegistry が Idempotency Key をもとに重複を検出し、ポリシー（coalesce / latest-wins / reject）を適用します。
+Scheduler-side InFlightRegistry detects duplicates by Idempotency Key and applies the policy (coalesce / latest-wins / reject).
 
-Core 側は Idempotency Key の有無にかかわらず **Budget / Circuit Breaker / Watchdog** を必ず enforce します。
-
----
-
-## 8. リトライ制御 ― 無限リトライ防止
-
-### 8.1 Core が強制する制約（不変条件）
-
-Core は以下を常に enforce します。Scheduler のポリシーがどう設定されていても、この制約は破れません。
-
-- `maxAttempts` ― 試行回数の絶対上限
-- `timeoutMs` ― 1 回の試行のタイムアウト
-- `retryBudget` ― 全体としての暴走制御（時間・コスト）
-
-WorkerTask についても同様に enforce します。「テストが落ち続ける無限ループ」もここで止まります。
-
-### 8.2 Scheduler が判断するポリシー（差し替え可能）
-
-- **エラー分類によるリトライ可否の判定**
-  - 429（レートリミット）/ 5xx（サーバーエラー）/ ネットワーク障害 → retryable
-  - Worker 起因の恒常的失敗（lint / test が常に失敗）→ 通常 non-retryable 寄り（方針で調整）
-- **バックオフ戦略**
-  - exponential backoff ＋ full jitter を推奨
+Core enforces **Budget / Circuit Breaker / Watchdog** regardless of whether an Idempotency Key exists.
 
 ---
 
-## 9. Circuit Breaker（対象の拡張）
+## 8. Retry control - preventing infinite retries
 
-Core が保持する Circuit Breaker の対象を、LLM Provider だけでなく Worker Provider まで拡張します。
+### 8.1 Constraints enforced by Core (invariants)
 
-### 9.1 対象一覧
+Core always enforces the following. Scheduler policy cannot override these constraints.
 
-| 対象 | CB が反応する例 |
-|------|-----------------|
-| LLM Provider 単位 / モデル単位 | 特定モデルの応答エラーが集中 |
-| **Worker Provider 単位** | Codex CLI が頻繁にクラッシュする |
-| | Claude Code が一定時間応答しない |
-| | OpenCode が異常に遅い / 暴走する |
+- `maxAttempts`: absolute upper bound on attempts
+- `timeoutMs`: timeout per attempt
+- `retryBudget`: runaway control across time/cost
 
-### 9.2 動作
+The same is enforced for WorkerTask. "An infinite loop where tests keep failing" is stopped here.
 
-CB が OPEN になると `request_permit` が拒否されます。Scheduler は別の Worker へフォールバックできます。
+### 8.2 Policy decided by Scheduler (swappable)
 
----
-
-## 10. Watchdog ― 詰まり検知
-
-Core が観測する指標に Worker 関連のものを追加します。
-
-### 10.1 観測指標
-
-| 指標 | 何を見ているか |
-|------|---------------|
-| `worker_inflight_count` | 現在実行中の Worker タスク数 |
-| `worker_queue_lag_ms` | Worker キューの遅延 |
-| `worker_timeout_rate` | Worker タスクのタイムアウト率 |
-| `worker_cancel_latency_ms` | 中断指示が効くまでの時間 |
-| `workspace_lock_wait_ms` | 同一 workspace の同時編集による競合待ち時間 |
-
-### 10.2 自動防御
-
-しきい値を超えた場合、段階的に防御が発動します。shed（負荷カット）→ throttle（流量制限）→ CB OPEN → escalation の順に進みます。
+- **Retryability based on error classification**
+  - 429 (rate limit) / 5xx (server error) / network errors -> retryable
+  - persistent worker-caused failures (lint/tests always fail) -> usually non-retryable (policy-dependent)
+- **Backoff strategy**
+  - recommend exponential backoff + full jitter
 
 ---
 
-## 11. エスカレーション ― 致命的障害への対応
+## 9. Circuit Breaker (expanded scope)
 
-### 11.1 FATAL 条件（Worker を含む）
+Expand the Core's Circuit Breaker scope to cover not only LLM providers but also worker providers.
 
-従来の FATAL 条件に加えて、Worker 関連の条件を追加します。
+### 9.1 Targets
 
-- Worker が短時間に連続クラッシュ（N 回 / 分）
-- cancel が効かず「幽霊プロセス」が残る
-- 同一 workspace に対する latest-wins が過多（変更が収束しない）
+| Target | Example that trips CB |
+|------|------------------------|
+| LLM provider / model | errors concentrated on a specific model |
+| **Worker provider** | Codex CLI frequently crashes |
+| | Claude Code stops responding for a while |
+| | OpenCode becomes abnormally slow / runaway |
 
-### 11.2 アクション
+### 9.2 Behavior
 
-| スコープ | アクション例 |
+When CB is OPEN, `request_permit` is rejected. The Scheduler can fall back to another Worker.
+
+---
+
+## 10. Watchdog - stall detection
+
+Add worker-related metrics to what Core observes.
+
+### 10.1 Metrics
+
+| Metric | What it measures |
+|------|-------------------|
+| `worker_inflight_count` | number of worker tasks currently running |
+| `worker_queue_lag_ms` | worker queue lag |
+| `worker_timeout_rate` | worker task timeout rate |
+| `worker_cancel_latency_ms` | time until cancel takes effect |
+| `workspace_lock_wait_ms` | contention wait time for same-workspace edits |
+
+### 10.2 Automatic defense
+
+When thresholds are exceeded, defenses escalate in stages: shed (drop load) -> throttle (limit throughput) -> CB OPEN -> escalation.
+
+---
+
+## 11. Escalation - handling fatal failures
+
+### 11.1 FATAL conditions (including workers)
+
+Add worker-related conditions in addition to existing fatal triggers.
+
+- Worker crashes repeatedly in a short time (N times per minute)
+- cancel does not work and "ghost processes" remain
+- too many latest-wins cancellations against the same workspace (changes do not converge)
+
+### 11.2 Actions
+
+| Scope | Example action |
 |---------|-------------|
-| `scope=workerKind` | 特定 Worker の隔離（その Worker 種別を停止） |
-| `scope=workspace` | 対象 workspace のロック・隔離（該当リポジトリ操作を停止） |
-| `scope=global` | システム全体の安全停止 |
+| `scope=workerKind` | isolate a specific worker kind (stop that kind) |
+| `scope=workspace` | lock/isolate a workspace (stop operating on that repo) |
+| `scope=global` | safe stop the entire system |
 
 ---
 
-## 12. 分離境界の整理 ― 何をどこに置くか
+## 12. Boundary clarification - what lives where
 
-### 12.1 Scheduler 側に外出しできるもの
+### 12.1 What can live in the Scheduler (policy)
 
-- JobQueue / InFlightRegistry / Retry strategy / DLQ
-- AgentCore の起動監督（Supervisor）
-- 複数 AgentCore の水平管理（pooling / sharding）
+- JobQueue / InFlightRegistry / retry strategy / DLQ
+- AgentCore launch supervision (Supervisor)
+- horizontal management of multiple AgentCore instances (pooling/sharding)
 
-### 12.2 Core に残すもの（不変条件）
+### 12.2 What must remain in Core (invariants)
 
-- Permit と Budget の enforce
-- AbortSignal による中断（Worker へも伝搬）
-- Circuit Breaker の最終権限（LLM / Worker とも）
-- Watchdog と Escalation
-- 観測の最低限共通フィールド
+- enforce Permit and budget
+- cancellation via AbortSignal (also propagated to workers)
+- final authority for Circuit Breaker (LLM and workers)
+- Watchdog and Escalation
+- minimum required observability fields
 
-### 12.3 Worker に押し出すもの（実作業）
+### 12.3 What should be pushed to Workers (actual work)
 
-- コード編集、コマンド実行、テスト、静的解析、差分生成
-- 必要に応じた作業ログの要約生成（ただし最終判断は Core / Scheduler）
-
----
-
-## 13. 実装メモ（Bun 前提 ＋ プロセス境界）
-
-- AgentCore は「入力＝ジョブ、出力＝イベント」の JSON Lines サーバとして実装するのが自然です
-- WorkerAdapter は Bun の `spawn` / `AbortSignal` / タイムアウトで統一管理します
-- Worker の stdout / stderr は **ストリームとして観測** し、Watchdog が詰まり検知に使います
-- workspace をロックする仕組み（同一リポジトリの同時編集防止）は、WorkerAdapter か Scheduler policy のどちらかに配置します。推奨は「ポリシーは Scheduler、強制は Core」の分担です
+- code edits, command execution, tests, static analysis, diff generation
+- optional summarization of work logs (but final decisions remain in Core/Scheduler)
 
 ---
 
-## 14. テスト計画
+## 13. Implementation notes (Bun + process boundary)
 
-| # | テスト項目 | 検証内容 |
+- Implement AgentCore naturally as a JSON Lines server: input = jobs, output = events
+- Unify WorkerAdapter management via Bun `spawn`, AbortSignal, and timeouts
+- Observe worker stdout/stderr as streams and let Watchdog use them to detect stalls
+- Place workspace locking either in WorkerAdapter or Scheduler policy. Recommended split: policy in Scheduler, enforcement in Core.
+
+---
+
+## 14. Test Plan
+
+| # | Test item | What to verify |
 |---|-----------|---------|
-| 1 | **Worker 委譲** | WORKER_TASK が Permit 無しでは実行されないこと |
-| 2 | **中断伝搬** | cancel / latest-wins で Worker プロセスが停止し、残留しないこと |
-| 3 | **Worker CB** | 特定 Worker の失敗集中 → OPEN → 他 Worker へフォールバックが行われること |
-| 4 | **workspace 競合** | 同一リポジトリ編集が衝突せず、ポリシー通り（reject / coalesce / serialize）に処理されること |
-| 5 | **Supervisor 再起動** | AgentCore を kill → Scheduler が再起動 → 未完了ジョブが正しく再投入 / DLQ に振り分けられること |
+| 1 | **Worker delegation** | WORKER_TASK does not run without a Permit |
+| 2 | **Cancellation propagation** | cancel/latest-wins stops the worker process and leaves no residue |
+| 3 | **Worker CB** | concentrated worker failures -> OPEN -> fallback to other workers occurs |
+| 4 | **Workspace contention** | concurrent edits on same repo do not conflict and follow policy (reject/coalesce/serialize) |
+| 5 | **Supervisor restart** | kill AgentCore -> scheduler restarts -> incomplete jobs are re-enqueued / routed to DLQ correctly |
 
 ---
 
-## 15. 設計の妥当性検証
+## 15. Design validation
 
-以下は、この設計書を検証した結果の所見です。
+Below are notes from validating this design.
 
-### 15.1 強み（妥当と判断できる点）
+### 15.1 Strengths (why the design is sound)
 
-**mechanism / policy 分離は健全です。** Core が握る不変条件（Permit、中断、CB 最終権限）と、Scheduler が担うポリシー（優先度、リトライ判断、DLQ）の分離は明確で、差し替え可能性が確保されています。
+**Mechanism/policy separation is healthy.** The separation between Core-held invariants (Permit, cancellation, final CB authority) and Scheduler-held policy (priority, retry decisions, DLQ) is clear and preserves swappability.
 
-**Worker のプロセス分離は爆心隔離として有効です。** CPU/メモリ枯渇やハングの影響範囲を Worker プロセスに局所化できる点は、イベントループ型エージェントの詰まり対策として理にかなっています。
+**Worker process isolation is effective blast-radius containment.** Localizing CPU/memory exhaustion and hangs to worker processes is a sound approach for event-loop agent systems.
 
-**中断伝搬の一貫性が確保されています。** Job → Permit → WorkerAdapter → Worker プロセスと中断が一貫して伝搬する設計は、「止められない処理」が残留するリスクを最小化します。
+**Cancellation propagation is consistent.** A single chain Job -> Permit -> WorkerAdapter -> Worker process reduces the risk of unstoppable work remaining.
 
-**Circuit Breaker の対象拡張は妥当です。** LLM Provider だけでなく Worker Provider にも CB を適用することで、特定 Worker の不調がシステム全体に波及するのを防げます。
+**Expanding CB to workers is appropriate.** Applying CB not only to LLM providers but also to worker providers prevents a single degraded worker from destabilizing the system.
 
-### 15.2 注意点・検討が必要な箇所
+### 15.2 Risks / areas needing clarification
 
-**Scheduler と Core の間の Permit 発行フローに曖昧さがあります。** Scheduler が `request_permit` を呼び、Core が Permit を返す流れは定義されていますが、Scheduler が `submit_job` でジョブを投入する経路と `request_permit` の経路が 2 本あり、いつどちらを使うのかの判断基準がやや不明確です。ジョブ投入と Permit 要求のタイミングを明確にするシーケンス図の追加を推奨します。
+**Permit issuance flow between Scheduler and Core is ambiguous.** The design defines Scheduler calling `request_permit` and Core returning a Permit, but it also defines `submit_job` as a job submission route. With two paths, it is unclear when to use which. Add a sequence diagram clarifying the timing of submission vs permit requests.
 
-**JSON Lines IPC のエラーハンドリングが未定義です。** IPC 自体が壊れるケース（パース失敗、途中切断、バッファ溢れ）の扱いが記述されていません。IPC レベルの障害は Scheduler の Supervisor ロジックで検知・対処するのが自然ですが、プロトコルとしての仕様化が必要です。
+**JSON Lines IPC error handling is unspecified.** The design does not specify handling for transport-level failures (parse errors, mid-stream disconnects, buffer overflow). It is natural for Supervisor logic to detect and react, but the protocol needs specification.
 
-**WorkerAdapter の「安全停止→強制 kill」の猶予時間が未定義です。** cancel 後に Worker が応答しない場合の猶予時間（grace period）が具体的に定義されていません。`worker_cancel_latency_ms` を Watchdog で監視する設計はありますが、しきい値と段階（SIGTERM → 猶予 → SIGKILL）の具体値は実装時に決定が必要です。
+**Grace period for safe stop -> force kill is unspecified.** After cancel, the grace period before kill is not concretely defined. The design includes `worker_cancel_latency_ms` as a watchdog metric, but thresholds and stages (SIGTERM -> grace -> SIGKILL) must be decided during implementation.
 
-**workspace ロックの責任分担が「推奨」止まりです。** 「ポリシーは Scheduler、強制は Core」と推奨されていますが、具体的にどの操作がロックを取り、どのタイミングで解放するかの仕様がありません。同一リポジトリへの同時編集は実運用で頻発しうるため、ロックの粒度（ファイル単位 / ディレクトリ単位 / リポジトリ単位）と取得・解放プロトコルの定義を推奨します。
+**Workspace lock responsibility split is only a recommendation.** The doc recommends "policy in Scheduler, enforcement in Core", but does not define which operation acquires the lock and when it is released. Concurrent edits to the same repo are common; define lock granularity (file/dir/repo) and acquire/release protocol.
 
-**DLQ からの復旧フローが抽象的です。** DLQ に送られたジョブをどう再投入するか（手動 / 自動 / 条件付き）が明確でありません。運用上、DLQ に溜まったジョブの可視化と再投入判断のインタフェースが必要です。
+**DLQ recovery flow is abstract.** It is not clear how jobs in DLQ are reinserted (manual/automatic/conditional). In operations, you need visibility and a reinsertion interface.
 
-### 15.3 総合評価
+### 15.3 Overall evaluation
 
-全体としてアーキテクチャの方向性は妥当です。特に「Core が安全性の不変条件を強制し、Scheduler がポリシーを担う」という分離と、「重い処理をプロセス境界で隔離する」という Worker 委譲の考え方は、イベントループ型 AI エージェントの実運用で起こりうる問題に対して適切に設計されています。上記の注意点は実装フェーズで順次解決可能な範囲のものです。
+Overall, the architecture direction is sound. In particular, separating "Core enforces invariants" from "Scheduler decides policy", and delegating heavy work behind a process boundary, directly address the operational failure modes of event-loop AI agent systems. The risks above can be resolved during implementation.
 
 ---
 
-## 付録：引用と根拠
+## Appendix: Quotes and sources
 
-### A) Codex CLI はローカルでコードを読み・変更し・実行できる
+### A) Codex CLI can read, modify, and run code locally
 
 > "Codex CLI is OpenAI's coding agent that you can run locally from your terminal. It can read, change, and run code on your machine in the selected directory."
 
-**出典：** [OpenAI Developers - Codex CLI](https://developers.openai.com/codex/cli/)
+Source: [OpenAI Developers - Codex CLI](https://developers.openai.com/codex/cli/)
 
-AgentCore が実作業（編集・実行）を抱える代わりに、Codex CLI を外部 Worker として起動し、workspace を限定して処理を委譲できることの根拠です。
+This supports the idea that AgentCore can delegate actual work (edit/run) to an external worker while constraining the workspace.
 
-### B) Claude Code はターミナル等で動作するエージェント
+### B) Claude Code runs across terminals/IDEs/CI
 
 > "Claude Code is also available on the web, as a desktop app, in VS Code and JetBrains IDEs, in Slack, and in CI/CD with GitHub Actions and GitLab."
 
-**出典：** [Claude Code - Quickstart](https://code.claude.com/docs/en/quickstart)
+Source: [Claude Code - Quickstart](https://code.claude.com/docs/en/quickstart)
 
-Worker を CLI だけに固定せず、将来 IDE / CI に拡張する余地があります。本設計ではまずプロセス境界で呼べる CLI を基準に WorkerAdapter を設計します。
+This leaves room to expand beyond CLI-only workers. In this design, we start from process-boundary CLIs for WorkerAdapter.
 
-### C) OpenCode には subagents がある
+### C) OpenCode has subagents
 
 > "Subagents are specialized assistants that primary agents can invoke for specific tasks."
 
-**出典：** [OpenCode - Agents](https://opencode.ai/docs/agents/)
+Source: [OpenCode - Agents](https://opencode.ai/docs/agents/)
 
-AgentCore からの委譲先を「単一の万能 Worker」にせず、OpenCode の subagent を使って探索・実装・検証を分業させる設計が取りやすくなることの根拠です。
+This supports an architecture where delegation is not limited to a single general worker, but can be split across specialized subagents.
 
-### D) Codex CLI はリポジトリを読み、編集し、コマンドを実行できる
+### D) Codex CLI can read a repository, make edits, and run commands
 
 > "Codex launches into a full-screen terminal UI that can read your repository, make edits, and run commands as you iterate together."
 
-**出典：** [OpenAI Developers - Codex CLI features](https://developers.openai.com/codex/cli/features/)
+Source: [OpenAI Developers - Codex CLI features](https://developers.openai.com/codex/cli/features/)
 
-Worker を「対話 UI」で使う場合でも、AgentCore 側は Permit / 中断 / 監査 / 結果回収を担えばよく、実行の重さを本体に持ち込まずに済むことの根拠です。
+Even when workers are interactive UIs, AgentCore can focus on Permit/cancel/audit/result collection and avoid bringing execution heaviness into the runtime.

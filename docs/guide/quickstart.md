@@ -1,20 +1,22 @@
-# AgentCore クイックスタート
+# AgentCore Quickstart
 
-AgentCore は AI エージェント向けの実行制御ランタイムです。Permit（実行許可）による安全な実行制御、Circuit Breaker による障害遮断、Worker への作業委譲を提供します。
+AgentCore is an execution-control runtime for AI agent systems. It provides safe execution control via Permits, failure cut-off via Circuit Breakers, and delegation of actual work to external Workers.
 
-## 前提条件
+## Prerequisites
 
-ビルド時のみ:
-- [Bun](https://bun.sh/) v1.0 以上
+Build-only:
 
-ビルド済みバイナリを使う場合、Bun は不要です。
+- [Bun](https://bun.sh/) v1.0+
 
-Worker として使う場合（任意）:
-- [OpenCode](https://opencode.ai/) — `bun install -g opencode`
-- [Claude Code](https://claude.ai/code) — `npm install -g @anthropic-ai/claude-code`
-- [Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
+If you use a prebuilt binary, Bun is not required.
 
-## インストール
+Optional (if you plan to use them as workers):
+
+- [OpenCode](https://opencode.ai/) - `bun install -g opencode`
+- [Claude Code](https://claude.ai/code) - `npm install -g @anthropic-ai/claude-code`
+- [Codex CLI](https://github.com/openai/codex) - `npm install -g @openai/codex`
+
+## Install
 
 ```bash
 git clone <repository-url> agentcore
@@ -22,97 +24,97 @@ cd agentcore
 bun install
 ```
 
-## ビルド
+## Build
 
 ```bash
-make            # シングルバイナリをビルド → ./agentcore
+make            # build a single binary -> ./agentcore
 ```
 
-動作確認:
+Sanity check:
 
 ```bash
-./agentcore --version   # agentcore 0.1.0
-./agentcore --help      # オプション一覧
+./agentcore --version
+./agentcore --help
 ```
 
-その他の make ターゲット:
+Other make targets:
 
 ```bash
-make test       # 全テスト（693）
-make typecheck  # 型チェック
-make clean      # バイナリ削除
-make install    # /usr/local/bin にインストール
+make test       # all tests
+make typecheck  # typecheck
+make clean      # remove build artifacts
+make install    # install to /usr/local/bin
 ```
 
 ---
 
-## 使い方 1: `agentcore run` でワンショット実行
+## Usage 1: One-shot execution with `agentcore run`
 
-`run` サブコマンドで、CLI 引数だけで Worker にタスクを委譲できます。
+Use the `run` subcommand to delegate a task to a Worker using only CLI flags.
 
 ```bash
-# OpenCode でファイル生成
-./agentcore run --worker opencode --workspace /tmp/demo "hello.ts を作って"
+# Generate files with OpenCode
+./agentcore run --worker opencode --workspace /tmp/demo "Create hello.ts"
 
-# Claude Code でテスト修正
+# Fix tests with Claude Code
 ./agentcore run --worker claude-code --workspace ./my-project \
-  --capabilities EDIT,RUN_TESTS "テストを修正して"
+  --capabilities EDIT,RUN_TESTS "Fix the failing tests"
 
-# Codex CLI でリファクタ
-./agentcore run --worker codex --workspace ./src "この関数をリファクタして"
+# Refactor with Codex CLI
+./agentcore run --worker codex --workspace ./src "Refactor this function"
 
-# タイムアウトやバジェットも指定可能
+# You can also set timeouts and budgets
 ./agentcore run --worker opencode --workspace /tmp/demo \
-  --timeout 60000 --concurrency 5 "README を書いて"
+  --timeout 60000 --concurrency 5 "Write a README for this repo"
 ```
 
-`run` モードのオプション:
+`run` mode options:
 
-| オプション | 説明 | デフォルト |
+| Option | Description | Default |
 |-----------|------|----------|
-| `--worker <kind>` | Worker 種別: `opencode`, `claude-code`, `codex` | (必須) |
-| `--workspace <path>` | 作業ディレクトリ | (必須) |
+| `--worker <kind>` | worker kind: `opencode`, `claude-code`, `codex` | (required) |
+| `--workspace <path>` | working directory | (required) |
 | `--capabilities <csv>` | `READ,EDIT,RUN_TESTS,RUN_COMMANDS` | `EDIT` |
-| `--timeout <ms>` | タスクのタイムアウト | `120000` |
+| `--timeout <ms>` | task timeout | `120000` |
 
-内部では PermitGate → CircuitBreaker → ExecutionBudget の安全チェックを経てから Worker にタスクを委譲します。
+Internally, AgentCore checks PermitGate -> CircuitBreaker -> ExecutionBudget before delegating to the worker.
 
 ---
 
-## 使い方 2: IPC サーバーモード
+## Usage 2: IPC server mode
 
-サブコマンドなしで起動すると、IPC サーバーモードになります。Scheduler や独自ドライバから JSON Lines で通信できます。
+If you run `agentcore` with no subcommand, it starts in IPC server mode. A Scheduler or custom driver can talk to it over JSON Lines.
 
 ```bash
-# デフォルト設定で起動
+# Start with defaults
 ./agentcore
 
-# カスタム設定で起動
+# Start with custom settings
 ./agentcore --concurrency 20 --rps 100 --log-level debug
 ```
 
-共有オプション（`run` モードでも使えます）:
+Shared options (also available in `run` mode):
 
-| オプション | 説明 | デフォルト |
+| Option | Description | Default |
 |-----------|------|----------|
-| `--concurrency <n>` | 最大同時 Permit 数 | 10 |
-| `--rps <n>` | 1秒あたりの最大リクエスト数 | 50 |
-| `--max-cost <n>` | 累積コスト上限 | 無制限 |
-| `--log-level <level>` | ログレベル (debug/info/warn/error/fatal) | info |
-| `--cb-threshold <n>` | Circuit Breaker 失敗閾値 | 5 |
-| `--cb-reset-ms <n>` | Circuit Breaker リセットタイムアウト (ms) | 30000 |
-| `--cb-half-open <n>` | Circuit Breaker half-open 試行回数 | 3 |
-| `--bp-reject <n>` | Backpressure 拒否閾値 | 100 |
-| `--bp-defer <n>` | Backpressure 延期閾値 | 75 |
-| `--bp-degrade <n>` | Backpressure 縮退閾値 | 50 |
+| `--concurrency <n>` | max concurrent permits | 10 |
+| `--rps <n>` | max requests per second | 50 |
+| `--max-cost <n>` | cumulative cost limit | unlimited |
+| `--log-level <level>` | log level (debug/info/warn/error/fatal) | info |
+| `--cb-threshold <n>` | Circuit Breaker failure threshold | 5 |
+| `--cb-reset-ms <n>` | Circuit Breaker reset timeout (ms) | 30000 |
+| `--cb-half-open <n>` | Circuit Breaker half-open probe count | 3 |
+| `--bp-reject <n>` | Backpressure reject threshold | 100 |
+| `--bp-defer <n>` | Backpressure defer threshold | 75 |
+| `--bp-degrade <n>` | Backpressure degrade threshold | 50 |
 
-### JSON Lines でジョブを投入する例
+### Example: submit a job via JSON Lines
 
 ```bash
 echo '{"type":"submit_job","requestId":"req-1","job":{"jobId":"job-001","type":"LLM","priority":{"value":1,"class":"INTERACTIVE"},"payload":{"prompt":"hello"},"limits":{"timeoutMs":5000,"maxAttempts":3},"context":{"traceId":"t-1","correlationId":"c-1"}}}' | ./agentcore 2>/dev/null
 ```
 
-出力（stdout に JSON Lines で返る）:
+Output (returned on stdout as JSON Lines):
 
 ```json
 {"type":"ack","requestId":"req-1","jobId":"job-001"}
@@ -120,9 +122,9 @@ echo '{"type":"submit_job","requestId":"req-1","job":{"jobId":"job-001","type":"
 
 ---
 
-## 使い方 3: プログラムから使う
+## Usage 3: Use from code
 
-### 基本: Core コンポーネントを直接使う
+### Basic: call Core components directly
 
 ```typescript
 import { PermitGate } from "./src/core/permit-gate.js";
@@ -132,10 +134,10 @@ import { BackpressureController } from "./src/core/backpressure.js";
 import { WorkerDelegationGateway } from "./src/worker/worker-gateway.js";
 import { MockWorkerAdapter } from "./src/worker/adapters/mock-adapter.js";
 import { WorkerKind, WorkerCapability } from "./src/types/index.js";
-import type { WorkerTask, Permit, PermitRejection } from "./src/types/index.js";
+import type { WorkerTask } from "./src/types/index.js";
 import { generateId } from "./src/types/common.js";
 
-// 1. Core コンポーネントを初期化
+// 1. Initialize core components
 const budget = new ExecutionBudget({ maxConcurrency: 10, maxRps: 50 });
 const cbRegistry = new CircuitBreakerRegistry();
 const backpressure = new BackpressureController({
@@ -146,13 +148,13 @@ const backpressure = new BackpressureController({
 const permitGate = new PermitGate(budget, cbRegistry, backpressure);
 const gateway = new WorkerDelegationGateway();
 
-// 2. Worker アダプタを登録（ここでは Mock）
+// 2. Register a worker adapter (Mock for this example)
 gateway.registerAdapter(
   WorkerKind.CLAUDE_CODE,
   new MockWorkerAdapter(WorkerKind.CLAUDE_CODE, { delayMs: 100 }),
 );
 
-// 3. ジョブを定義
+// 3. Define a job
 const job = {
   jobId: generateId(),
   type: "WORKER_TASK" as any,
@@ -162,7 +164,7 @@ const job = {
   context: { traceId: generateId(), correlationId: generateId() },
 };
 
-// 4. Permit を要求（安全チェック: Budget, CB, Backpressure）
+// 4. Request a Permit (safety checks: Budget, CB, Backpressure)
 const result = permitGate.requestPermit(job, 0);
 if (!("permitId" in result)) {
   console.error("Permit rejected:", result.reason);
@@ -171,12 +173,12 @@ if (!("permitId" in result)) {
 const permit = result;
 console.log("Permit granted:", permit.permitId);
 
-// 5. Worker にタスクを委譲
+// 5. Delegate work to a worker
 const task: WorkerTask = {
   workerTaskId: generateId(),
   workerKind: WorkerKind.CLAUDE_CODE,
   workspaceRef: "/tmp/my-workspace",
-  instructions: "テストを実行してください",
+  instructions: "Run the test suite",
   capabilities: [WorkerCapability.RUN_TESTS],
   outputMode: "BATCH" as any,
   budget: { deadlineAt: Date.now() + 30000 },
@@ -186,15 +188,15 @@ const task: WorkerTask = {
 const workerResult = await gateway.delegateTask(task, permit);
 console.log("Result:", workerResult.status);
 
-// 6. Permit を完了
+// 6. Complete the Permit
 permitGate.completePermit(permit.permitId);
 
-// クリーンアップ
+// Cleanup
 permitGate.dispose();
 cbRegistry.dispose();
 ```
 
-このコードを `my-script.ts` として保存し:
+Save the code above as `my-script.ts`, then:
 
 ```bash
 bun run my-script.ts
@@ -202,9 +204,9 @@ bun run my-script.ts
 
 ---
 
-## 使い方 4: OpenCode で実タスクを実行する（プログラム版）
+## Usage 4: Run a real task with OpenCode (programmatic)
 
-OpenCode がインストールされていれば、実際にコードを書かせることができます。
+If OpenCode is installed, you can delegate real tasks.
 
 ```typescript
 // opencode-example.ts
@@ -220,7 +222,7 @@ import { ExecutionBudget } from "./src/core/execution-budget.js";
 import { CircuitBreakerRegistry } from "./src/core/circuit-breaker.js";
 import { BackpressureController } from "./src/core/backpressure.js";
 
-// OpenCode 用の軽量アダプタ
+// Minimal adapter for OpenCode
 class OpenCodeWorker implements WorkerAdapter {
   readonly kind = WorkerKind.OPENCODE;
   private pm: ProcessManager;
@@ -271,8 +273,7 @@ class OpenCodeWorker implements WorkerAdapter {
   }
 }
 
-// --- ここから実行 ---
-
+// --- Run ---
 const pm = new ProcessManager();
 const budget = new ExecutionBudget({ maxConcurrency: 5, maxRps: 10 });
 const cbRegistry = new CircuitBreakerRegistry();
@@ -282,7 +283,7 @@ const gw = new WorkerDelegationGateway();
 
 gw.registerAdapter(WorkerKind.OPENCODE, new OpenCodeWorker(pm));
 
-// Permit 取得
+// Request a Permit
 const job = {
   jobId: generateId(),
   type: "WORKER_TASK" as any,
@@ -294,21 +295,21 @@ const job = {
 const permit = gate.requestPermit(job, 0) as any;
 console.log("Permit granted:", permit.permitId);
 
-// タスク実行
+// Execute a task
 const task: WorkerTask = {
   workerTaskId: generateId(),
   workerKind: WorkerKind.OPENCODE,
-  workspaceRef: "/tmp/my-project",       // ← 作業ディレクトリ
-  instructions: "FizzBuzz を TypeScript で実装して、1 から 30 まで出力するプログラムを作って",
+  workspaceRef: "/tmp/my-project",       // working directory
+  instructions: "Implement FizzBuzz in TypeScript and print 1..30",
   capabilities: [WorkerCapability.EDIT],
   outputMode: "BATCH" as any,
   budget: { deadlineAt: Date.now() + 120000 },
   abortSignal: permit.abortController.signal,
 };
 
-console.log("OpenCode にタスクを委譲中...");
+console.log("Delegating to OpenCode...");
 const result = await gw.delegateTask(task, permit);
-console.log("結果:", result.status, `(${(result.cost.wallTimeMs / 1000).toFixed(1)}秒)`);
+console.log("Result:", result.status, `(${(result.cost.wallTimeMs / 1000).toFixed(1)}s)`);
 
 gate.completePermit(permit.permitId);
 gate.dispose();
@@ -316,20 +317,20 @@ cbRegistry.dispose();
 process.exit(0);
 ```
 
-実行:
+Run:
 
 ```bash
 mkdir -p /tmp/my-project
 bun run opencode-example.ts
 ```
 
-OpenCode がファイルを生成し、結果が `SUCCEEDED` で返ります。
+OpenCode generates files and the result returns `SUCCEEDED`.
 
 ---
 
-## 使い方 5: Scheduler 付きで起動する（フル構成）
+## Usage 5: Start with a Scheduler (full configuration)
 
-Scheduler は AgentCore を子プロセスとして起動・監督します。ジョブキュー、重複制御、リトライ、DLQ を含むフル構成です。
+The Scheduler launches and supervises AgentCore as a child process. This includes a job queue, dedup control, retries, and a DLQ.
 
 ```typescript
 import { Scheduler } from "./src/scheduler/index.js";
@@ -341,15 +342,15 @@ const scheduler = new Scheduler({
   retry: { baseDelayMs: 1000, maxDelayMs: 30000, maxAttempts: 3 },
 });
 
-// AgentCore を子プロセスとして起動
+// Start AgentCore as a child process
 await scheduler.start();
 
-// ジョブ投入
+// Submit a job
 const result = scheduler.submitJob({
   jobId: generateId(),
   type: JobType.LLM,
   priority: { value: 1, class: PriorityClass.INTERACTIVE },
-  key: "my-unique-key",  // 重複制御用 Idempotency Key
+  key: "my-unique-key",  // Idempotency Key for dedup
   payload: { prompt: "Hello!" },
   limits: { timeoutMs: 10000, maxAttempts: 3 },
   context: { traceId: generateId(), correlationId: generateId() },
@@ -357,18 +358,18 @@ const result = scheduler.submitJob({
 
 console.log("Accepted:", result.accepted);
 
-// しばらく処理を待つ
+// Wait a bit
 await new Promise((r) => setTimeout(r, 5000));
 
-// シャットダウン
+// Shutdown
 await scheduler.shutdown();
 ```
 
 ---
 
-## 使い方 6: ワークフロー YAML で実行
+## Usage 6: Run a workflow YAML
 
-複数のステップを YAML で定義し、順序通りに実行できます。
+Define multiple steps in YAML and run them in order.
 
 ```yaml
 # my-workflow.yaml
@@ -377,31 +378,31 @@ steps:
   - name: refactor
     worker: opencode
     workspace: ./src
-    instructions: "この関数をリファクタして"
+    instructions: "Refactor this function"
     capabilities: [EDIT]
 
   - name: test
     worker: opencode
     workspace: ./src
-    instructions: "テストを実行して結果を報告して"
+    instructions: "Run the test suite and report the results"
     capabilities: [RUN_TESTS]
 ```
 
-実行:
+Run:
 
 ```bash
 ./agentcore workflow run my-workflow.yaml
 ```
 
-ステップごとに Permit 取得 → Worker 委譲 → 結果回収が行われ、途中で失敗した場合は中断されます。
+For each step, AgentCore requests a Permit, delegates to the worker, and collects results. If a step fails, it aborts depending on policy.
 
-詳細は [ワークフローガイド](./workflow.md) を参照してください。
+See the [Workflow guide](./workflow.md) for details.
 
 ---
 
-## 使い方 7: Daemon で常駐実行
+## Usage 7: Run as a daemon
 
-Daemon モードでは、イベント（cron、ファイル変更、webhook など）をトリガーにワークフローを自動実行できます。
+In daemon mode, you can automatically run workflows triggered by events (cron, file changes, webhooks, etc.).
 
 ```yaml
 # daemon.yaml
@@ -414,69 +415,69 @@ workflows:
       - name: run-tests
         worker: opencode
         workspace: ./
-        instructions: "変更されたファイルに関連するテストを実行して"
+        instructions: "Run tests related to changed files"
         capabilities: [RUN_TESTS]
 
 state_dir: ./.agentcore-state
 ```
 
-起動:
+Start:
 
 ```bash
 ./agentcore daemon daemon.yaml
-# または
+# or
 bun run src/daemon/cli.ts daemon.yaml --verbose
 ```
 
-ファイル変更を検知すると自動的にワークフローが実行されます。cron スケジュール、webhook、手動コマンドもトリガーとして使えます。
+When file changes are detected, workflows run automatically. You can also use cron schedules, webhooks, and manual commands as triggers.
 
-詳細は [Daemon ガイド](./daemon.md) を参照してください。
-
----
-
-## アーキテクチャ概要
-
-```
-┌─────────────────────────────────────────────┐
-│  Scheduler（親プロセス）                      │
-│  JobQueue / InFlightRegistry / RetryPolicy   │
-│  ┌───────────────────────────────────────┐   │
-│  │  AgentCore（子プロセス）               │   │
-│  │  PermitGate / CircuitBreaker          │   │
-│  │  Watchdog / EscalationManager         │   │
-│  │  ┌─────────────────────────────────┐  │   │
-│  │  │  Worker Delegation Gateway      │  │   │
-│  │  │  OpenCode / Claude Code / Codex │  │   │
-│  │  └─────────────────────────────────┘  │   │
-│  └───────────────────────────────────────┘   │
-└─────────────────────────────────────────────┘
-```
-
-### 核心の考え方
-
-- **Permit がなければ何も実行されない** — 安全性の不変条件
-- **Core = mechanism（仕組み）** — 止める、制限する、観測する、隔離する
-- **Scheduler = policy（判断）** — 順序、重複制御、リトライ。差し替え可能
-- **Worker = 実作業** — プロセス分離で詰まりの伝搬を遮断
+See the [Daemon guide](./daemon.md) for details.
 
 ---
 
-## テストを実行する
+## Architecture overview
+
+```
++-----------------------------------------------+
+| Scheduler (parent process)                    |
+| JobQueue / InFlightRegistry / RetryPolicy     |
+|  +-----------------------------------------+  |
+|  | AgentCore (child process)               |  |
+|  | PermitGate / CircuitBreaker             |  |
+|  | Watchdog / EscalationManager            |  |
+|  |  +-----------------------------------+  |  |
+|  |  | Worker Delegation Gateway          |  |  |
+|  |  | OpenCode / Claude Code / Codex     |  |  |
+|  |  +-----------------------------------+  |  |
+|  +-----------------------------------------+  |
++-----------------------------------------------+
+```
+
+### Core ideas
+
+- **Nothing runs without a Permit** - safety invariant
+- **Core = mechanism** - stop, limit, observe, isolate
+- **Scheduler = policy** - ordering, dedup, retry; swappable
+- **Worker = execution** - isolate heavy work behind a process boundary
+
+---
+
+## Run tests
 
 ```bash
-make test                   # 全テスト（693）
-make test-unit              # 単体テストのみ
-make test-integration       # 結合テストのみ
-make typecheck              # 型チェック
+make test
+make test-unit
+make test-integration
+make typecheck
 ```
 
 ---
 
-## 次のステップ
+## Next steps
 
-- [アーキテクチャガイド](./architecture.md) --- 内部構造の詳細
-- [ワークフローガイド](./workflow.md) --- YAML ワークフローの書き方
-- [Daemon ガイド](./daemon.md) --- イベント駆動の常駐実行
-- [設計書](../design.md) --- 設計の詳細と根拠
-- Worker アダプタのカスタマイズ: `src/worker/adapters/` を参照
-- 独自の Scheduler を実装: `src/scheduler/` を参考に
+- [Architecture guide](./architecture.md) - internal architecture details
+- [Workflow guide](./workflow.md) - writing YAML workflows
+- [Daemon guide](./daemon.md) - event-driven resident execution
+- [Design doc](../design.md) - design principles and rationale
+- Worker adapter customization: see `src/worker/adapters/`
+- Implementing a custom Scheduler: see `src/scheduler/`
