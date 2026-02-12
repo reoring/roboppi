@@ -29,11 +29,13 @@ steps:
     depends_on: [setup]
     instructions: |
       # Find and process the first incomplete task
-      TASK=$(grep -m1 '^\- \[ \]' todo.txt || true)
-      if [ -z "$TASK" ]; then
+      MATCH=$(grep -n -m1 '^\- \[ \]' todo.txt || true)
+      if [ -z "$MATCH" ]; then
         echo "All tasks complete!"
         exit 0
       fi
+      LINE_NO=${MATCH%%:*}
+      TASK=${MATCH#*:}
       echo "Processing: $TASK"
 
       # Perform work based on the task
@@ -53,9 +55,7 @@ steps:
       esac
 
       # Mark the task as completed
-      ESCAPED=$(echo "$TASK" | sed 's/[[\]/\\&]/\\&/g')
-      DONE=$(echo "$TASK" | sed 's/\- \[ \]/- [x]/')
-      sed -i "s|${TASK}|${DONE}|" todo.txt
+      sed -i "${LINE_NO}s/^- \\[ \\] /- [x] /" todo.txt
       echo "Updated todo.txt:"
       cat todo.txt
     capabilities: [READ, EDIT, RUN_COMMANDS]

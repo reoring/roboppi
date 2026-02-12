@@ -4,7 +4,7 @@ set -euo pipefail
 TODO=.agentcore-loop/todo.md
 test -s "${TODO}" || { echo "CHECK: missing todo"; exit 1; }
 
-COUNT=$(grep -c '^\- \[ \] ' "${TODO}" || true)
+COUNT=$(grep -c '^- \[ \] ' "${TODO}" || true)
 if [ "${COUNT}" -lt 6 ]; then
   echo "CHECK: too few tasks: ${COUNT}"
   exit 1
