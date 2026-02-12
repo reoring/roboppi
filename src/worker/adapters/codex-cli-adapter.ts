@@ -28,7 +28,9 @@ export class CodexCliAdapter extends BaseProcessAdapter {
   }
 
   buildCommand(task: WorkerTask): string[] {
-    const args: string[] = [this.config.codexCommand];
+    // Codex CLI supports non-interactive execution via `codex exec`.
+    // We pass instructions as the positional [PROMPT] argument.
+    const args: string[] = [this.config.codexCommand, "exec"];
 
     // Default args, with optional model override.
     if (task.model) {
@@ -47,18 +49,39 @@ export class CodexCliAdapter extends BaseProcessAdapter {
       args.push(...this.config.defaultArgs);
     }
 
-    // Map capabilities to approval mode
-    const hasWrite = task.capabilities.includes(WorkerCapability.EDIT);
-    const hasRunCommands = task.capabilities.includes(WorkerCapability.RUN_COMMANDS);
-
-    if (hasWrite && hasRunCommands) {
-      args.push("--approval-mode=full-auto");
-    } else if (hasWrite) {
-      args.push("--approval-mode=auto-edit");
+    // Always use JSONL output for reliable parsing/logging.
+    if (!args.includes("--json")) {
+      args.push("--json");
     }
 
-    // Pass instructions via --prompt
-    args.push("--prompt", task.instructions);
+    // Ensure Codex uses the workspace as the working root.
+    // (We also spawn with cwd=workspaceRef, but this makes Codex explicit.)
+    const hasCd = args.includes("--cd") || args.includes("-C");
+    if (!hasCd) {
+      args.push("--cd", task.workspaceRef);
+    }
+
+    // Map capabilities to sandbox / automation.
+    const hasWrite = task.capabilities.includes(WorkerCapability.EDIT);
+    const hasRunCommands =
+      task.capabilities.includes(WorkerCapability.RUN_COMMANDS) ||
+      task.capabilities.includes(WorkerCapability.RUN_TESTS);
+
+    if (hasWrite && hasRunCommands) {
+      // Low-friction sandboxed auto execution.
+      if (!args.includes("--full-auto")) {
+        args.push("--full-auto");
+      }
+    } else {
+      // Stay sandboxed and align with capability intent.
+      const hasSandbox = args.includes("--sandbox") || args.includes("-s");
+      if (!hasSandbox) {
+        args.push("--sandbox", hasWrite ? "workspace-write" : "read-only");
+      }
+    }
+
+    // Positional prompt
+    args.push(task.instructions);
 
     return args;
   }
@@ -117,6 +140,7 @@ export class CodexCliAdapter extends BaseProcessAdapter {
                   enqueue(ev);
                 }
               } else {
+                active.collectedStderr.push(buffer);
                 enqueue({ type: "stderr", data: buffer });
               }
             }
@@ -133,6 +157,7 @@ export class CodexCliAdapter extends BaseProcessAdapter {
                 enqueue(ev);
               }
             } else if (line) {
+              active.collectedStderr.push(line);
               enqueue({ type: "stderr", data: line });
             }
           }
@@ -218,11 +243,20 @@ export class CodexCliAdapter extends BaseProcessAdapter {
   }
 
   protected parseObservations(stdout: string): Observation[] {
-    if (!stdout.trim()) return [];
+    const trimmed = stdout.trim();
+    if (!trimmed) return [];
+
+    const max = 1000;
+    if (trimmed.length <= max) {
+      return [{ summary: trimmed }];
+    }
+
+    const head = trimmed.slice(0, max);
+    const tail = trimmed.slice(-max);
 
     return [
       {
-        summary: stdout.trim().slice(0, 1000),
+        summary: `${head}\n...\n${tail}`,
       },
     ];
   }

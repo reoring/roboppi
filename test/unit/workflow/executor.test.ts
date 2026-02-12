@@ -13,7 +13,7 @@ import type {
 } from "../../../src/workflow/types.js";
 import { WorkflowStatus, StepStatus } from "../../../src/workflow/types.js";
 import { ErrorClass } from "../../../src/types/common.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -839,6 +839,85 @@ describe("WorkflowExecutor", () => {
         expect(result.completedAt!).toBeGreaterThanOrEqual(result.startedAt);
         expect(result.steps["A"]!.startedAt).toBeGreaterThan(0);
         expect(result.steps["A"]!.completedAt).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Workflow metadata persistence
+  // -----------------------------------------------------------------------
+  describe("_workflow.json terminal status", () => {
+    it("writes SUCCEEDED at workflow completion", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow({ A: makeStep() });
+        const ctxDir = path.join(dir, "context");
+
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        const content = JSON.parse(
+          await readFile(path.join(ctxDir, "_workflow.json"), "utf-8"),
+        ) as Record<string, unknown>;
+
+        expect(content["id"]).toBe(result.workflowId);
+        expect(content["name"]).toBe("test-workflow");
+        expect(content["status"]).toBe(WorkflowStatus.SUCCEEDED);
+        expect(typeof content["startedAt"]).toBe("number");
+        expect(typeof content["completedAt"]).toBe("number");
+        expect((content["completedAt"] as number)).toBeGreaterThanOrEqual(
+          content["startedAt"] as number,
+        );
+      });
+    });
+
+    it("writes CANCELLED when externally aborted", async () => {
+      await withTempDir(async (dir) => {
+        const abortCtrl = new AbortController();
+        const runner = new MockStepRunner(
+          async (_stepId, _step, _callIndex, abortSignal) => {
+            await new Promise<void>((resolve) => {
+              if (abortSignal.aborted) {
+                resolve();
+                return;
+              }
+              abortSignal.addEventListener("abort", () => resolve(), {
+                once: true,
+              });
+            });
+            return { status: "SUCCEEDED" };
+          },
+        );
+
+        const wf = makeWorkflow({ A: makeStep() }, { timeout: "2m" });
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined,
+          abortCtrl.signal,
+        );
+
+        const runPromise = executor.execute();
+
+        // Let the step start before aborting.
+        for (let i = 0; i < 20 && runner.stepCalls.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        abortCtrl.abort();
+
+        const result = await runPromise;
+        expect(result.status).toBe(WorkflowStatus.CANCELLED);
+
+        const content = JSON.parse(
+          await readFile(path.join(ctxDir, "_workflow.json"), "utf-8"),
+        ) as Record<string, unknown>;
+        expect(content["status"]).toBe(WorkflowStatus.CANCELLED);
+        expect(typeof content["completedAt"]).toBe("number");
       });
     });
   });

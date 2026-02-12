@@ -91,10 +91,16 @@ export class OpenCodeAdapter extends BaseProcessAdapter {
           const lines = buffer.split("\n");
           buffer = lines.length > 0 ? (lines.pop() ?? "") : "";
           for (const line of lines) {
-            if (line) stderrLines.push(line);
+            if (line) {
+              stderrLines.push(line);
+              active.collectedStderr.push(line);
+            }
           }
         }
-        if (buffer) stderrLines.push(buffer);
+        if (buffer) {
+          stderrLines.push(buffer);
+          active.collectedStderr.push(buffer);
+        }
       } catch {
         // Stream may close on abort
       } finally {

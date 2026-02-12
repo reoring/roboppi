@@ -28,6 +28,7 @@ export interface CheckResult {
   complete: boolean;
   failed: boolean;
   errorClass?: ErrorClass;
+  reason?: string;
 }
 
 export interface StepRunner {
@@ -111,6 +112,7 @@ export class WorkflowExecutor {
   private readonly workflowTimeoutMs: number;
   private runningCount = 0;
   private workflowAbortController: AbortController | null = null;
+  private abortReason: "timeout" | "external" | null = null;
 
   // Notification mechanism — resolved whenever a step reaches a terminal state
   // or when a running slot becomes free.
@@ -123,6 +125,7 @@ export class WorkflowExecutor {
     private readonly stepRunner: StepRunner,
     private readonly workspaceDir: string,
     private readonly env?: Record<string, string>,
+    private readonly abortSignal?: AbortSignal,
   ) {
     this.stepDefs = definition.steps;
     this.concurrency =
@@ -144,7 +147,9 @@ export class WorkflowExecutor {
     }
 
     // 2. Initialize step states and context
-    await this.contextManager.initWorkflow(crypto.randomUUID(), this.definition.name);
+    const workflowId = crypto.randomUUID();
+    const startedAt = Date.now();
+    await this.contextManager.initWorkflow(workflowId, this.definition.name, startedAt);
     for (const [stepId, stepDef] of Object.entries(this.stepDefs)) {
       const maxIter = stepDef.max_iterations ?? 1;
       this.steps[stepId] = {
@@ -155,27 +160,65 @@ export class WorkflowExecutor {
       await this.contextManager.initStep(stepId);
     }
 
-    const startedAt = Date.now();
-
     // 3. Set up workflow-level abort controller for timeout
     this.workflowAbortController = new AbortController();
+
     const timeoutId = setTimeout(() => {
+      if (this.abortReason === null) this.abortReason = "timeout";
       this.workflowAbortController!.abort();
     }, this.workflowTimeoutMs);
+
+    const onExternalAbort = () => {
+      if (this.abortReason === null) this.abortReason = "external";
+      this.workflowAbortController!.abort();
+    };
+
+    if (this.abortSignal) {
+      if (this.abortSignal.aborted) {
+        onExternalAbort();
+      } else {
+        this.abortSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+
+    let workflowStatus: WorkflowStatus = WorkflowStatus.FAILED;
+    let completedAt = startedAt;
+    let executionError: unknown = null;
 
     try {
       // 4. Run the scheduling loop
       await this.schedulingLoop();
+      workflowStatus = this.computeWorkflowStatus();
+    } catch (err) {
+      executionError = err;
+      if (this.workflowAbortController.signal.aborted) {
+        workflowStatus = this.abortReason === "external"
+          ? WorkflowStatus.CANCELLED
+          : WorkflowStatus.TIMED_OUT;
+      } else {
+        workflowStatus = WorkflowStatus.FAILED;
+      }
     } finally {
       clearTimeout(timeoutId);
+      if (this.abortSignal) {
+        this.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
+      completedAt = Date.now();
+      await this.contextManager.writeWorkflowMeta({
+        id: workflowId,
+        name: this.definition.name,
+        startedAt,
+        status: workflowStatus,
+        completedAt,
+      });
     }
 
-    // 5. Determine workflow status
-    const workflowStatus = this.computeWorkflowStatus();
-    const completedAt = Date.now();
+    if (executionError !== null) {
+      throw executionError;
+    }
 
     return {
-      workflowId: crypto.randomUUID(),
+      workflowId,
       name: this.definition.name,
       status: workflowStatus,
       steps: { ...this.steps },
@@ -220,12 +263,14 @@ export class WorkflowExecutor {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      // If already aborted, resolve immediately
-      if (this.workflowAbortController!.signal.aborted) {
-        resolve();
+      const signal = this.workflowAbortController!.signal;
+
+      // If the workflow is already aborted, yield to the event loop so
+      // in-flight step cancellations can make progress (avoid microtask spin).
+      if (signal.aborted) {
+        setTimeout(resolve, 0);
         return;
       }
-      const signal = this.workflowAbortController!.signal;
       const onAbort = () => {
         this.notifyResolve = null;
         resolve();
@@ -424,9 +469,10 @@ export class WorkflowExecutor {
             checkAbort,
             this.env,
           );
-        } catch (_err) {
+        } catch (err) {
           if (this.workflowAbortController!.signal.aborted) return;
-          this.markStepFailed(stepId, "Completion check threw an error");
+          const msg = err instanceof Error ? err.message : String(err);
+          this.markStepFailed(stepId, `Completion check threw an error: ${msg}`);
           this.handleFailurePolicy(stepId, ErrorClass.FATAL);
           return;
         }
@@ -434,7 +480,8 @@ export class WorkflowExecutor {
         if (this.workflowAbortController!.signal.aborted) return;
 
         if (checkResult.failed) {
-          this.markStepFailed(stepId, "Completion check failed");
+          const reason = checkResult.reason ? `: ${checkResult.reason}` : "";
+          this.markStepFailed(stepId, `Completion check failed${reason}`);
           const onFailure = stepDef.on_failure ?? "abort";
           if (onFailure === "abort") {
             this.skipDependents(stepId);
@@ -559,7 +606,9 @@ export class WorkflowExecutor {
 
   private computeWorkflowStatus(): WorkflowStatus {
     if (this.workflowAbortController?.signal.aborted) {
-      return WorkflowStatus.TIMED_OUT;
+      return this.abortReason === "external"
+        ? WorkflowStatus.CANCELLED
+        : WorkflowStatus.TIMED_OUT;
     }
 
     const states = Object.values(this.steps);

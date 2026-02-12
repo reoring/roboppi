@@ -28,6 +28,16 @@ export class IpcTimeoutError extends Error {
   }
 }
 
+export class IpcStoppedError extends Error {
+  readonly requestId: string;
+
+  constructor(requestId: string) {
+    super(`IPC request ${requestId} aborted: protocol stopped`);
+    this.name = "IpcStoppedError";
+    this.requestId = requestId;
+  }
+}
+
 export class IpcBufferOverflowError extends Error {
   readonly size: number;
   readonly maxSize: number;

@@ -225,7 +225,7 @@ describe("computeBackoffDelay (Scheduler processNext backoff)", () => {
     // count=6: ceiling = min(30000, 500 * 64)  = 30000 (capped)
     const expectedCeilings = [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000];
     for (let count = 0; count < expectedCeilings.length; count++) {
-      const expected = expectedCeilings[count];
+      const expected = expectedCeilings[count]!;
       for (let i = 0; i < 50; i++) {
         const delay = computeBackoffDelay(count);
         expect(delay).toBeLessThan(expected);

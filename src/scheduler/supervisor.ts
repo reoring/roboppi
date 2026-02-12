@@ -67,9 +67,34 @@ export class Supervisor {
 
     let transport: JsonLinesTransport;
     try {
+      // Bun's Subprocess.stdin is not a Web WritableStream, but JsonLinesTransport
+      // expects a WritableStream<Uint8Array>. Wrap it.
+      const output = new WritableStream<Uint8Array>({
+        write(chunk) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (proc.stdin as any).write(chunk);
+        },
+        close() {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (proc.stdin as any).end?.();
+          } catch {
+            // ignore
+          }
+        },
+        abort() {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (proc.stdin as any).end?.();
+          } catch {
+            // ignore
+          }
+        },
+      });
+
       transport = new JsonLinesTransport(
         proc.stdout as ReadableStream<Uint8Array>,
-        proc.stdin as unknown as WritableStream<Uint8Array>,
+        output,
       );
     } catch (err) {
       // If transport construction fails, kill the process to avoid orphans

@@ -111,11 +111,21 @@ export class AgentCore {
         });
         return;
       }
-      this.cancellation.cancelByJobId(jobId, reason);
-      // Clean up activePermitsByJob entries for this job
-      this.activePermitsByJob.delete(jobId);
-      this.jobs.delete(jobId);
-      logger.info("Job cancelled", { jobId, reason });
+
+      // If the job has an active permit, revoke it so the worker task's abort signal fires.
+      const permitId = this.activePermitsByJob.get(jobId);
+      if (permitId !== undefined) {
+        this.permitGate.revokePermit(permitId, reason);
+      } else {
+        // Job hasn't started (no active permit). Remove it from the registry.
+        this.jobs.delete(jobId);
+      }
+
+      logger.info("Job cancellation requested", {
+        jobId,
+        reason,
+        activePermit: permitId !== undefined,
+      });
       this.protocol.sendJobCancelled(jobId, reason, requestId).catch((err: unknown) => {
         logger.error("Failed to send job_cancelled", { error: err });
       });

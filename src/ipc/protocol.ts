@@ -24,7 +24,7 @@ import type {
   Job,
 } from "../types/index.js";
 import { JsonLinesTransport } from "./json-lines-transport.js";
-import { IpcTimeoutError } from "./errors.js";
+import { IpcStoppedError, IpcTimeoutError } from "./errors.js";
 
 type InboundType = InboundMessage["type"];
 type OutboundType = OutboundMessage["type"];
@@ -92,7 +92,7 @@ export class IpcProtocol {
     // Reject all pending requests
     for (const [requestId, pending] of this.pendingRequests) {
       clearTimeout(pending.timer);
-      pending.reject(new IpcTimeoutError(requestId, 0));
+      pending.reject(new IpcStoppedError(requestId));
     }
     this.pendingRequests.clear();
 
@@ -209,7 +209,7 @@ export class IpcProtocol {
   /** Wait for a response message with a matching requestId (for request/response correlation). */
   waitForResponse(requestId: string, timeoutMs?: number): Promise<unknown> {
     const timeout = timeoutMs ?? this.requestTimeoutMs;
-    return new Promise((resolve, reject) => {
+    const p = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new IpcTimeoutError(requestId, timeout));
@@ -217,6 +217,11 @@ export class IpcProtocol {
 
       this.pendingRequests.set(requestId, { resolve, reject, timer });
     });
+
+    // Prevent unhandled rejection crashes if callers create a waiter but never await it.
+    // (We still return the original promise so callers can observe the rejection.)
+    p.catch(() => {});
+    return p;
   }
 
   private dispatch(raw: unknown): void {

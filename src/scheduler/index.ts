@@ -361,13 +361,17 @@ export class Scheduler {
     const submitRequestId = generateId();
     const permitRequestId = generateId();
 
+    // Register waiters before sending to avoid missing fast responses.
+    const submitWait = ipc!.waitForResponse(submitRequestId);
+
     ipc!.sendSubmitJob(submitRequestId, job)
-      .then(() => ipc!.waitForResponse(submitRequestId))
+      .then(() => submitWait)
       .then(() => {
         // Ack received, now request a permit
-        return ipc!.sendRequestPermit(permitRequestId, job!, attemptIndex);
+        const permitWait = ipc!.waitForResponse(permitRequestId);
+        return ipc!.sendRequestPermit(permitRequestId, job!, attemptIndex)
+          .then(() => permitWait);
       })
-      .then(() => ipc!.waitForResponse(permitRequestId))
       .then((response) => {
         const msg = response as Record<string, unknown>;
         if (msg["type"] === "permit_rejected") {

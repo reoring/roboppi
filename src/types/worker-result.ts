@@ -29,5 +29,7 @@ export interface WorkerResult {
   observations: Observation[];
   cost: WorkerCost;
   durationMs: number;
+  /** Exit code for process-backed workers (if available). */
+  exitCode?: number;
   errorClass?: ErrorClass;
 }

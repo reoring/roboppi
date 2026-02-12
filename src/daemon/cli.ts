@@ -3,7 +3,7 @@
  * Daemon CLI
  *
  * Usage:
- *   bun run src/daemon/cli.ts <daemon.yaml> [--workspace <dir>] [--verbose]
+ *   bun run src/daemon/cli.ts <daemon.yaml> [--workspace <dir>] [--verbose] [--supervised]
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -16,6 +16,7 @@ const args = process.argv.slice(2);
 let yamlPath = "";
 let verbose = false;
 let workspaceOverride = "";
+let supervised = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i]!;
@@ -33,17 +34,24 @@ for (let i = 0; i < args.length; i++) {
     verbose = true;
   } else if (arg === "--workspace" || arg === "-w") {
     workspaceOverride = next();
+  } else if (arg === "--supervised") {
+    supervised = true;
   } else if (arg === "--help" || arg === "-h") {
     console.log(`Usage: bun run src/daemon/cli.ts <daemon.yaml> [options]
 
 Options:
   --workspace, -w <dir>  Override workspace directory
   --verbose, -v   Enable verbose logging
+  --supervised     Run workflows via Core IPC (Supervisor -> Core -> Worker)
   --help, -h      Show help`);
     process.exit(0);
   } else if (!arg.startsWith("-")) {
     yamlPath = arg;
   }
+}
+
+if (verbose) {
+  process.env.AGENTCORE_VERBOSE = "1";
 }
 
 if (!yamlPath) {
@@ -73,7 +81,7 @@ async function main(): Promise<void> {
   console.log(`Triggers: ${triggerCount}`);
   console.log("");
 
-  const daemon = new Daemon(config);
+  const daemon = new Daemon(config, undefined, { supervised });
   await daemon.start();
 }
 
