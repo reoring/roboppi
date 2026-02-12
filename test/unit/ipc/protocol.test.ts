@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { JsonLinesTransport } from "../../../src/ipc/json-lines-transport.js";
 import { IpcProtocol, validateMessage } from "../../../src/ipc/protocol.js";
-import { IpcTimeoutError } from "../../../src/ipc/errors.js";
+import { IpcStoppedError, IpcTimeoutError } from "../../../src/ipc/errors.js";
 import type {
   SubmitJobMessage,
   CancelJobMessage,
@@ -745,7 +745,7 @@ describe("IpcProtocol", () => {
       await closeInput();
       await protocol.stop();
 
-      await expect(responsePromise).rejects.toThrow(IpcTimeoutError);
+      await expect(responsePromise).rejects.toThrow(IpcStoppedError);
     });
 
     test("stop() is idempotent", async () => {

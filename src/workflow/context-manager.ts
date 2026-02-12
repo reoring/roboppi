@@ -39,12 +39,16 @@ function ensureWithinBase(basePath: string, targetPath: string): string {
 export class ContextManager {
   constructor(private readonly contextDir: string) {}
 
-  async initWorkflow(workflowId: string, workflowName: string): Promise<void> {
+  async initWorkflow(
+    workflowId: string,
+    workflowName: string,
+    startedAt: number = Date.now(),
+  ): Promise<void> {
     await mkdir(this.contextDir, { recursive: true });
     const workflowMeta = {
       id: workflowId,
       name: workflowName,
-      startedAt: Date.now(),
+      startedAt,
       status: "RUNNING",
     };
     await writeFile(

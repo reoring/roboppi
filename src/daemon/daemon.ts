@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { DaemonConfig, DaemonEvent, TriggerDef } from "./types.js";
 import type { WorkflowState } from "../workflow/types.js";
 import { DaemonStateStore } from "./state-store.js";
@@ -16,10 +17,18 @@ import { CommandSource } from "./events/command-source.js";
 import { mergeEventSources } from "./events/event-source.js";
 import type { EventSource } from "./events/event-source.js";
 import { parseWorkflow } from "../workflow/parser.js";
+import type { StepRunner } from "../workflow/executor.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import { MultiWorkerStepRunner } from "../workflow/multi-worker-step-runner.js";
+import { CoreIpcStepRunner } from "../workflow/core-ipc-step-runner.js";
 import { ContextManager } from "../workflow/context-manager.js";
 import { Logger } from "../core/observability.js";
+
+export interface DaemonOptions {
+  supervised?: boolean;
+  /** Path to Core entrypoint for supervised mode (default: src/index.ts). */
+  coreEntryPoint?: string;
+}
 
 interface QueuedItem {
   triggerId: string;
@@ -39,6 +48,12 @@ export class Daemon {
   private readonly logger: Logger;
   private readonly workspaceDir: string;
   private readonly stateDir: string;
+  private readonly supervised: boolean;
+  private readonly coreEntryPoint: string;
+
+  private readonly shutdownAbortController = new AbortController();
+  private stepRunner: StepRunner | null = null;
+  private coreRunner: CoreIpcStepRunner | null = null;
   private shutdownRequested = false;
   private runningWorkflows = 0;
   private readonly maxConcurrent: number;
@@ -47,7 +62,7 @@ export class Daemon {
   private workflowDoneResolve: (() => void) | null = null;
   private startedAt: number = 0;
 
-  constructor(config: DaemonConfig, logger?: Logger) {
+  constructor(config: DaemonConfig, logger?: Logger, options: DaemonOptions = {}) {
     this.config = config;
     this.logger = logger ?? new Logger("daemon");
     this.workspaceDir = path.resolve(config.workspace);
@@ -58,6 +73,14 @@ export class Daemon {
     this.evaluateGate = new EvaluateGate();
     this.resultAnalyzer = new ResultAnalyzer();
     this.maxConcurrent = config.max_concurrent_workflows ?? 5;
+
+    this.supervised = options.supervised ?? false;
+    const defaultCoreEntryPoint = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "index.ts",
+    );
+    this.coreEntryPoint = options.coreEntryPoint ?? defaultCoreEntryPoint;
   }
 
   async start(): Promise<void> {
@@ -134,48 +157,80 @@ export class Daemon {
     // 6. Merge event sources and run event loop
     const merged = mergeEventSources(this.eventSources);
 
+    // 6b. Initialize step runner
+    const verbose = process.env.AGENTCORE_VERBOSE === "1";
+    if (this.supervised) {
+      this.coreRunner = new CoreIpcStepRunner({
+        verbose,
+        coreEntryPoint: this.coreEntryPoint,
+      });
+      this.stepRunner = this.coreRunner;
+      this.logger.info("Supervised mode enabled", { coreEntryPoint: this.coreEntryPoint });
+    } else {
+      this.stepRunner = new MultiWorkerStepRunner(verbose);
+    }
+
     this.logger.info("Event loop started, waiting for events...");
 
     try {
-      for await (const event of merged) {
-        if (this.shutdownRequested) break;
+      try {
+        for await (const event of merged) {
+          if (this.shutdownRequested) break;
 
-        try {
-          this.logger.debug("Event received", { sourceId: event.sourceId, type: event.payload.type });
+          try {
+            this.logger.debug("Event received", { sourceId: event.sourceId, type: event.payload.type });
 
-          const actions = await this.triggerEngine.handleEvent(event);
-          for (const action of actions) {
-            if (action.action === "executed") {
-              this.logger.info("Workflow completed", { status: action.result.status });
-            } else if (action.action === "queued") {
-              this.logger.info("Workflow queued", { triggerId: action.triggerId, queueSize: this.workflowQueue.length });
-            } else {
-              this.logger.debug("Trigger action", { action: action.action });
+            const actions = await this.triggerEngine.handleEvent(event);
+            for (const action of actions) {
+              if (action.action === "executed") {
+                this.logger.info("Workflow completed", { status: action.result.status });
+              } else if (action.action === "queued") {
+                this.logger.info("Workflow queued", { triggerId: action.triggerId, queueSize: this.workflowQueue.length });
+              } else {
+                this.logger.debug("Trigger action", { action: action.action });
+              }
             }
+          } catch (err) {
+            this.logger.error("Error handling event", { sourceId: event.sourceId, error: err instanceof Error ? err.message : String(err) });
+            continue;
           }
-        } catch (err) {
-          this.logger.error("Error handling event", { sourceId: event.sourceId, error: err instanceof Error ? err.message : String(err) });
-          continue;
+        }
+      } catch (err) {
+        if (!this.shutdownRequested) {
+          this.logger.error("Event loop error", { error: err instanceof Error ? err.message : String(err) });
         }
       }
-    } catch (err) {
-      if (!this.shutdownRequested) {
-        this.logger.error("Event loop error", { error: err instanceof Error ? err.message : String(err) });
+
+      // 7. Update daemon state
+      await this.stateStore.saveDaemonState({
+        pid: process.pid,
+        startedAt: this.startedAt,
+        configName: this.config.name,
+        status: "stopped",
+      });
+    } finally {
+      // Ensure Core is shut down in supervised mode.
+      if (this.coreRunner) {
+        try {
+          await this.coreRunner.shutdown();
+        } catch {
+          // best-effort
+        }
+        this.coreRunner = null;
+        this.stepRunner = null;
       }
     }
-
-    // 7. Update daemon state
-    await this.stateStore.saveDaemonState({
-      pid: process.pid,
-      startedAt: this.startedAt,
-      configName: this.config.name,
-      status: "stopped",
-    });
   }
 
   async stop(): Promise<void> {
     if (this.shutdownRequested) return;
     this.shutdownRequested = true;
+
+    // Abort running workflows/evaluate/analyze ASAP.
+    this.shutdownAbortController.abort();
+
+    // Prevent any queued workflows from starting.
+    this.workflowQueue.length = 0;
 
     this.logger.info("Shutting down...");
 
@@ -199,6 +254,17 @@ export class Daemon {
       ]);
     }
 
+    // Shut down Core (supervised mode) after workflows have stopped.
+    if (this.coreRunner) {
+      try {
+        await this.coreRunner.shutdown();
+      } catch {
+        // best-effort
+      }
+      this.coreRunner = null;
+      this.stepRunner = null;
+    }
+
     // Update daemon state
     await this.stateStore.saveDaemonState({
       pid: process.pid,
@@ -220,6 +286,18 @@ export class Daemon {
     trigger: TriggerDef,
     event: DaemonEvent,
   ): Promise<WorkflowState> {
+    if (this.shutdownRequested) {
+      const { WorkflowStatus } = await import("../workflow/types.js");
+      return {
+        workflowId: `${triggerId}-cancelled-${Date.now()}`,
+        name: trigger.workflow,
+        status: WorkflowStatus.CANCELLED,
+        steps: {},
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+      };
+    }
+
     if (this.runningWorkflows >= this.maxConcurrent) {
       this.enqueueWorkflow(triggerId, trigger, event);
       throw new WorkflowQueuedError();
@@ -258,6 +336,7 @@ export class Daemon {
 
   /** Dequeue and execute next queued workflow if capacity allows. */
   private drainQueue(): void {
+    if (this.shutdownRequested) return;
     while (
       this.workflowQueue.length > 0 &&
       this.runningWorkflows < this.maxConcurrent
@@ -289,6 +368,10 @@ export class Daemon {
     trigger: TriggerDef,
     event: DaemonEvent,
   ): Promise<WorkflowState> {
+    if (!this.stepRunner) {
+      throw new Error("Daemon step runner not initialized");
+    }
+
     this.runningWorkflows++;
     // Sanitize triggerId to prevent path traversal in file-based state storage
     const safeTriggerId = triggerId.replace(/[\/\\\.]/g, '_');
@@ -307,6 +390,8 @@ export class Daemon {
           workspaceDir,
           safeTriggerId,
           triggerState.executionCount,
+          this.supervised ? this.stepRunner : undefined,
+          this.shutdownAbortController.signal,
         );
         if (!shouldRun) {
           const { WorkflowStatus } = await import("../workflow/types.js");
@@ -354,8 +439,14 @@ export class Daemon {
 
       // 4. Create executor and run
       const ctx = new ContextManager(contextDir);
-      const runner = new MultiWorkerStepRunner(false);
-      const executor = new WorkflowExecutor(definition, ctx, runner, workspaceDir, workflowEnv);
+      const executor = new WorkflowExecutor(
+        definition,
+        ctx,
+        this.stepRunner,
+        workspaceDir,
+        workflowEnv,
+        this.shutdownAbortController.signal,
+      );
       const result = await executor.execute();
 
       // 5. Run result analyzer if defined
@@ -368,6 +459,8 @@ export class Daemon {
           workspaceDir,
           safeTriggerId,
           triggerState.executionCount,
+          this.supervised ? this.stepRunner : undefined,
+          this.shutdownAbortController.signal,
         );
         if (analyzeOutput) {
           this.logger.info("Analysis result", { triggerId: safeTriggerId, output: analyzeOutput });

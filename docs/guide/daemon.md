@@ -642,6 +642,7 @@ bun run src/daemon/cli.ts <daemon.yaml> [options]
 |-----------|------|
 | `--workspace`, `-w` | override `workspace` via CLI |
 | `--verbose`, `-v` | enable verbose logging |
+| `--supervised` | run workflows via Core IPC (Supervisor -> Core -> Worker) |
 | `--help`, `-h` | show help |
 
 Notes:
@@ -661,10 +662,12 @@ bun run src/daemon/cli.ts my-daemon.yaml --verbose
 On `Ctrl+C` (SIGINT) or SIGTERM, Daemon performs a graceful shutdown:
 
 1. stop receiving new events
-2. stop all event sources
-3. wait for running workflows to finish (30s timeout)
-4. stop webhook server
-5. flush state and exit
+2. abort running workflows (best-effort)
+3. stop all event sources
+4. wait for running workflows to finish (30s timeout)
+5. stop webhook server
+6. (supervised mode) shut down Core
+7. flush state and exit
 
 ---
 

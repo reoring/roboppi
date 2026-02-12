@@ -21,12 +21,28 @@ export class ShellStepRunner implements StepRunner {
   ): Promise<StepRunResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m Running...\n`);
+      const script = step.instructions.trim();
+      const previewMax = 2000;
+      const preview = script.length > previewMax
+        ? script.slice(0, previewMax) + "\n[truncated]"
+        : script;
+      process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m cmd: bash -e -c (script ${script.length} chars)\n`);
+      for (const line of preview.split("\n")) {
+        if (!line) continue;
+        process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m | ${line}\n`);
+      }
     }
 
     const result = await this.execShell(step.instructions, workspaceDir, abortSignal, env);
 
     if (this.verbose && result.stdout) {
       for (const line of result.stdout.split("\n").filter(Boolean)) {
+        process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m ${line}\n`);
+      }
+    }
+
+    if (this.verbose && result.stderr) {
+      for (const line of result.stderr.split("\n").filter(Boolean)) {
         process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m ${line}\n`);
       }
     }
@@ -57,6 +73,16 @@ export class ShellStepRunner implements StepRunner {
   ): Promise<CheckResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m Running completion check...\n`);
+      const script = check.instructions.trim();
+      const previewMax = 2000;
+      const preview = script.length > previewMax
+        ? script.slice(0, previewMax) + "\n[truncated]"
+        : script;
+      process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m cmd: bash -e -c (script ${script.length} chars)\n`);
+      for (const line of preview.split("\n")) {
+        if (!line) continue;
+        process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m | ${line}\n`);
+      }
     }
 
     const result = await this.execShell(check.instructions, workspaceDir, abortSignal, env);
@@ -67,8 +93,14 @@ export class ShellStepRunner implements StepRunner {
       }
     }
 
+    if (this.verbose && result.stderr) {
+      for (const line of result.stderr.split("\n").filter(Boolean)) {
+        process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m ${line}\n`);
+      }
+    }
+
     if (result.cancelled) {
-      return { complete: false, failed: true, errorClass: ErrorClass.NON_RETRYABLE };
+      return { complete: false, failed: true, errorClass: ErrorClass.NON_RETRYABLE, reason: "cancelled" };
     }
 
     // exit 0 = complete, exit 1 = incomplete, other = failed
@@ -78,7 +110,14 @@ export class ShellStepRunner implements StepRunner {
     if (result.exitCode === 1) {
       return { complete: false, failed: false };
     }
-    return { complete: false, failed: true, errorClass: ErrorClass.NON_RETRYABLE };
+    const detail = result.stderr?.trim() ? result.stderr.trim() : result.stdout.trim();
+    const preview = detail ? detail.replace(/\s+/g, " ").slice(0, 300) : "";
+    return {
+      complete: false,
+      failed: true,
+      errorClass: ErrorClass.NON_RETRYABLE,
+      reason: `exitCode=${result.exitCode}${preview ? ` ${preview}` : ""}`,
+    };
   }
 
   private execShell(

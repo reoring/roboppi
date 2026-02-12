@@ -88,6 +88,7 @@ fi
 RUNNER_ARGS=(
   "${AGENTCORE_ROOT}/src/workflow/run.ts"
   "${AGENTCORE_ROOT}/examples/agent-pr-loop.yaml"
+  --supervised
   --workspace "${TARGET}"
 )
 

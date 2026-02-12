@@ -13,6 +13,7 @@ export interface ActiveProcess {
   managed: ManagedProcess;
   startedAt: number;
   collectedStdout: string[];
+  collectedStderr: string[];
   streamConsumed: boolean;
 }
 
@@ -80,7 +81,15 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
       env: mergedEnv,
       abortSignal: task.abortSignal,
       timeoutMs,
+      processGroup: true,
     });
+
+    if (process.env.AGENTCORE_VERBOSE === "1" && process.env.AGENTCORE_COMPONENT === "core") {
+      const rendered = renderCommandForLogs(command, task);
+      process.stderr.write(
+        `[core][worker:${this.kind}] spawn pid=${managed.pid} cwd=${task.workspaceRef} cmd=${rendered}\n`,
+      );
+    }
 
     const handle: WorkerHandle = {
       handleId: generateId(),
@@ -92,6 +101,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
       managed,
       startedAt,
       collectedStdout: [],
+      collectedStderr: [],
       streamConsumed: false,
     });
 
@@ -122,21 +132,28 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
 
     const { managed, startedAt } = active;
 
-    // Get stdout: from collected data if streamEvents consumed the stream, otherwise read directly
-    let stdout = "";
-    if (active.streamConsumed) {
-      stdout = active.collectedStdout.join("\n");
-    } else {
-      stdout = await this.readStdout(managed);
-    }
+    const stdoutPromise = active.streamConsumed
+      ? Promise.resolve(active.collectedStdout.join("\n"))
+      : this.readStream(managed.stdout);
 
-    const exitCode = await managed.exitPromise;
+    const stderrPromise = active.streamConsumed
+      ? Promise.resolve(active.collectedStderr.join("\n"))
+      : this.readStream(managed.stderr);
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      stdoutPromise,
+      stderrPromise,
+      managed.exitPromise,
+    ]);
     const wallTimeMs = now() - startedAt;
 
     this.activeProcesses.delete(handle.handleId);
 
     const artifacts = this.parseArtifacts(stdout);
     const observations = this.parseObservations(stdout);
+
+    const stderrObs = toStderrObservation(stderr);
+    if (stderrObs) observations.push(stderrObs);
 
     if (handle.abortSignal.aborted) {
       return {
@@ -145,6 +162,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
         observations,
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        exitCode,
         errorClass: ErrorClass.RETRYABLE_TRANSIENT,
       };
     }
@@ -156,6 +174,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
         observations,
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        exitCode,
       };
     }
 
@@ -166,6 +185,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
       observations,
       cost: { wallTimeMs },
       durationMs: wallTimeMs,
+      exitCode,
       errorClass,
     };
   }
@@ -211,21 +231,72 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
   }
 
   protected async readStdout(managed: ManagedProcess): Promise<string> {
-    const stdoutChunks: string[] = [];
+    return this.readStream(managed.stdout);
+  }
+
+  protected async readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+    const chunks: string[] = [];
     const decoder = new TextDecoder();
-    const reader = managed.stdout.getReader();
+    const reader = stream.getReader();
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        stdoutChunks.push(decoder.decode(value, { stream: true }));
+        chunks.push(decoder.decode(value, { stream: true }));
       }
     } catch {
       // Stream may already be consumed by streamEvents
     } finally {
       reader.releaseLock();
     }
-    return stdoutChunks.join("");
+    return chunks.join("");
   }
+}
+
+function toStderrObservation(stderr: string): Observation | null {
+  const trimmed = stderr.trim();
+  if (!trimmed) return null;
+
+  const max = 2000;
+  if (trimmed.length <= max) {
+    return { summary: `[stderr]\n${trimmed}` };
+  }
+
+  const head = trimmed.slice(0, 800);
+  const tail = trimmed.slice(-800);
+  return { summary: `[stderr]\n${head}\n...\n${tail}` };
+}
+
+function renderCommandForLogs(cmd: string[], task: WorkerTask): string {
+  const showPrompts = process.env.AGENTCORE_SHOW_WORKER_PROMPTS === "1";
+  const instr = task.instructions;
+
+  const renderedArgs = cmd.map((arg, i) => {
+    if (!showPrompts) {
+      const prev = i > 0 ? cmd[i - 1] : "";
+      if (prev === "--prompt" || prev === "--print") {
+        return `<instructions ${arg.length} chars>`;
+      }
+      if (arg === instr) {
+        return `<instructions ${instr.length} chars>`;
+      }
+      if (arg.includes("\n")) {
+        return `<multiline ${arg.length} chars>`;
+      }
+    }
+
+    if (arg.length > 300) {
+      return arg.slice(0, 180) + `...<truncated ${arg.length} chars>`;
+    }
+
+    return arg;
+  });
+
+  return renderedArgs.map(shQuote).join(" ");
+}
+
+function shQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:=,@+-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'"'"'`)}'`;
 }

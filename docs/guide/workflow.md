@@ -478,6 +478,7 @@ bun run src/workflow/run.ts <workflow.yaml>
 |-----------|--------|------|----------|
 | `--workspace <dir>` | `-w` | working directory | temp directory |
 | `--verbose` | `-v` | show step output | off |
+| `--supervised` | - | delegate steps via Core IPC (Supervisor -> Core -> Worker) | off |
 | `--help` | `-h` | show help | - |
 
 ### Examples
@@ -491,6 +492,9 @@ bun run src/workflow/run.ts examples/build-test-report.yaml --workspace /tmp/my-
 
 # verbose output
 bun run src/workflow/run.ts examples/todo-loop.yaml --verbose
+
+# supervised mode (Core spawns worker processes)
+bun run src/workflow/run.ts examples/agent-pr-loop.yaml --supervised --verbose
 ```
 
 ### Reading results

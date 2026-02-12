@@ -121,10 +121,17 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
           const { done, value } = await stderrReader.read();
           if (done) break;
           const text = decoder.decode(value, { stream: true });
+          active.collectedStderr.push(text);
           stderrEvents.push({ type: "stderr", data: text });
         }
       } catch {
         // Stream may be closed
+      } finally {
+        try {
+          stderrReader.releaseLock();
+        } catch {
+          // ignore
+        }
       }
     })();
 
@@ -177,6 +184,12 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
       }
     } catch {
       // Stream may be closed due to cancellation
+    } finally {
+      try {
+        stdoutReader.releaseLock();
+      } catch {
+        // ignore
+      }
     }
 
     await stderrDone;
@@ -200,15 +213,22 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
     const exitCode = await active.managed.exitPromise;
     const wallTimeMs = Date.now() - active.startedAt;
 
-    // Get stdout: from collected data if streamEvents consumed the stream, otherwise read directly
+    // Get stdout/stderr: from collected data if streamEvents consumed the stream, otherwise read directly
     let stdout = "";
+    let stderr = "";
     if (active.streamConsumed) {
       stdout = active.collectedStdout.join("\n");
+      stderr = active.collectedStderr.join("\n");
     } else {
       try {
         stdout = await new Response(active.managed.stdout).text();
       } catch {
         // stdout may already have been consumed
+      }
+      try {
+        stderr = await new Response(active.managed.stderr).text();
+      } catch {
+        // stderr may already have been consumed
       }
     }
 
@@ -220,9 +240,10 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
       return {
         status: WorkerStatus.CANCELLED,
         artifacts: [],
-        observations: [],
+        observations: buildStderrObservations(stderr),
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        exitCode,
         errorClass: ErrorClass.RETRYABLE_TRANSIENT,
       };
     }
@@ -232,26 +253,31 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
       return {
         status: WorkerStatus.FAILED,
         artifacts: [],
-        observations: [],
+        observations: buildStderrObservations(stderr),
         cost: { wallTimeMs },
         durationMs: wallTimeMs,
+        exitCode,
         errorClass,
       };
     }
 
     // Parse structured output for artifacts and observations
-    const { artifacts, observations, estimatedTokens } =
+    const { artifacts, observations: parsedObservations, estimatedTokens } =
       this.parseOutput(stdout);
+
+    const observations = parsedObservations;
+    const stderrObs = buildStderrObservations(stderr);
 
     return {
       status: WorkerStatus.SUCCEEDED,
       artifacts,
-      observations,
+      observations: [...observations, ...stderrObs],
       cost: {
         wallTimeMs,
         estimatedTokens: estimatedTokens ?? undefined,
       },
       durationMs: wallTimeMs,
+      exitCode,
     };
   }
 
@@ -324,4 +350,18 @@ export class ClaudeCodeAdapter extends BaseProcessAdapter {
 
     return { artifacts, observations, estimatedTokens };
   }
+}
+
+function buildStderrObservations(stderr: string): Observation[] {
+  const trimmed = stderr.trim();
+  if (!trimmed) return [];
+
+  const max = 2000;
+  if (trimmed.length <= max) {
+    return [{ summary: `[stderr]\n${trimmed}` }];
+  }
+
+  const head = trimmed.slice(0, 800);
+  const tail = trimmed.slice(-800);
+  return [{ summary: `[stderr]\n${head}\n...\n${tail}` }];
 }

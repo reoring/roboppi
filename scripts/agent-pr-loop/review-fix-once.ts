@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// NOTE: Legacy/experimental helper.
+// This script spawns worker CLIs directly (not via Core IPC) and is no longer used
+// by the supervised demo workflow.
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -42,6 +45,11 @@ async function main(): Promise<void> {
   const loopDir = path.join(workspaceDir, ".agentcore-loop");
   await mkdir(loopDir, { recursive: true });
 
+  const verbose =
+    process.env.AGENTCORE_VERBOSE === "1" ||
+    process.env.VERBOSE === "1" ||
+    process.env.DEBUG === "1";
+
   const abort = new AbortController();
   const onSignal = () => abort.abort();
   process.on("SIGINT", onSignal);
@@ -70,7 +78,7 @@ async function main(): Promise<void> {
   await writeFile(path.join(loopDir, "review.md"), "");
   await writeFile(path.join(loopDir, "fix.md"), "");
 
-  const runner = new MultiWorkerStepRunner(false);
+  const runner = new MultiWorkerStepRunner(verbose);
 
   const reviewStep: StepDefinition = {
     worker: "OPENCODE",
@@ -87,10 +95,9 @@ Task:
 
 You must read at least:
 - .agentcore-loop/request.md
-- /tmp/agentcore-linalg-demo/problem.md
-- /tmp/agentcore-linalg-demo/solution.md
-- .agentcore-loop/artifacts/problem.md
-- .agentcore-loop/artifacts/solution.md
+- .agentcore-loop/design.md (if present)
+- .agentcore-loop/todo.md (if present)
+- .agentcore-loop/review.diff
 - .agentcore-loop/review.status
 - .agentcore-loop/review.untracked
 
@@ -101,12 +108,16 @@ Format for .agentcore-loop/review.md:
     timeout: "15m",
   };
 
+  console.log("[review-fix-once] review: start");
+
   const reviewResult = await runner.runStep(
     "review",
     reviewStep,
     workspaceDir,
     abort.signal,
   );
+
+  console.log(`[review-fix-once] review: ${reviewResult.status}`);
 
   if (reviewResult.status !== "SUCCEEDED") {
     throw new Error("review step failed");
@@ -149,6 +160,8 @@ Base your decision on:
 
   const verdictRaw = await readText(verdictPath);
   const verdict = verdictRaw.trim().toUpperCase();
+
+  console.log(`[review-fix-once] verdict: ${verdict || "(missing)"}`);
   if (verdict === "PASS") {
     return;
   }
@@ -225,6 +238,8 @@ Do:
     timeout: "20m",
   };
 
+  console.log("[review-fix-once] fix: start");
+
   const fixResult = await runner.runStep(
     "fix",
     fixStep,
@@ -232,7 +247,18 @@ Do:
     abort.signal,
   );
 
+  console.log(`[review-fix-once] fix: ${fixResult.status}`);
+
   if (fixResult.status !== "SUCCEEDED") {
+    const obs = (fixResult.observations ?? [])
+      .map((o) => (o.summary ? o.summary.trim() : ""))
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+    if (obs) {
+      await writeFile(path.join(loopDir, "fix.last-output.txt"), obs + "\n");
+      console.log("[review-fix-once] fix: wrote .agentcore-loop/fix.last-output.txt");
+    }
     throw new Error("fix step failed");
   }
 }

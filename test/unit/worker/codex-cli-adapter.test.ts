@@ -69,6 +69,7 @@ function createMockManagedProcess(
     stdout: stdoutStream,
     stderr: stderrStream,
     exitPromise,
+    processGroup: false,
   };
 }
 
@@ -110,7 +111,16 @@ describe("CodexCliAdapter", () => {
         capabilities: [WorkerCapability.READ],
       });
       const command = adapter.buildCommand(task);
-      expect(command).toEqual(["codex", "--prompt", "Fix the bug"]);
+      expect(command).toEqual([
+        "codex",
+        "exec",
+        "--json",
+        "--cd",
+        "/tmp/test-workspace",
+        "--sandbox",
+        "read-only",
+        "Fix the bug",
+      ]);
     });
 
     test("should use custom codex command from config", () => {
@@ -130,9 +140,14 @@ describe("CodexCliAdapter", () => {
       const command = customAdapter.buildCommand(task);
       expect(command).toEqual([
         "codex",
+        "exec",
         "--model",
         "o3",
-        "--prompt",
+        "--json",
+        "--cd",
+        "/tmp/test-workspace",
+        "--sandbox",
+        "read-only",
         "Fix the bug in main.ts",
       ]);
     });
@@ -163,7 +178,7 @@ describe("CodexCliAdapter", () => {
         ],
       });
       const command = adapter.buildCommand(task);
-      expect(command).toContain("--approval-mode=full-auto");
+      expect(command).toContain("--full-auto");
     });
 
     test("should set auto-edit approval mode for EDIT without RUN_COMMANDS", () => {
@@ -171,7 +186,9 @@ describe("CodexCliAdapter", () => {
         capabilities: [WorkerCapability.READ, WorkerCapability.EDIT],
       });
       const command = adapter.buildCommand(task);
-      expect(command).toContain("--approval-mode=auto-edit");
+      expect(command).toContain("--sandbox");
+      const idx = command.indexOf("--sandbox");
+      expect(command[idx + 1]).toBe("workspace-write");
     });
 
     test("should not set approval mode for READ only", () => {
@@ -179,10 +196,7 @@ describe("CodexCliAdapter", () => {
         capabilities: [WorkerCapability.READ],
       });
       const command = adapter.buildCommand(task);
-      const approvalArgs = command.filter((arg) =>
-        arg.startsWith("--approval-mode"),
-      );
-      expect(approvalArgs).toHaveLength(0);
+      expect(command).not.toContain("--full-auto");
     });
   });
 
@@ -200,7 +214,8 @@ describe("CodexCliAdapter", () => {
       const spawnCall = callArgs![0]!;
       expect(spawnCall.cwd).toBe("/tmp/test-workspace");
       expect(spawnCall.command[0]).toBe("codex");
-      expect(spawnCall.command).toContain("--prompt");
+      expect(spawnCall.command).toContain("exec");
+      expect(spawnCall.command[spawnCall.command.length - 1]).toBe(task.instructions);
       expect(spawnCall.abortSignal).toBe(task.abortSignal);
     });
 
@@ -311,6 +326,7 @@ describe("CodexCliAdapter", () => {
           },
         }),
         exitPromise,
+        processGroup: false,
       };
       mockPm.spawnMock.mockReturnValue(managed);
 

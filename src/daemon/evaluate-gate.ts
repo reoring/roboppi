@@ -1,5 +1,7 @@
 import type { EvaluateDef, DaemonEvent, WorkerKindString } from "./types.js";
 import type { WorkflowState } from "../workflow/types.js";
+import type { StepRunner, StepRunResult } from "../workflow/executor.js";
+import type { StepDefinition } from "../workflow/types.js";
 import { expandTemplate } from "./template.js";
 import { parseDuration } from "../workflow/duration.js";
 
@@ -23,6 +25,8 @@ export class EvaluateGate {
     workspaceDir: string,
     triggerId?: string,
     executionCount?: number,
+    stepRunner?: StepRunner,
+    abortSignal?: AbortSignal,
   ): Promise<boolean> {
     const vars: Record<string, string> = {
       event: JSON.stringify(event.payload),
@@ -38,11 +42,22 @@ export class EvaluateGate {
       ? parseDuration(evaluate.timeout)
       : 30000;
 
-    if (evaluate.worker === "CUSTOM") {
-      return this.runCustom(instructions, vars, workspaceDir, timeoutMs);
+    if (stepRunner) {
+      return this.runViaStepRunner(
+        stepRunner,
+        evaluate,
+        instructions,
+        vars,
+        workspaceDir,
+        abortSignal,
+      );
     }
 
-    return this.runLlmWorker(evaluate.worker, instructions, workspaceDir, timeoutMs);
+    if (evaluate.worker === "CUSTOM") {
+      return this.runCustom(instructions, vars, workspaceDir, timeoutMs, abortSignal);
+    }
+
+    return this.runLlmWorker(evaluate.worker, instructions, workspaceDir, timeoutMs, abortSignal);
   }
 
   private async runCustom(
@@ -50,9 +65,19 @@ export class EvaluateGate {
     vars: Record<string, string>,
     workspaceDir: string,
     timeoutMs: number,
+    abortSignal?: AbortSignal,
   ): Promise<boolean> {
     const abortController = new AbortController();
     const timer = setTimeout(() => abortController.abort(), timeoutMs);
+
+    const onAbort = () => abortController.abort();
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        abortController.abort();
+      } else {
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
 
     // Pass template variables as environment variables to prevent shell injection.
     // The shell command can reference them as $AGENTCORE_EVENT, $AGENTCORE_TRIGGER_ID, etc.
@@ -77,6 +102,7 @@ export class EvaluateGate {
       return false;
     } finally {
       clearTimeout(timer);
+      if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -85,10 +111,20 @@ export class EvaluateGate {
     instructions: string,
     workspaceDir: string,
     timeoutMs: number,
+    abortSignal?: AbortSignal,
   ): Promise<boolean> {
     const cmd = getWorkerCommand(worker, instructions);
     const abortController = new AbortController();
     const timer = setTimeout(() => abortController.abort(), timeoutMs);
+
+    const onAbort = () => abortController.abort();
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        abortController.abort();
+      } else {
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
 
     try {
       const proc = Bun.spawn(cmd, {
@@ -113,8 +149,51 @@ export class EvaluateGate {
       return false;
     } finally {
       clearTimeout(timer);
+      if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
     }
   }
+
+  private async runViaStepRunner(
+    runner: StepRunner,
+    evaluate: EvaluateDef,
+    instructions: string,
+    vars: Record<string, string>,
+    workspaceDir: string,
+    abortSignal?: AbortSignal,
+  ): Promise<boolean> {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(vars)) {
+      env[`AGENTCORE_${key.toUpperCase()}`] = value;
+    }
+
+    const step: StepDefinition = {
+      worker: evaluate.worker,
+      instructions,
+      capabilities: evaluate.capabilities,
+      timeout: evaluate.timeout ?? "30s",
+    };
+
+    const signal = abortSignal ?? new AbortController().signal;
+
+    try {
+      const result = await runner.runStep("evaluate", step, workspaceDir, signal, env);
+      if (evaluate.worker === "CUSTOM") {
+        return result.status === "SUCCEEDED";
+      }
+      if (result.status !== "SUCCEEDED") return false;
+      return parseDecision(extractStepText(result));
+    } catch {
+      return false;
+    }
+  }
+}
+
+function extractStepText(result: StepRunResult): string {
+  const parts: string[] = [];
+  for (const o of result.observations ?? []) {
+    if (o.summary) parts.push(o.summary);
+  }
+  return parts.join("\n");
 }
 
 /**

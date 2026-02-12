@@ -12,6 +12,7 @@ import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { ShellStepRunner } from "./shell-step-runner.js";
 import { parseDuration } from "./duration.js";
+import { extractWorkerText, parseCompletionDecision } from "./completion-decision.js";
 
 import { ProcessManager } from "../worker/process-manager.js";
 import type { WorkerAdapter, WorkerEvent } from "../worker/worker-adapter.js";
@@ -110,10 +111,12 @@ export class MultiWorkerStepRunner implements StepRunner {
     const result = await this.runWorkerTask(stepId, adapter, task);
 
     if (result.status !== WorkerStatus.SUCCEEDED) {
+      const reason = summarizeWorkerFailure(result);
       return {
         complete: false,
         failed: true,
         errorClass: result.errorClass ?? ErrorClass.NON_RETRYABLE,
+        ...(reason ? { reason } : {}),
       };
     }
 
@@ -121,7 +124,12 @@ export class MultiWorkerStepRunner implements StepRunner {
     const decision = parseCompletionDecision(text);
     if (decision === "complete") return { complete: true, failed: false };
     if (decision === "incomplete") return { complete: false, failed: false };
-    return { complete: false, failed: true, errorClass: ErrorClass.NON_RETRYABLE };
+    return {
+      complete: false,
+      failed: true,
+      errorClass: ErrorClass.NON_RETRYABLE,
+      reason: "could not parse completion decision (expected COMPLETE/INCOMPLETE marker)",
+    };
   }
 
   private buildWorkerTask(
@@ -203,6 +211,19 @@ export class MultiWorkerStepRunner implements StepRunner {
       abortSignal: scoped.signal,
     };
 
+    if (this.verbose) {
+      const anyAdapter = adapter as unknown as { buildCommand?: (t: WorkerTask) => string[] };
+      const cmd = anyAdapter.buildCommand ? anyAdapter.buildCommand(taskForAdapter) : undefined;
+      if (cmd && cmd.length > 0) {
+        const rendered = renderCommandForLogs(cmd, taskForAdapter);
+        process.stderr.write(
+          `\x1b[36m[worker:${taskForAdapter.workerKind}]\x1b[0m ` +
+            `\x1b[90m(step:${stepId})\x1b[0m ` +
+            `cwd=${taskForAdapter.workspaceRef} cmd=${rendered}\n`,
+        );
+      }
+    }
+
     const handle = await adapter.startTask(taskForAdapter);
 
     const onAbort = () => {
@@ -257,6 +278,20 @@ export class MultiWorkerStepRunner implements StepRunner {
   }
 }
 
+function summarizeWorkerFailure(result: WorkerResult): string {
+  const parts: string[] = [];
+  if (result.exitCode !== undefined) parts.push(`exitCode=${result.exitCode}`);
+  if (result.errorClass) parts.push(`errorClass=${result.errorClass}`);
+
+  const text = extractWorkerText(result).trim();
+  if (text) {
+    const oneLine = text.replace(/\s+/g, " ").trim();
+    parts.push(oneLine.slice(0, 300));
+  }
+
+  return parts.join(" ");
+}
+
 function createScopedAbort(parent: AbortSignal, deadlineAt: number): { signal: AbortSignal; cleanup: () => void } {
   const ctrl = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -286,22 +321,35 @@ function createScopedAbort(parent: AbortSignal, deadlineAt: number): { signal: A
   return { signal: ctrl.signal, cleanup };
 }
 
-function extractWorkerText(result: WorkerResult): string {
-  const parts: string[] = [];
-  for (const o of result.observations ?? []) {
-    if (o.summary) parts.push(o.summary);
-  }
-  return parts.join("\n");
+function renderCommandForLogs(cmd: string[], task: WorkerTask): string {
+  const showPrompts = process.env.AGENTCORE_SHOW_WORKER_PROMPTS === "1";
+  const instr = task.instructions;
+
+  const renderedArgs = cmd.map((arg, i) => {
+    if (!showPrompts) {
+      const prev = i > 0 ? cmd[i - 1] : "";
+      if (prev === "--prompt" || prev === "--print") {
+        return `<instructions ${arg.length} chars>`;
+      }
+      if (arg === instr) {
+        return `<instructions ${instr.length} chars>`;
+      }
+      if (arg.includes("\n")) {
+        return `<multiline ${arg.length} chars>`;
+      }
+    }
+
+    if (arg.length > 300) {
+      return arg.slice(0, 180) + `...<truncated ${arg.length} chars>`;
+    }
+
+    return arg;
+  });
+
+  return renderedArgs.map(shQuote).join(" ");
 }
 
-type CompletionDecision = "complete" | "incomplete" | "fail";
-
-function parseCompletionDecision(text: string): CompletionDecision {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  if (lines.length === 0) return "fail";
-  const last = lines[lines.length - 1]!.toLowerCase();
-  if (last.includes("incomplete")) return "incomplete";
-  if (last.includes("complete")) return "complete";
-  if (last.includes("fail") || last.includes("failed")) return "fail";
-  return "fail";
+function shQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:=,@+-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'"'"'`)}'`;
 }

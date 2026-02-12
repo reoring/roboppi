@@ -9,11 +9,13 @@ import { readFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseWorkflow } from "./parser.js";
 import { validateDag } from "./dag-validator.js";
 import { ContextManager } from "./context-manager.js";
 import { WorkflowExecutor } from "./executor.js";
 import { MultiWorkerStepRunner } from "./multi-worker-step-runner.js";
+import { CoreIpcStepRunner } from "./core-ipc-step-runner.js";
 import { WorkflowStatus, StepStatus } from "./types.js";
 
 // ── Argument parsing ────────────────────────────────────────────
@@ -22,6 +24,7 @@ const args = process.argv.slice(2);
 let yamlPath = "";
 let workspaceDir = "";
 let verbose = false;
+let supervised = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i]!;
@@ -30,17 +33,24 @@ for (let i = 0; i < args.length; i++) {
     workspaceDir = args[i] ?? "";
   } else if (arg === "--verbose" || arg === "-v") {
     verbose = true;
+  } else if (arg === "--supervised") {
+    supervised = true;
   } else if (arg === "--help" || arg === "-h") {
     console.log(`Usage: bun run src/workflow/run.ts <workflow.yaml> [options]
 
 Options:
   --workspace, -w <dir>   Working directory for steps (default: temp dir)
   --verbose, -v           Show step output
+  --supervised            Delegate steps via Core IPC (Supervisor -> Core -> Worker)
   --help, -h              Show help`);
     process.exit(0);
   } else if (!arg.startsWith("-")) {
     yamlPath = arg;
   }
+}
+
+if (verbose) {
+  process.env.AGENTCORE_VERBOSE = "1";
 }
 
 if (!yamlPath) {
@@ -98,12 +108,63 @@ async function main(): Promise<void> {
   console.log("");
 
   // 4. Execute
-  const runner = new MultiWorkerStepRunner(verbose);
+  const runner = supervised
+    ? new CoreIpcStepRunner({
+        verbose,
+        coreEntryPoint: path.resolve(
+          path.dirname(fileURLToPath(import.meta.url)),
+          "..",
+          "index.ts",
+        ),
+      })
+    : new MultiWorkerStepRunner(verbose);
+
+  let shuttingDown = false;
+  const shutdown = async (reason: string, exitCode: number) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (supervised) {
+      try {
+        process.stderr.write(`\n[workflow] shutting down Core: ${reason}\n`);
+        await (runner as CoreIpcStepRunner).shutdown();
+      } catch {
+        // best-effort
+      }
+    }
+    process.exit(exitCode);
+  };
+
+  if (supervised) {
+    process.on("SIGINT", () => {
+      void shutdown("SIGINT", 130);
+    });
+    process.on("SIGTERM", () => {
+      void shutdown("SIGTERM", 143);
+    });
+  }
+
   const ctx = new ContextManager(contextDir);
-  const executor = new WorkflowExecutor(definition, ctx, runner, ws);
+  const executor = new WorkflowExecutor(
+    definition,
+    ctx,
+    runner,
+    ws,
+    verbose ? { AGENTCORE_VERBOSE: "1" } : undefined,
+  );
 
   const startTime = Date.now();
-  const state = await executor.execute();
+  let state;
+  try {
+    state = await executor.execute();
+  } finally {
+    if (supervised) {
+      try {
+        await (runner as CoreIpcStepRunner).shutdown();
+      } catch {
+        // best-effort
+      }
+    }
+  }
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
   // 5. Report results

@@ -19,6 +19,7 @@ import { ProcessManager } from "./worker/process-manager.js";
 import { OpenCodeAdapter } from "./worker/adapters/opencode-adapter.js";
 import { ClaudeCodeAdapter } from "./worker/adapters/claude-code-adapter.js";
 import { CodexCliAdapter } from "./worker/adapters/codex-cli-adapter.js";
+import { CustomShellAdapter } from "./worker/adapters/custom-shell-adapter.js";
 import type { WorkerAdapter } from "./worker/worker-adapter.js";
 import { generateId } from "./types/common.js";
 import { WorkerKind, WorkerCapability, OutputMode, WorkerStatus, JobType, PriorityClass } from "./types/index.js";
@@ -437,6 +438,9 @@ function startServer(opts: SharedOptions): void {
   const logger = createLogger("cli");
   const config = buildConfig(opts);
 
+  // Mark this process as the Core runtime for logging/diagnostics.
+  if (!process.env.AGENTCORE_COMPONENT) process.env.AGENTCORE_COMPONENT = "core";
+
   const stdin = Bun.stdin.stream() as ReadableStream<Uint8Array>;
   const stdout = new WritableStream<Uint8Array>({
     write(chunk) { process.stdout.write(chunk); },
@@ -445,6 +449,15 @@ function startServer(opts: SharedOptions): void {
   const transport = new JsonLinesTransport(stdin, stdout);
   const protocol = new IpcProtocol(transport);
   const core = new AgentCore(protocol, config);
+
+  // Register built-in worker adapters so WORKER_TASK delegation works.
+  {
+    const pm = new ProcessManager();
+    core.getWorkerGateway().registerAdapter(WorkerKind.OPENCODE, new OpenCodeAdapter(pm));
+    core.getWorkerGateway().registerAdapter(WorkerKind.CLAUDE_CODE, new ClaudeCodeAdapter({}, pm));
+    core.getWorkerGateway().registerAdapter(WorkerKind.CODEX_CLI, new CodexCliAdapter(pm));
+    core.getWorkerGateway().registerAdapter(WorkerKind.CUSTOM, new CustomShellAdapter(pm));
+  }
 
   let shuttingDown = false;
 

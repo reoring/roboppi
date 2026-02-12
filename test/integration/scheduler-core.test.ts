@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { JsonLinesTransport } from "../../src/ipc/json-lines-transport.js";
 import { IpcProtocol } from "../../src/ipc/protocol.js";
 import { AgentCore } from "../../src/core/agentcore.js";
-import { MockWorkerAdapter } from "../../src/worker/adapters/mock-adapter.js";
+import { MockWorkerAdapter, type MockAdapterOptions } from "../../src/worker/adapters/mock-adapter.js";
 import { WorkerKind, JobType, WorkerCapability, OutputMode } from "../../src/types/index.js";
 import { createTestJob, createIpcStreamPair, TEST_IDS } from "../helpers/fixtures.js";
 
@@ -61,7 +61,7 @@ describe("Scheduler-Core IPC integration", () => {
     await schedulerTransport?.close();
   });
 
-  function setup(coreConfig?: ConstructorParameters<typeof AgentCore>[1], mockOptions?: { delayMs?: number }) {
+  function setup(coreConfig?: ConstructorParameters<typeof AgentCore>[1], mockOptions?: MockAdapterOptions) {
     const streams = createIpcStreamPair();
     const coreTransport = new JsonLinesTransport(streams.coreInput, streams.coreOutput);
     const coreProtocol = new IpcProtocol(coreTransport);
@@ -72,7 +72,7 @@ describe("Scheduler-Core IPC integration", () => {
     core = new AgentCore(coreProtocol, coreConfig);
     core.getWorkerGateway().registerAdapter(
       WorkerKind.CLAUDE_CODE,
-      new MockWorkerAdapter(WorkerKind.CLAUDE_CODE, { delayMs: mockOptions?.delayMs ?? 10 }),
+      new MockWorkerAdapter(WorkerKind.CLAUDE_CODE, { delayMs: mockOptions?.delayMs ?? 10, ...mockOptions }),
     );
     core.start();
 
@@ -309,8 +309,9 @@ describe("Scheduler-Core IPC integration", () => {
     expect(rejection["reason"]).toBe("GLOBAL_SHED");
   });
 
-  test("cancel_job via IPC sends job_cancelled and worker completes", async () => {
-    setup(undefined, { delayMs: 500 });
+  test("cancel_job via IPC revokes permit and worker is cancelled", async () => {
+    // Use a mock that never completes unless it receives cancel.
+    setup(undefined, { shouldTimeout: true });
     const messages = collectMessages(schedulerTransport);
 
     const job = createTestJob({
@@ -330,7 +331,7 @@ describe("Scheduler-Core IPC integration", () => {
       attemptIndex: 0,
     });
 
-    // Wait for permit_granted (the worker is now running with 500ms delay)
+    // Wait for permit_granted (the worker is now running)
     await waitForMessages(messages, 2);
     const granted = messages.find((m) => m["type"] === "permit_granted");
     expect(granted).toBeDefined();
@@ -344,7 +345,7 @@ describe("Scheduler-Core IPC integration", () => {
     });
 
     // Expect: job_cancelled acknowledgement from cancel_job handler, and
-    // eventually job_completed when the worker finishes
+    // eventually job_completed with cancelled outcome once the worker stops
     await waitForMessages(messages, 4);
 
     const cancelled = messages.find((m) => m["type"] === "job_cancelled");
@@ -356,7 +357,9 @@ describe("Scheduler-Core IPC integration", () => {
     const completed = messages.find((m) => m["type"] === "job_completed");
     expect(completed).toBeDefined();
     expect(completed!["jobId"]).toBe(TEST_IDS.JOB_1);
-    // Worker task completes independently — the outcome reflects the worker's actual result
-    expect(completed!["outcome"]).toBeDefined();
+    expect(completed!["outcome"]).toBe("cancelled");
+    const result = completed!["result"] as Msg | undefined;
+    expect(result).toBeDefined();
+    expect(result!["status"]).toBe("CANCELLED");
   });
 });
