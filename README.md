@@ -40,7 +40,7 @@ Note: some paths and environment variables in the examples still use the legacy 
 
 This is the default multi-worker loop:
 
-`design -> todo -> implement -> (review <-> fix)* -> (optional) create_pr`
+`design -> todo -> (implement <-> review)* -> (optional) create_pr`
 
 ### 1) Run the demo (creates real code in /tmp)
 
@@ -61,6 +61,7 @@ $EDITOR "$TARGET/.agentcore-loop/request.md"
 
 AGENTCORE_ROOT="$AGENTCORE_ROOT" bun run --cwd "$AGENTCORE_ROOT" ./src/workflow/run.ts \
   "$AGENTCORE_ROOT/examples/agent-pr-loop.yaml" \
+  --supervised \
   --workspace "$TARGET" \
   --verbose
 ```
@@ -82,7 +83,7 @@ touch "$TARGET/.agentcore-loop/enable_pr"
 Start the daemon:
 
 ```bash
-bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --verbose
+bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --supervised --verbose
 ```
 
 Kick it from another terminal:

@@ -4,6 +4,16 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 AGENTCORE_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 
+if [[ "${AGENTCORE_IPC_TRACE:-}" == "1" ]]; then
+  echo "[demo] AGENTCORE_ROOT=${AGENTCORE_ROOT}" >&2
+  if command -v git >/dev/null 2>&1; then
+    SHA=$(git -C "${AGENTCORE_ROOT}" rev-parse --short HEAD 2>/dev/null || true)
+    if [[ -n "${SHA}" ]]; then
+      echo "[demo] AGENTCORE_HEAD=${SHA}" >&2
+    fi
+  fi
+fi
+
 TARGET=${TARGET:-""}
 VERBOSE=${VERBOSE:-1}
 
@@ -40,7 +50,6 @@ need_cmd bun
 need_cmd git
 need_cmd opencode
 need_cmd claude
-need_cmd codex
 
 if [[ -z "${TARGET}" ]]; then
   TARGET=$(mktemp -d /tmp/agentcore-prloop-bun-linalg-XXXXXX)
@@ -98,6 +107,55 @@ fi
 
 AGENTCORE_ROOT="${AGENTCORE_ROOT}" \
   bun run --cwd "${AGENTCORE_ROOT}" "${RUNNER_ARGS[@]}"
+
+echo
+echo "Verifying generated repo..."
+
+if [[ -f "${TARGET}/.agentcore-loop/review.verdict" ]]; then
+  V=$(cat "${TARGET}/.agentcore-loop/review.verdict" 2>/dev/null | tr -d '\r\n\t ')
+  if [[ "${V}" != "PASS" ]]; then
+    echo "Error: expected review.verdict=PASS, got: ${V:-missing}" >&2
+    exit 1
+  fi
+fi
+
+( cd "${TARGET}" && bun test )
+
+# Extra demo-only correctness checks (black-box CLI).
+OUT_SOLVE=$(cd "${TARGET}" && bun run src/cli.ts solve --A '[[0,1],[0,1]]' --b '[1,2]')
+if ! echo "${OUT_SOLVE}" | grep -Eq '"error"[[:space:]]*:[[:space:]]*"inconsistent"'; then
+  echo "Error: expected solve() to report inconsistent for A=[[0,1],[0,1]] b=[1,2]" >&2
+  echo "Got: ${OUT_SOLVE}" >&2
+  exit 1
+fi
+
+( cd "${TARGET}" && bun run src/cli.ts eigen2x2 --A '[[5,0],[0,5]]' ) | bun -e '
+  const input = (await Bun.stdin.text()).trim();
+  const obj = JSON.parse(input || "{}");
+  if (!obj.ok) process.exit(1);
+  if (obj.diagonalizable !== true) process.exit(1);
+  const evs = obj.eigenvectors;
+  if (!Array.isArray(evs) || evs.length !== 2) process.exit(1);
+  const v1 = evs[0], v2 = evs[1];
+  if (!Array.isArray(v1) || !Array.isArray(v2) || v1.length !== 2 || v2.length !== 2) process.exit(1);
+
+  function parseRat(s) {
+    const m = String(s).trim().match(/^(-?\d+)(?:\/(\d+))?$/);
+    if (!m) throw new Error("bad rational: " + s);
+    const num = BigInt(m[1]);
+    const den = m[2] ? BigInt(m[2]) : 1n;
+    return { num, den };
+  }
+  function mul(a, b) { return { num: a.num * b.num, den: a.den * b.den }; }
+  function sub(a, b) { return { num: a.num * b.den - b.num * a.den, den: a.den * b.den }; }
+
+  const a = parseRat(v1[0]);
+  const b = parseRat(v1[1]);
+  const c = parseRat(v2[0]);
+  const d = parseRat(v2[1]);
+  const det = sub(mul(a, d), mul(b, c));
+  if (det.num === 0n) process.exit(1);
+'
 
 echo
 echo "Done. Next steps:"

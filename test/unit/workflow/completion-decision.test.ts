@@ -1,6 +1,9 @@
 import { describe, test, expect } from "bun:test";
 
-import { parseCompletionDecision } from "../../../src/workflow/completion-decision.js";
+import {
+  parseCompletionDecision,
+  parseCompletionDecisionFromFile,
+} from "../../../src/workflow/completion-decision.js";
 
 describe("parseCompletionDecision", () => {
   test("returns fail on empty", () => {
@@ -35,5 +38,21 @@ describe("parseCompletionDecision", () => {
       '{"type":"turn.completed"}',
     ].join("\n");
     expect(parseCompletionDecision(text2)).toBe("complete");
+  });
+});
+
+describe("parseCompletionDecisionFromFile", () => {
+  test("maps PASS/FAIL", () => {
+    expect(parseCompletionDecisionFromFile("PASS\n")).toBe("complete");
+    expect(parseCompletionDecisionFromFile("FAIL\n")).toBe("incomplete");
+  });
+
+  test("maps COMPLETE/INCOMPLETE", () => {
+    expect(parseCompletionDecisionFromFile("COMPLETE\n")).toBe("complete");
+    expect(parseCompletionDecisionFromFile("INCOMPLETE\n")).toBe("incomplete");
+  });
+
+  test("returns fail on unknown", () => {
+    expect(parseCompletionDecisionFromFile("maybe")).toBe("fail");
   });
 });

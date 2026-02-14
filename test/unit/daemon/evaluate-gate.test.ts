@@ -17,6 +17,8 @@ function makeEvent(sourceId: string): DaemonEvent {
   };
 }
 
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
+
 // ---------------------------------------------------------------------------
 // parseDecision
 // ---------------------------------------------------------------------------
@@ -185,7 +187,7 @@ describe("EvaluateGate — non-CUSTOM worker", () => {
     await mkdir(binDir, { recursive: true });
 
     // Find the real bun binary path
-    const bunPath = process.argv[0]!; // bun binary used to run this test
+    const bunPath = process.execPath; // bun binary used to run this test
 
     // Symlink bun into our temporary bin directory
     await symlink(bunPath, path.join(binDir, "bun"));
@@ -210,7 +212,7 @@ describe("EvaluateGate — non-CUSTOM worker", () => {
         `,
       ],
       {
-        cwd: "/home/reoring/agentcore",
+        cwd: REPO_ROOT,
         stdout: "pipe",
         stderr: "pipe",
         env: { HOME: process.env["HOME"] ?? "", PATH: binDir },
@@ -228,7 +230,7 @@ describe("EvaluateGate — non-CUSTOM worker", () => {
 
     const binDir = path.join(tmpDir, "bin");
     await mkdir(binDir, { recursive: true });
-    const bunPath = process.argv[0]!;
+    const bunPath = process.execPath;
     await symlink(bunPath, path.join(binDir, "bun"));
     await symlink("/usr/bin/bash", path.join(binDir, "bash"));
 
@@ -249,7 +251,7 @@ describe("EvaluateGate — non-CUSTOM worker", () => {
         `,
       ],
       {
-        cwd: "/home/reoring/agentcore",
+        cwd: REPO_ROOT,
         stdout: "pipe",
         stderr: "pipe",
         env: { HOME: process.env["HOME"] ?? "", PATH: binDir },

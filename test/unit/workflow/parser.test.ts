@@ -126,6 +126,7 @@ steps:
       instructions: "Check completeness"
       capabilities: [READ]
       timeout: "2m"
+      decision_file: ".agentcore-loop/review.verdict"
     max_iterations: 5
     on_iterations_exhausted: continue
 `;
@@ -136,6 +137,7 @@ steps:
       expect(step.completion_check!.instructions).toBe("Check completeness");
       expect(step.completion_check!.capabilities).toEqual(["READ"]);
       expect(step.completion_check!.timeout).toBe("2m");
+      expect(step.completion_check!.decision_file).toBe(".agentcore-loop/review.verdict");
       expect(step.max_iterations).toBe(5);
       expect(step.on_iterations_exhausted).toBe("continue");
     });

@@ -55,6 +55,7 @@ function makeMockProcess(exitCode: number = 0, stdoutData: string = "", stderrDa
       },
     }),
     exitPromise,
+    processGroup: false,
   };
 }
 
@@ -470,6 +471,38 @@ describe("OpenCodeAdapter", () => {
       expect(result.status).toBe(WorkerStatus.SUCCEEDED);
       expect(result.observations.length).toBe(1);
       expect(result.observations[0]!.summary).toBe("Task completed successfully");
+    });
+
+    test("preserves COMPLETE marker printed as plain text", async () => {
+      const pm = makeMockProcessManager();
+      const resultLine = JSON.stringify({ type: "result", result: "review text" });
+      const output = `${resultLine}\nCOMPLETE\n`;
+      pm._setMockProcess(makeMockProcess(0, output));
+      const adapter = new OpenCodeAdapter(pm);
+      const task = makeTask();
+      const handle = await adapter.startTask(task);
+
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.SUCCEEDED);
+      const summaries = result.observations.map((o) => o.summary);
+      expect(summaries).toContain("COMPLETE");
+    });
+
+    test("does not lose marker when stdout is large", async () => {
+      const pm = makeMockProcessManager();
+      const chunk = "x".repeat(2000);
+      const output = `${chunk}\nINCOMPLETE\n`;
+      pm._setMockProcess(makeMockProcess(0, output));
+      const adapter = new OpenCodeAdapter(pm);
+      const task = makeTask();
+      const handle = await adapter.startTask(task);
+
+      const result = await adapter.awaitResult(handle);
+
+      expect(result.status).toBe(WorkerStatus.SUCCEEDED);
+      const summaries = result.observations.map((o) => o.summary).join("\n");
+      expect(summaries).toContain("INCOMPLETE");
     });
 
     test("handles empty stdout gracefully", async () => {

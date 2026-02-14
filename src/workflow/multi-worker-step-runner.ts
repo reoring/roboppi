@@ -8,11 +8,17 @@
  * This allows workflow YAML to specify real worker kinds directly.
  */
 import path from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { ShellStepRunner } from "./shell-step-runner.js";
 import { parseDuration } from "./duration.js";
-import { extractWorkerText, parseCompletionDecision } from "./completion-decision.js";
+import {
+  extractWorkerText,
+  parseCompletionDecision,
+  parseCompletionDecisionFromFile,
+  type CompletionDecision,
+} from "./completion-decision.js";
 
 import { ProcessManager } from "../worker/process-manager.js";
 import type { WorkerAdapter, WorkerEvent } from "../worker/worker-adapter.js";
@@ -107,6 +113,7 @@ export class MultiWorkerStepRunner implements StepRunner {
       return { complete: false, failed: true, errorClass: ErrorClass.NON_RETRYABLE };
     }
 
+    const checkStartedAt = Date.now();
     const task = this.buildWorkerTask(check, workspaceDir, abortSignal, env, toWorkerKind(check.worker));
     const result = await this.runWorkerTask(stepId, adapter, task);
 
@@ -120,8 +127,12 @@ export class MultiWorkerStepRunner implements StepRunner {
       };
     }
 
-    const text = extractWorkerText(result);
-    const decision = parseCompletionDecision(text);
+    const decision = await resolveDecision(
+      check,
+      workspaceDir,
+      checkStartedAt,
+      result,
+    );
     if (decision === "complete") return { complete: true, failed: false };
     if (decision === "incomplete") return { complete: false, failed: false };
     return {
@@ -276,6 +287,49 @@ export class MultiWorkerStepRunner implements StepRunner {
       if (line) process.stderr.write(prefix + line + "\n");
     }
   }
+}
+
+async function resolveDecision(
+  check: CompletionCheckDef,
+  workspaceDir: string,
+  checkStartedAt: number,
+  result: WorkerResult,
+): Promise<CompletionDecision> {
+  // If a decision file is configured, prefer it (with a freshness check) and
+  // fall back to stdout markers only if the file is missing/stale.
+  if (check.decision_file) {
+    const fromFile = await tryDecisionFromFile(check.decision_file, workspaceDir, checkStartedAt);
+    if (fromFile !== "fail") return fromFile;
+  }
+
+  const text = extractWorkerText(result);
+  return parseCompletionDecision(text);
+}
+
+async function tryDecisionFromFile(
+  relPath: string,
+  workspaceDir: string,
+  checkStartedAt: number,
+): Promise<CompletionDecision> {
+  const full = resolveWithin(workspaceDir, relPath);
+  const st = await stat(full).catch(() => null);
+  if (!st) return "fail";
+
+  // Avoid stale decisions from previous iterations.
+  // Use a small grace window to tolerate coarse mtime resolution.
+  if (st.mtimeMs + 2000 < checkStartedAt) return "fail";
+
+  const content = await readFile(full, "utf-8").catch(() => "");
+  return parseCompletionDecisionFromFile(content);
+}
+
+function resolveWithin(baseDir: string, relPath: string): string {
+  const resolvedBase = path.resolve(baseDir);
+  const resolved = path.resolve(baseDir, relPath);
+  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + path.sep)) {
+    throw new Error(`Path traversal detected: ${relPath}`);
+  }
+  return resolved;
 }
 
 function summarizeWorkerFailure(result: WorkerResult): string {

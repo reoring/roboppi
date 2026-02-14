@@ -30,6 +30,8 @@ Output:
 
 3) Tests
 - Add unit tests under `test/` (bun test) covering all three algorithms and a couple edge cases.
+- For `solve`, include at least one edge case where a pivot column is all zeros but the system is still inconsistent (e.g. `A=[[0,1],[0,1]]`, `b=[1,2]` should return `ok:false` with `error:"inconsistent"`).
+- For `eigen2x2`, when the matrix is a scalar matrix (e.g. `[[5,0],[0,5]]`), return two independent eigenvectors (a basis), not two identical vectors.
 - `bun test` must pass.
 
 4) Docs
@@ -41,3 +43,5 @@ Output:
 - [ ] `bun run src/cli.ts solve ...` works for at least one example.
 - [ ] Outputs use reduced rational strings (no floating point for exact cases).
 - [ ] README documents usage.
+- [ ] `solve` correctly distinguishes `inconsistent` vs `singular`, including a case where the first pivot column is all zeros.
+- [ ] `eigen2x2` returns a valid eigenvector basis for scalar matrices when `diagonalizable:true`.

@@ -13,7 +13,7 @@ import type {
 } from "../../../src/workflow/types.js";
 import { WorkflowStatus, StepStatus } from "../../../src/workflow/types.js";
 import { ErrorClass } from "../../../src/types/common.js";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -239,6 +239,40 @@ describe("WorkflowExecutor", () => {
         expect(result.steps["A"]!.iteration).toBe(3);
         expect(runCount).toBe(3);
         expect(runner.checkCalls.length).toBe(3);
+      });
+    });
+
+    it("collects outputs written by completion_check", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async () => {
+            await writeFile(path.join(dir, "out.txt"), "from-check", "utf-8");
+            return { complete: true, failed: false };
+          },
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            outputs: [{ name: "out", path: "out.txt", type: "text" }],
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 2,
+            on_iterations_exhausted: "abort",
+          }),
+        });
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+        const copied = await readFile(path.join(ctxDir, "A", "out", "out.txt"), "utf-8");
+        expect(copied).toBe("from-check");
       });
     });
   });

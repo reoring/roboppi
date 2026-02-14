@@ -42,7 +42,7 @@ Automated change set produced by agent workflow.
 - Design + TODO: OpenCode (GPT-5.2)
 - Implementation: Claude Code (Opus 4.6)
 - Review: OpenCode (GPT-5.2)
-- Fixes: Codex CLI (gpt-5.3-codex)
+- Fixes: Claude Code (Opus 4.6)
 
 ## Notes
 - See .agentcore-loop/design.md

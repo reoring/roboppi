@@ -1,14 +1,20 @@
-import type { Subprocess } from "bun";
 import { JsonLinesTransport, IpcProtocol } from "../ipc/index.js";
 import type { IpcProtocolOptions } from "../ipc/index.js";
 import { HealthChecker } from "./health-check.js";
 import type { HealthCheckerConfig } from "./health-check.js";
 import { Logger } from "../core/observability.js";
+import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createServer, type Server, type Socket } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { Readable, Writable } from "node:stream";
 
 export interface SupervisorConfig {
   coreEntryPoint: string;
   healthCheck?: Partial<HealthCheckerConfig>;
   ipc?: IpcProtocolOptions;
+  ipcTransport?: "stdio" | "socket";
   gracefulShutdownMs?: number;
   maxRestarts?: number;
   restartWindowMs?: number;
@@ -22,7 +28,8 @@ const DEFAULT_CONFIG: SupervisorConfig = {
 export class Supervisor {
   private readonly config: SupervisorConfig;
   private readonly logger: Logger;
-  private proc: Subprocess<"pipe", "pipe", "inherit"> | null = null;
+  private proc: ChildProcessWithoutNullStreams | null = null;
+  private procExitPromise: Promise<number | null> | null = null;
   private ipc: IpcProtocol | null = null;
   private healthChecker: HealthChecker | null = null;
   private crashCallback: ((exitCode: number | null) => void) | null = null;
@@ -30,6 +37,10 @@ export class Supervisor {
   private restartLimitCallback: (() => void) | null = null;
   private restarting = false;
   private restartTimestamps: number[] = [];
+
+  private ipcServer: Server | null = null;
+  private ipcSocketDir: string | null = null;
+  private ipcSocketPath: string | null = null;
 
   constructor(config?: Partial<SupervisorConfig>, logger?: Logger) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -53,57 +64,230 @@ export class Supervisor {
   }
 
   async spawnCore(): Promise<IpcProtocol> {
-    const proc = Bun.spawn(["bun", "run", this.config.coreEntryPoint], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "inherit",
-    });
+    const childEnv = collectChildEnv();
 
-    if (!proc || !proc.stdin || !proc.stdout) {
-      throw new Error("Failed to spawn Core process: Bun.spawn returned null or missing stdio");
+    const transport = resolveSupervisedIpcTransport(this.config);
+    if (transport === "socket") {
+      return this.spawnCoreSocket(childEnv);
+    }
+    return this.spawnCoreStdio(childEnv);
+  }
+
+  private async spawnCoreStdio(childEnv: Record<string, string>): Promise<IpcProtocol> {
+    // Use node:child_process.spawn rather than Bun.spawn for Core IPC.
+    // Some environments exhibit dropped/undelivered stdin data with Bun.spawn.
+    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
+    }) as unknown as ChildProcessWithoutNullStreams;
+
+    if (!proc.pid || !proc.stdin || !proc.stdout || !proc.stderr) {
+      throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
+    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+      try {
+        process.stderr.write(
+          `[IPC][spawn] impl=node_child_process transport=stdio core pid=${proc.pid} entry=${this.config.coreEntryPoint}\n`,
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    proc.stdin.on("error", (err) => {
+      try {
+        process.stderr.write(
+          `[IPC][core-stdin-error] pid=${proc.pid} err=${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      } catch {
+        // ignore
+      }
+    });
+
     this.proc = proc;
+    this.procExitPromise = new Promise<number | null>((resolve) => {
+      proc.once("exit", (code) => resolve(code));
+      proc.once("error", () => resolve(null));
+    });
+
+    // Forward Core stderr to parent stderr for visibility.
+    // (stdout is reserved for IPC.)
+    this.forwardCoreStderr(proc.stderr);
 
     let transport: JsonLinesTransport;
     try {
-      // Bun's Subprocess.stdin is not a Web WritableStream, but JsonLinesTransport
-      // expects a WritableStream<Uint8Array>. Wrap it.
+      // JsonLinesTransport expects Web streams.
+      const input = Readable.toWeb(proc.stdout) as unknown as ReadableStream<Uint8Array>;
+
       const output = new WritableStream<Uint8Array>({
-        write(chunk) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (proc.stdin as any).write(chunk);
+        async write(chunk) {
+          const data = Buffer.from(chunk);
+
+          // Always provide a callback and await it.
+          // In some runtimes, writes without a callback may not flush reliably.
+          await new Promise<void>((resolve, reject) => {
+            try {
+              proc.stdin.write(data, (err) => {
+                if (err) reject(err);
+                else resolve();
+              });
+            } catch (err) {
+              reject(err);
+            }
+          });
+
+          // Best-effort flush for runtimes that buffer aggressively.
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (proc.stdin as any).flush?.();
+          } catch {
+            // ignore
+          }
         },
         close() {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (proc.stdin as any).end?.();
+            proc.stdin.end();
           } catch {
             // ignore
           }
         },
         abort() {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (proc.stdin as any).end?.();
+            proc.stdin.end();
           } catch {
             // ignore
           }
         },
       });
 
-      transport = new JsonLinesTransport(
-        proc.stdout as ReadableStream<Uint8Array>,
-        output,
-      );
+      transport = new JsonLinesTransport(input, output);
     } catch (err) {
       // If transport construction fails, kill the process to avoid orphans
-      proc.kill();
-      await proc.exited;
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      await this.procExitPromise;
       this.proc = null;
+      this.procExitPromise = null;
       throw new Error(`Failed to create IPC transport: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    const ipc = this.finishSpawn(transport);
+    return ipc;
+  }
+
+  private async spawnCoreSocket(childEnv: Record<string, string>): Promise<IpcProtocol> {
+    // Socket transport for supervised mode.
+    // This avoids relying on child stdin/stdout pipes, which can be unreliable
+    // in some non-interactive runners.
+
+    await this.cleanupSocketArtifacts();
+
+    const socketDir = await mkdtemp(path.join(os.tmpdir(), "agentcore-ipc-"));
+    const socketPath = path.join(socketDir, "core.sock");
+    this.ipcSocketDir = socketDir;
+    this.ipcSocketPath = socketPath;
+
+    const server = createServer();
+    this.ipcServer = server;
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+      const onListening = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        server.off("error", onError);
+        server.off("listening", onListening);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(socketPath);
+    });
+
+    childEnv.AGENTCORE_IPC_SOCKET_PATH = socketPath;
+
+    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
+    }) as unknown as ChildProcessWithoutNullStreams;
+
+    if (!proc.pid || !proc.stdin || !proc.stdout || !proc.stderr) {
+      throw new Error("Failed to spawn Core process: missing stdio handles");
+    }
+
+    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+      try {
+        process.stderr.write(
+          `[IPC][spawn] impl=node_child_process transport=socket core pid=${proc.pid} entry=${this.config.coreEntryPoint} socket=${socketPath}\n`,
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    this.proc = proc;
+    this.procExitPromise = new Promise<number | null>((resolve) => {
+      proc.once("exit", (code) => resolve(code));
+      proc.once("error", () => resolve(null));
+    });
+
+    // Forward Core stderr to parent stderr for visibility.
+    this.forwardCoreStderr(proc.stderr);
+
+    // Wait for Core to connect.
+    const connectTimeoutMs = Math.min(15000, this.config.ipc?.requestTimeoutMs ?? 15000);
+    const socket = await withTimeout(
+      new Promise<Socket>((resolve, reject) => {
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const onConn = (s: Socket) => {
+          cleanup();
+          resolve(s);
+        };
+        const cleanup = () => {
+          server.off("error", onError);
+          server.off("connection", onConn);
+        };
+        server.once("error", onError);
+        server.once("connection", onConn);
+      }),
+      connectTimeoutMs,
+      new Error(`Timed out waiting for Core IPC socket connection after ${connectTimeoutMs}ms`),
+    );
+
+    try {
+      socket.setNoDelay(true);
+    } catch {
+      // ignore
+    }
+
+    // Stop accepting new connections (do NOT await full close; it can block until
+    // the active IPC socket disconnects).
+    try {
+      server.close();
+    } catch {
+      // ignore
+    }
+
+    const input = Readable.toWeb(socket) as unknown as ReadableStream<Uint8Array>;
+    const output = Writable.toWeb(socket) as unknown as WritableStream<Uint8Array>;
+    const transport = new JsonLinesTransport(input, output);
+
+    const ipc = this.finishSpawn(transport);
+    return ipc;
+  }
+
+  private finishSpawn(transport: JsonLinesTransport): IpcProtocol {
     const ipc = new IpcProtocol(transport, this.config.ipc);
     this.ipc = ipc;
 
@@ -116,12 +300,12 @@ export class Supervisor {
     });
 
     // Monitor process exit
-    proc.exited.then((exitCode) => {
+    this.procExitPromise!.then((exitCode) => {
       if (exitCode !== 0) {
         this.crashCallback?.(exitCode);
       }
-    }).catch((_err) => {
-      // Process monitoring failed — treat as crash with unknown exit code
+    }).catch(() => {
+      // best-effort
       this.crashCallback?.(null);
     });
 
@@ -129,6 +313,29 @@ export class Supervisor {
     healthChecker.start();
 
     return ipc;
+  }
+
+  private async cleanupSocketArtifacts(): Promise<void> {
+    if (this.ipcServer) {
+      try {
+        await new Promise<void>((resolve) => this.ipcServer!.close(() => resolve()));
+      } catch {
+        // ignore
+      }
+      this.ipcServer = null;
+    }
+
+    const socketPath = this.ipcSocketPath;
+    const socketDir = this.ipcSocketDir;
+    this.ipcSocketPath = null;
+    this.ipcSocketDir = null;
+
+    if (socketPath) {
+      await rm(socketPath, { force: true }).catch(() => {});
+    }
+    if (socketDir) {
+      await rm(socketDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   async restartCore(): Promise<IpcProtocol> {
@@ -178,6 +385,7 @@ export class Supervisor {
 
     if (this.proc) {
       const proc = this.proc;
+      const procExitPromise = this.procExitPromise;
       const graceMs = this.config.gracefulShutdownMs ?? 5000;
 
       // SIGTERM first for graceful shutdown
@@ -185,21 +393,103 @@ export class Supervisor {
 
       // Race: wait for exit or force-kill after grace period
       const exited = await Promise.race([
-        proc.exited.then(() => true as const),
+        (procExitPromise ?? Promise.resolve(null)).then(() => true as const),
         new Promise<false>((resolve) => setTimeout(() => resolve(false), graceMs)),
       ]);
 
       if (!exited) {
         // Grace period elapsed — force kill
         proc.kill("SIGKILL");
-        await proc.exited;
+        await (procExitPromise ?? Promise.resolve(null));
       }
 
       this.proc = null;
+      this.procExitPromise = null;
+    }
+
+    await this.cleanupSocketArtifacts();
+  }
+
+  private forwardCoreStderr(stream: unknown): void {
+    // Best-effort: forward Core stderr to this process's stderr.
+    // Supports both Web ReadableStream<Uint8Array> and NodeJS.ReadableStream.
+    const s = stream as any;
+
+    if (s && typeof s.getReader === "function") {
+      const reader = (s as ReadableStream<Uint8Array>).getReader();
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.byteLength > 0) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (process.stderr as any).write(value);
+            }
+          }
+        } catch {
+          // ignore
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch {
+            // ignore
+          }
+        }
+      })().catch(() => {});
+      return;
+    }
+
+    if (s && typeof s.on === "function") {
+      try {
+        s.on("data", (chunk: unknown) => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (process.stderr as any).write(chunk as any);
+          } catch {
+            // ignore
+          }
+        });
+        s.on("error", () => {});
+      } catch {
+        // ignore
+      }
     }
   }
 
   isRunning(): boolean {
     return this.proc !== null;
   }
+}
+
+function collectChildEnv(): Record<string, string> {
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) childEnv[k] = v;
+  }
+  return childEnv;
+}
+
+function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "socket" {
+  const raw = (
+    config.ipcTransport ??
+    process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT ??
+    "stdio"
+  ).toLowerCase();
+
+  if (raw === "socket") return "socket";
+  return "stdio";
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutError: Error): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(timeoutError), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }

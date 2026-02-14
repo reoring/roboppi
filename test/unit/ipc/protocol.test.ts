@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { JsonLinesTransport } from "../../../src/ipc/json-lines-transport.js";
 import { IpcProtocol, validateMessage } from "../../../src/ipc/protocol.js";
-import { IpcStoppedError, IpcTimeoutError } from "../../../src/ipc/errors.js";
+import { IpcDisconnectError, IpcStoppedError, IpcTimeoutError } from "../../../src/ipc/errors.js";
 import type {
   SubmitJobMessage,
   CancelJobMessage,
@@ -737,15 +737,25 @@ describe("IpcProtocol", () => {
     });
 
     test("stop() rejects pending requests", async () => {
-      const { protocol, closeInput } = createTestProtocol();
+      const { protocol } = createTestProtocol();
       protocol.start();
 
       const responsePromise = protocol.waitForResponse("req-30");
 
-      await closeInput();
       await protocol.stop();
-
       await expect(responsePromise).rejects.toThrow(IpcStoppedError);
+    });
+
+    test("transport close rejects pending requests", async () => {
+      const { protocol, closeInput } = createTestProtocol();
+      protocol.start();
+
+      const responsePromise = protocol.waitForResponse("req-31");
+
+      await closeInput();
+      await expect(responsePromise).rejects.toThrow(IpcDisconnectError);
+
+      await protocol.stop();
     });
 
     test("stop() is idempotent", async () => {

@@ -1,7 +1,7 @@
 # Agent PR Loop — design -> todo -> implement -> (review <-> fix)* -> (optional) PR
 #
 # Readability goals:
-# - LLM steps use `worker: OPENCODE | CLAUDE_CODE | CODEX_CLI` directly.
+# - LLM steps use `worker: OPENCODE | CLAUDE_CODE` directly.
 # - Small orchestration lives in scripts.
 #
 # Run on another workspace (any git repo directory):
@@ -12,8 +12,9 @@
 
 name: agent-pr-loop
 version: "1"
-description: "Design+Todo by OpenCode, implement by Claude Code, review by OpenCode, fix by Codex CLI, then (optionally) create a PR."
-timeout: "90m"
+description: "Design+Todo by OpenCode, implement by Claude Code (looped), review gate by OpenCode, then (optionally) create a PR."
+# Budget note: full path with max review iterations can exceed 90m.
+timeout: "300m"
 concurrency: 1
 
 steps:
@@ -112,7 +113,7 @@ steps:
         type: code
 
   implement:
-    description: "Implementation (Claude Code; main: Opus 4.6)"
+    description: "Implement by Claude Code; review by OpenCode; repeat until PASS"
     worker: CLAUDE_CODE
     model: "claude-opus-4-6"
     depends_on: [todo]
@@ -125,9 +126,12 @@ steps:
       - .agentcore-loop/request.md
       - .agentcore-loop/design.md
       - .agentcore-loop/todo.md
+      - .agentcore-loop/review.md (if present)
+      - .agentcore-loop/fix.md (if present)
 
       Task:
-      - Implement the TODO checklist.
+      - If .agentcore-loop/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted changes).
+      - Otherwise, implement the TODO checklist.
       - Update the TODO checkboxes as you complete items.
       - Run the repo's tests (or the best available test command) and fix failures.
       - Keep changes focused on the request.
@@ -138,69 +142,44 @@ steps:
     on_failure: retry
     max_retries: 1
 
-  review_fix_loop:
-    description: "Review by OpenCode; if fixes needed, apply via Codex CLI; repeat until PASS"
-    worker: OPENCODE
-    model: "openai/gpt-5.2"
-    depends_on: [implement]
-    instructions: |
-      You are OpenCode.
-
-      Task:
-      - Review the work against the request.
-      - Write/update:
-        - .agentcore-loop/review.md
-        - .agentcore-loop/review.verdict (PASS or FAIL only)
-      - If verdict is FAIL, also write/update:
-        - .agentcore-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
-
-      Before reviewing, generate these review inputs (workspace is a git repo):
-      - mkdir -p .agentcore-loop
-      - BASE_BRANCH=$(cat .agentcore-loop/base-branch.txt 2>/dev/null || echo main)
-      - git fetch origin "$BASE_BRANCH" >/dev/null 2>&1 || true
-      - if git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then BASE_REF="origin/$BASE_BRANCH"; elif git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then BASE_REF="$BASE_BRANCH"; else BASE_REF="HEAD"; fi
-      - git diff --no-color "$BASE_REF" > .agentcore-loop/review.diff || true
-      - git status --porcelain=v1 > .agentcore-loop/review.status || true
-      - git ls-files --others --exclude-standard > .agentcore-loop/review.untracked || true
-
-      You must read at least:
-      - .agentcore-loop/request.md
-      - .agentcore-loop/design.md (if present)
-      - .agentcore-loop/todo.md (if present)
-      - .agentcore-loop/review.diff
-      - .agentcore-loop/review.status
-      - .agentcore-loop/review.untracked
-
-      Format for .agentcore-loop/review.md:
-      - Sections: Summary, Strengths, Issues, Verification
-    capabilities: [READ, EDIT, RUN_COMMANDS]
-    timeout: "15m"
-    on_failure: retry
-    max_retries: 2
-
     completion_check:
-      worker: CODEX_CLI
-      model: "gpt-5.3-codex"
+      worker: OPENCODE
+      model: "openai/gpt-5.2"
+      decision_file: ".agentcore-loop/review.verdict"
       instructions: |
-        You are Codex CLI.
-
-        Read:
-        - .agentcore-loop/review.verdict
-        - .agentcore-loop/fix.md (if present)
-        - .agentcore-loop/todo.md (if present)
+        You are OpenCode.
 
         Task:
-        - If .agentcore-loop/review.verdict is PASS:
-          - Print EXACTLY "COMPLETE" on its own line as the final line and exit successfully.
-        - If verdict is FAIL:
-          - Apply the fixes described in .agentcore-loop/fix.md (minimal changes).
-          - Run tests (bun test if present; otherwise choose the most appropriate command).
-          - Print EXACTLY "INCOMPLETE" on its own line as the final line and exit successfully.
+        - Review the work against the request.
+        - Write/update:
+          - .agentcore-loop/review.md
+          - .agentcore-loop/review.verdict (PASS or FAIL only)
+        - If verdict is FAIL, also write/update:
+          - .agentcore-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
+        - If verdict is PASS:
+          - Clear .agentcore-loop/fix.md if it exists (truncate to empty) so stale FAIL instructions cannot leak into future runs.
+
+        Before reviewing, generate these review inputs (workspace is a git repo):
+        - bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/review-inputs.sh"
+
+        You must read at least:
+        - .agentcore-loop/request.md
+        - .agentcore-loop/design.md (if present)
+        - .agentcore-loop/todo.md (if present)
+        - .agentcore-loop/review.base_ref
+        - .agentcore-loop/review.diff
+        - .agentcore-loop/review.status
+        - .agentcore-loop/review.untracked
+        - .agentcore-loop/review.untracked.diff
+
+        Format for .agentcore-loop/review.md:
+        - Sections: Summary, Strengths, Issues, Verification
 
         Output rules:
-        - Always ensure the last non-empty line is either COMPLETE or INCOMPLETE.
-      capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
-      timeout: "20m"
+        - Write the verdict to .agentcore-loop/review.verdict as EXACTLY "PASS" or "FAIL" (no extra words).
+        - If verdict is PASS, clear .agentcore-loop/fix.md if it exists (truncate to empty).
+      capabilities: [READ, EDIT, RUN_COMMANDS]
+      timeout: "15m"
 
     max_iterations: 5
     on_iterations_exhausted: abort
@@ -218,7 +197,7 @@ steps:
   create_pr:
     description: "Create a PR (optional; requires .agentcore-loop/enable_pr)"
     worker: CUSTOM
-    depends_on: [review_fix_loop]
+    depends_on: [implement]
     instructions: |
       bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/create-pr.sh"
     capabilities: [READ, EDIT, RUN_COMMANDS]

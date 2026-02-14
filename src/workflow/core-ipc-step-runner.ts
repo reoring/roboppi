@@ -3,10 +3,17 @@ import path from "node:path";
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { parseDuration } from "./duration.js";
-import { extractWorkerText, parseCompletionDecision } from "./completion-decision.js";
+import { readFile, stat } from "node:fs/promises";
+import {
+  extractWorkerText,
+  parseCompletionDecision,
+  parseCompletionDecisionFromFile,
+  type CompletionDecision,
+} from "./completion-decision.js";
 
 import { Supervisor } from "../scheduler/supervisor.js";
 import type { IpcProtocol } from "../ipc/protocol.js";
+import { IpcTimeoutError } from "../ipc/errors.js";
 
 import type {
   Job,
@@ -41,6 +48,13 @@ type WorkerTaskDef = {
   model?: StepDefinition["model"];
 };
 
+type ResolvedWorkerTaskDef = WorkerTaskDef & {
+  workspaceRef: string;
+  env?: Record<string, string>;
+  timeoutMs: number;
+  maxCommandTimeMs?: number;
+};
+
 const DEFAULT_STEP_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 function toWorkerKind(worker: StepWorker): WorkerKind {
@@ -67,6 +81,9 @@ export interface CoreIpcStepRunnerOptions {
   coreEntryPoint?: string;
   /** For tests or embedding: use an existing IPC connection instead of spawning Core. */
   ipc?: IpcProtocol;
+
+  /** IPC request/response timeout for ack/permit/cancel (defaults to IpcProtocol default). */
+  ipcRequestTimeoutMs?: number;
 }
 
 export class CoreIpcStepRunner implements StepRunner {
@@ -82,7 +99,13 @@ export class CoreIpcStepRunner implements StepRunner {
   constructor(options: CoreIpcStepRunnerOptions = {}) {
     this.verbose = options.verbose ?? false;
     this.coreEntryPoint = options.coreEntryPoint ?? "src/index.ts";
-    this.supervisor = new Supervisor({ coreEntryPoint: this.coreEntryPoint });
+
+    this.supervisor = new Supervisor({
+      coreEntryPoint: this.coreEntryPoint,
+      ...(options.ipcRequestTimeoutMs !== undefined
+        ? { ipc: { requestTimeoutMs: options.ipcRequestTimeoutMs } }
+        : {}),
+    });
 
     this.ownsCoreProcess = options.ipc === undefined;
     if (options.ipc) {
@@ -143,6 +166,7 @@ export class CoreIpcStepRunner implements StepRunner {
     abortSignal: AbortSignal,
     env?: Record<string, string>,
   ): Promise<CheckResult> {
+    const checkStartedAt = Date.now();
     const workerKind = toWorkerKind(check.worker);
     const task = this.buildWorkerTaskDef(check, workspaceDir, env);
     const result = await this.runWorkerTask(stepId, workerKind, task, abortSignal);
@@ -175,8 +199,7 @@ export class CoreIpcStepRunner implements StepRunner {
       };
     }
 
-    const text = extractWorkerText(result);
-    const decision = parseCompletionDecision(text);
+    const decision = await resolveDecision(check, workspaceDir, checkStartedAt, result);
     if (decision === "complete") return { complete: true, failed: false };
     if (decision === "incomplete") return { complete: false, failed: false };
     return {
@@ -191,20 +214,19 @@ export class CoreIpcStepRunner implements StepRunner {
     def: WorkerTaskDef,
     workspaceDir: string,
     env?: Record<string, string>,
-  ): WorkerTaskDef & { workspaceRef: string; env?: Record<string, string>; deadlineAt: number; maxCommandTimeMs?: number } {
+  ): ResolvedWorkerTaskDef {
     const workspaceRef = def.workspace
       ? path.resolve(workspaceDir, def.workspace)
       : workspaceDir;
 
     const timeoutMs = def.timeout ? parseDuration(def.timeout) : DEFAULT_STEP_TIMEOUT_MS;
-    const deadlineAt = Date.now() + timeoutMs;
     const maxCommandTimeMs = def.max_command_time ? parseDuration(def.max_command_time) : undefined;
 
     return {
       ...def,
       workspaceRef,
       env,
-      deadlineAt,
+      timeoutMs,
       ...(maxCommandTimeMs !== undefined ? { maxCommandTimeMs } : {}),
     };
   }
@@ -244,14 +266,16 @@ export class CoreIpcStepRunner implements StepRunner {
   private async runWorkerTask(
     stepId: string,
     workerKind: WorkerKind,
-    task: WorkerTaskDef & { workspaceRef: string; env?: Record<string, string>; deadlineAt: number; maxCommandTimeMs?: number },
+    task: ResolvedWorkerTaskDef,
     parentAbort: AbortSignal,
   ): Promise<WorkerResult> {
-    const scoped = createScopedAbort(parentAbort, task.deadlineAt);
     const startedAt = Date.now();
     const ipc = await this.ensureIpc();
 
-    const job = this.buildWorkerJob(workerKind, task);
+    // Step timeout should apply to the worker execution budget, not to Core startup.
+    // We'll compute the real deadline after submit_job is acknowledged.
+    const placeholderDeadlineAt = Date.now() + task.timeoutMs;
+    const job = this.buildWorkerJob(workerKind, { ...task, deadlineAt: placeholderDeadlineAt });
     const completionPromise = this.waitForJobCompleted(job.jobId);
 
     const cancelReason = `step:${stepId} aborted`;
@@ -262,26 +286,44 @@ export class CoreIpcStepRunner implements StepRunner {
       await this.cancelJob(ipc, job.jobId, cancelReason);
     };
 
-    const onAbort = () => {
+    const onParentAbort = () => {
       issueCancel().catch(() => {});
     };
-    if (scoped.signal.aborted) {
-      onAbort();
+    if (parentAbort.aborted) {
+      onParentAbort();
     } else {
-      scoped.signal.addEventListener("abort", onAbort, { once: true });
+      parentAbort.addEventListener("abort", onParentAbort, { once: true });
     }
 
     let submitted = false;
+    let execScoped: { signal: AbortSignal; cleanup: () => void } | null = null;
+    let onExecAbort: (() => void) | null = null;
 
     try {
-      await this.submitJob(ipc, job, scoped.signal);
+      await this.submitJob(ipc, job, parentAbort);
       submitted = true;
-      await this.requestPermitUntilGranted(ipc, job, task.deadlineAt, scoped.signal);
+
+      const deadlineAt = Date.now() + task.timeoutMs;
+      // Update job payload budget to reflect the post-ack execution deadline.
+      // (Other budget fields are preserved from the placeholder job.)
+      (job.payload as any).budget.deadlineAt = deadlineAt;
+
+      await this.requestPermitUntilGranted(ipc, job, deadlineAt, parentAbort);
+
+      execScoped = createScopedAbort(parentAbort, deadlineAt);
+      onExecAbort = () => {
+        issueCancel().catch(() => {});
+      };
+      if (execScoped.signal.aborted) {
+        onExecAbort();
+      } else {
+        execScoped.signal.addEventListener("abort", onExecAbort, { once: true });
+      }
 
       // Wait for completion, but respect abort.
       let completed: JobCompletedMessage | null = await Promise.race([
         completionPromise,
-        waitForAbort(scoped.signal).then(() => null),
+        waitForAbort(execScoped.signal).then(() => null),
       ]);
 
       if (completed === null) {
@@ -312,7 +354,7 @@ export class CoreIpcStepRunner implements StepRunner {
 
       return result;
     } catch (err: unknown) {
-      if (scoped.signal.aborted) {
+      if (parentAbort.aborted || execScoped?.signal.aborted) {
         return cancelledWorkerResult(Date.now() - startedAt);
       }
 
@@ -344,14 +386,17 @@ export class CoreIpcStepRunner implements StepRunner {
         errorClass,
       };
     } finally {
-      scoped.cleanup();
-      scoped.signal.removeEventListener("abort", onAbort);
+      parentAbort.removeEventListener("abort", onParentAbort);
+      if (execScoped && onExecAbort) {
+        execScoped.signal.removeEventListener("abort", onExecAbort);
+      }
+      execScoped?.cleanup();
     }
   }
 
   private buildWorkerJob(
     workerKind: WorkerKind,
-    task: WorkerTaskDef & { workspaceRef: string; env?: Record<string, string>; deadlineAt: number; maxCommandTimeMs?: number },
+    task: ResolvedWorkerTaskDef & { deadlineAt: number },
   ): Job {
     const jobId = generateId();
     const payload = {
@@ -391,12 +436,20 @@ export class CoreIpcStepRunner implements StepRunner {
     const requestId = generateId();
     const wait = ipc.waitForResponse(requestId);
     await ipc.sendSubmitJob(requestId, job);
-    await Promise.race([
-      wait.then(() => undefined),
-      waitForAbort(signal).then(() => {
-        throw new StepAbortedError();
-      }),
-    ]);
+    try {
+      await Promise.race([
+        wait.then(() => undefined),
+        waitForAbort(signal).then(() => {
+          throw new StepAbortedError();
+        }),
+      ]);
+    } catch (err) {
+      throw enrichIpcError(err, {
+        op: "submit_job",
+        requestId,
+        jobId: job.jobId,
+      });
+    }
   }
 
   private async requestPermitUntilGranted(
@@ -417,12 +470,22 @@ export class CoreIpcStepRunner implements StepRunner {
       const wait = ipc.waitForResponse(requestId) as Promise<PermitGrantedMessage | PermitRejectedMessage>;
       await ipc.sendRequestPermit(requestId, job, 0);
 
-      const response = await Promise.race([
-        wait,
-        waitForAbort(signal).then(() => {
-          throw new StepAbortedError();
-        }),
-      ]);
+      let response: PermitGrantedMessage | PermitRejectedMessage;
+      try {
+        response = await Promise.race([
+          wait,
+          waitForAbort(signal).then(() => {
+            throw new StepAbortedError();
+          }),
+        ]);
+      } catch (err) {
+        throw enrichIpcError(err, {
+          op: "request_permit",
+          requestId,
+          jobId: job.jobId,
+          backoff,
+        });
+      }
 
       if (isPermitGranted(response)) return;
 
@@ -444,8 +507,54 @@ export class CoreIpcStepRunner implements StepRunner {
     const requestId = generateId();
     const wait = ipc.waitForResponse(requestId);
     await ipc.sendCancelJob(requestId, jobId, reason);
-    await wait.catch(() => {});
+    await wait.catch((err) => {
+      // Best-effort: cancellation is advisory. Still log timeout context for debugging.
+      if (err instanceof IpcTimeoutError) {
+        try {
+          process.stderr.write(`[ipc] cancel_job timeout: jobId=${jobId} requestId=${requestId} timeoutMs=${err.timeoutMs}\n`);
+        } catch {
+          // ignore
+        }
+      }
+    });
   }
+}
+
+async function resolveDecision(
+  check: CompletionCheckDef,
+  workspaceDir: string,
+  checkStartedAt: number,
+  result: WorkerResult,
+): Promise<CompletionDecision> {
+  if (check.decision_file) {
+    const fromFile = await tryDecisionFromFile(check.decision_file, workspaceDir, checkStartedAt);
+    if (fromFile !== "fail") return fromFile;
+  }
+
+  const text = extractWorkerText(result);
+  return parseCompletionDecision(text);
+}
+
+async function tryDecisionFromFile(
+  relPath: string,
+  workspaceDir: string,
+  checkStartedAt: number,
+): Promise<CompletionDecision> {
+  const full = resolveWithin(workspaceDir, relPath);
+  const st = await stat(full).catch(() => null);
+  if (!st) return "fail";
+  if (st.mtimeMs + 2000 < checkStartedAt) return "fail";
+  const content = await readFile(full, "utf-8").catch(() => "");
+  return parseCompletionDecisionFromFile(content);
+}
+
+function resolveWithin(baseDir: string, relPath: string): string {
+  const resolvedBase = path.resolve(baseDir);
+  const resolved = path.resolve(baseDir, relPath);
+  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + path.sep)) {
+    throw new Error(`Path traversal detected: ${relPath}`);
+  }
+  return resolved;
 }
 
 function summarizeWorkerFailure(result: WorkerResult): string {
@@ -541,6 +650,20 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     signal.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+function enrichIpcError(
+  err: unknown,
+  ctx: { op: string; requestId: string; jobId: string; backoff?: number },
+): Error {
+  if (err instanceof IpcTimeoutError) {
+    const extra = ctx.backoff !== undefined ? ` backoff=${ctx.backoff}` : "";
+    return new Error(
+      `Core IPC ${ctx.op} timed out after ${err.timeoutMs}ms (jobId=${ctx.jobId} requestId=${ctx.requestId}${extra})`,
+    );
+  }
+  if (err instanceof Error) return err;
+  return new Error(String(err));
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

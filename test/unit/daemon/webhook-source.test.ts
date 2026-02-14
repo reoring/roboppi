@@ -4,8 +4,11 @@ import { WebhookServer } from "../../../src/daemon/events/webhook-server.js";
 import { WebhookSource } from "../../../src/daemon/events/webhook-source.js";
 import type { DaemonEvent, WebhookEventDef, WebhookPayload } from "../../../src/daemon/types.js";
 
-function randomPort(): number {
-  return 19000 + Math.floor(Math.random() * 10000);
+function startServerOnEphemeralPort(server: WebhookServer): number {
+  server.start(0);
+  const port = server.port;
+  if (!port) throw new Error("WebhookServer did not expose a port after start()");
+  return port;
 }
 
 describe("WebhookServer", () => {
@@ -17,8 +20,7 @@ describe("WebhookServer", () => {
 
   test("returns 404 for unknown path", async () => {
     server = new WebhookServer();
-    const port = randomPort();
-    server.start(port);
+    const port = startServerOnEphemeralPort(server);
 
     const res = await fetch(`http://localhost:${port}/unknown`);
     expect(res.status).toBe(404);
@@ -26,13 +28,11 @@ describe("WebhookServer", () => {
 
   test("routes requests to registered handlers", async () => {
     server = new WebhookServer();
-    const port = randomPort();
+    const port = startServerOnEphemeralPort(server);
 
     server.registerRoute("/test", async () => {
       return new Response("OK", { status: 200 });
     });
-
-    server.start(port);
 
     const res = await fetch(`http://localhost:${port}/test`, { method: "POST" });
     expect(res.status).toBe(200);
@@ -41,8 +41,7 @@ describe("WebhookServer", () => {
 
   test("stop closes the server", async () => {
     server = new WebhookServer();
-    const port = randomPort();
-    server.start(port);
+    const port = startServerOnEphemeralPort(server);
 
     server.stop();
 
@@ -68,8 +67,8 @@ describe("WebhookSource", () => {
   });
 
   test("receives POST webhook and emits event", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -77,7 +76,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-test", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
     const collectPromise = (async () => {
@@ -113,8 +111,8 @@ describe("WebhookSource", () => {
   }, 10000);
 
   test("rejects wrong method with 405", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -123,7 +121,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-method", config, server);
-    server.start(port);
 
     const res = await fetch(`http://localhost:${port}/hooks/post-only`, {
       method: "GET",
@@ -133,8 +130,8 @@ describe("WebhookSource", () => {
   });
 
   test("accepts custom method", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -143,7 +140,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-put", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
     const collectPromise = (async () => {
@@ -171,8 +167,8 @@ describe("WebhookSource", () => {
   }, 10000);
 
   test("validates HMAC-SHA256 signature - valid", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
     const secret = "my-secret-key";
 
     const config: WebhookEventDef = {
@@ -182,7 +178,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-hmac", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
     const collectPromise = (async () => {
@@ -217,8 +212,8 @@ describe("WebhookSource", () => {
   }, 10000);
 
   test("rejects invalid HMAC signature with 401", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -227,7 +222,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-hmac-bad", config, server);
-    server.start(port);
 
     const body = JSON.stringify({ test: true });
 
@@ -245,8 +239,8 @@ describe("WebhookSource", () => {
   });
 
   test("rejects missing signature header with 401 when secret is set", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -255,7 +249,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-no-sig", config, server);
-    server.start(port);
 
     const res = await fetch(`http://localhost:${port}/hooks/no-sig`, {
       method: "POST",
@@ -266,8 +259,8 @@ describe("WebhookSource", () => {
   });
 
   test("resolves secret from environment variable", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
     const envSecret = "env-secret-value-" + Date.now();
 
     process.env["TEST_WEBHOOK_SECRET"] = envSecret;
@@ -279,7 +272,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-env", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
     const collectPromise = (async () => {
@@ -316,8 +308,8 @@ describe("WebhookSource", () => {
   }, 10000);
 
   test("unknown path returns 404", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -325,7 +317,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-404", config, server);
-    server.start(port);
 
     const res = await fetch(`http://localhost:${port}/hooks/unknown`, {
       method: "POST",
@@ -335,8 +326,8 @@ describe("WebhookSource", () => {
   });
 
   test("stop() ends the event stream", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -344,7 +335,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-stop", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
 
@@ -361,8 +351,8 @@ describe("WebhookSource", () => {
   }, 5000);
 
   test("multiple webhook sources on same server", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config1: WebhookEventDef = {
       type: "webhook",
@@ -376,8 +366,6 @@ describe("WebhookSource", () => {
     const source1 = new WebhookSource("wh-1", config1, server);
     const source2 = new WebhookSource("wh-2", config2, server);
     source = source1; // for afterEach cleanup
-
-    server.start(port);
 
     const events1: DaemonEvent[] = [];
     const events2: DaemonEvent[] = [];
@@ -421,8 +409,8 @@ describe("WebhookSource", () => {
   }, 10000);
 
   test("non-JSON body is passed as string", async () => {
-    const port = randomPort();
     server = new WebhookServer();
+    const port = startServerOnEphemeralPort(server);
 
     const config: WebhookEventDef = {
       type: "webhook",
@@ -430,7 +418,6 @@ describe("WebhookSource", () => {
     };
 
     source = new WebhookSource("wh-plain", config, server);
-    server.start(port);
 
     const events: DaemonEvent[] = [];
     const collectPromise = (async () => {

@@ -24,7 +24,7 @@ import type {
   Job,
 } from "../types/index.js";
 import { JsonLinesTransport } from "./json-lines-transport.js";
-import { IpcStoppedError, IpcTimeoutError } from "./errors.js";
+import { IpcDisconnectError, IpcStoppedError, IpcTimeoutError } from "./errors.js";
 
 type InboundType = InboundMessage["type"];
 type OutboundType = OutboundMessage["type"];
@@ -79,6 +79,28 @@ export class IpcProtocol {
 
     this.transport.on("message", (raw: unknown) => {
       this.dispatch(raw);
+    });
+
+    // Surface transport-level issues (parse errors, disconnects, buffer overflows).
+    // This is especially important because IPC runs over stdout/stderr pipes and
+    // any non-JSON output can break request/response correlation.
+    this.transport.on("error", (err: Error) => {
+      try {
+        // Avoid throwing from error handler.
+        console.error("[IPC] Transport error:", err);
+      } catch {
+        // ignore
+      }
+    });
+
+    this.transport.on("close", () => {
+      // Reject all pending requests immediately; callers shouldn't wait for
+      // requestTimeoutMs when the stream is already closed.
+      for (const [requestId, pending] of this.pendingRequests) {
+        clearTimeout(pending.timer);
+        pending.reject(new IpcDisconnectError(`IPC transport closed (requestId=${requestId})`));
+      }
+      this.pendingRequests.clear();
     });
 
     this.transport.start();

@@ -8,6 +8,20 @@ fi
 
 mkdir -p .agentcore-loop
 
+# Clear derived artifacts from prior runs (keep request + branch/base settings).
+rm -f \
+  .agentcore-loop/review.md \
+  .agentcore-loop/review.verdict \
+  .agentcore-loop/fix.md \
+  .agentcore-loop/review.base_ref \
+  .agentcore-loop/review.diff \
+  .agentcore-loop/review.status \
+  .agentcore-loop/review.untracked \
+  .agentcore-loop/review.untracked.diff \
+  .agentcore-loop/pr-url.txt \
+  .agentcore-loop/pr-body.md \
+  .agentcore-loop/pr.txt
+
 if [ ! -f .agentcore-loop/request.md ]; then
   cat > .agentcore-loop/request.md <<'EOF'
 # Request
@@ -34,6 +48,5 @@ echo "${BASE_BRANCH}" > .agentcore-loop/base-branch.txt
 
 command -v opencode > /dev/null 2>&1 || { echo "Error: opencode not found in PATH" >&2; exit 1; }
 command -v claude > /dev/null 2>&1 || { echo "Error: claude (Claude Code) not found in PATH" >&2; exit 1; }
-command -v codex > /dev/null 2>&1 || { echo "Error: codex (Codex CLI) not found in PATH" >&2; exit 1; }
 
 echo "OK" > .agentcore-loop/bootstrap.ok

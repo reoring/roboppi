@@ -36,14 +36,7 @@ export class ProcessManager {
   private readonly setsidPath: string | null;
 
   constructor() {
-    this.setsidPath = (() => {
-      if (process.platform === "win32") return null;
-      try {
-        return Bun.which("setsid");
-      } catch {
-        return null;
-      }
-    })();
+    this.setsidPath = resolveSetSidPath();
   }
 
   spawn(options: SpawnOptions): ManagedProcess {
@@ -184,3 +177,36 @@ export class ProcessManager {
     return this.processes.size;
   }
 }
+
+function resolveSetSidPath(): string | null {
+  if (process.platform === "win32") return null;
+
+  // Prefer fixed locations to avoid PATH scans that may be slow/hang on some systems.
+  const override = process.env.AGENTCORE_SETSID_PATH;
+  const candidates = [
+    override,
+    "/usr/bin/setsid",
+    "/bin/setsid",
+    "/usr/local/bin/setsid",
+  ].filter((v): v is string => typeof v === "string" && v.length > 0);
+
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return p;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Optional fallback to Bun.which when explicitly enabled.
+  if (process.env.AGENTCORE_SETSID_USE_WHICH === "1") {
+    try {
+      return Bun.which("setsid");
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+import { existsSync } from "node:fs";

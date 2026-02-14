@@ -29,3 +29,10 @@ export function parseCompletionDecision(text: string): CompletionDecision {
 
   return "fail";
 }
+
+export function parseCompletionDecisionFromFile(content: string): CompletionDecision {
+  const v = content.trim().toUpperCase();
+  if (v === "COMPLETE" || v === "PASS") return "complete";
+  if (v === "INCOMPLETE" || v === "FAIL") return "incomplete";
+  return "fail";
+}

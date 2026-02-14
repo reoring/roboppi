@@ -186,9 +186,20 @@ export class OpenCodeAdapter extends BaseProcessAdapter {
   protected parseObservations(stdout: string): Observation[] {
     const observations: Observation[] = [];
 
+    // Completion checks rely on parsing explicit markers from worker output.
+    // Preserve marker lines even when stdout is large or mostly structured JSON.
+    const markerRe = /\b(?:INCOMPLETE|COMPLETE|FAIL(?:ED)?)\b/i;
+
     for (const line of stdout.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+
+      // Capture explicit marker lines even when they are not JSON.
+      if (markerRe.test(trimmed)) {
+        observations.push({ summary: trimmed });
+        continue;
+      }
+
       try {
         const parsed = JSON.parse(trimmed);
         if (parsed?.type === "result" && parsed.result) {
@@ -208,15 +219,52 @@ export class OpenCodeAdapter extends BaseProcessAdapter {
           continue;
         }
       } catch {
-        // Not JSON — treat as plain observation
+        // Not JSON
       }
     }
 
-    // If no structured observations found, use raw stdout summary
-    if (observations.length === 0 && stdout.trim()) {
-      observations.push({ summary: stdout.trim().slice(0, 1000) });
+    const trimmedStdout = stdout.trim();
+    if (!trimmedStdout) return observations;
+
+    // If markers exist in stdout but didn't end up in observations (e.g. marker printed
+    // as plain text after JSON output), add a bounded tail snippet to preserve it.
+    if (markerRe.test(trimmedStdout) && !observations.some((o) => o.summary && markerRe.test(o.summary))) {
+      observations.push({ summary: summarizeTail(trimmedStdout, 4000) });
+    }
+
+    // If no structured observations found, include a bounded summary with head+tail.
+    if (observations.length === 0) {
+      observations.push({ summary: summarizeHeadTail(trimmedStdout, 4000) });
     }
 
     return observations;
   }
+}
+
+function summarizeHeadTail(text: string, max: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+
+  const head = trimmed.slice(0, 1000);
+  const tail = trimmed.slice(-1000);
+  return `${head}\n...\n${tail}`;
+}
+
+function summarizeTail(text: string, maxChars: number): string {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return "";
+
+  const maxLines = 120;
+  const out: string[] = [];
+  let total = 0;
+
+  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
+    const line = lines[i]!;
+    const add = out.length === 0 ? line.length : line.length + 1;
+    if (total + add > maxChars) break;
+    out.unshift(line);
+    total += add;
+  }
+
+  return out.join("\n");
 }

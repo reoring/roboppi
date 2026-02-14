@@ -3,7 +3,7 @@
  * Workflow Runner CLI
  *
  * Usage:
- *   bun run src/workflow/run.ts <workflow.yaml> [--workspace <dir>] [--verbose]
+ *   bun run src/workflow/run.ts <workflow.yaml> [--workspace <dir>] [--verbose] [--supervised]
  */
 import { readFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
@@ -17,6 +17,7 @@ import { WorkflowExecutor } from "./executor.js";
 import { MultiWorkerStepRunner } from "./multi-worker-step-runner.js";
 import { CoreIpcStepRunner } from "./core-ipc-step-runner.js";
 import { WorkflowStatus, StepStatus } from "./types.js";
+import { parseDuration } from "./duration.js";
 
 // ── Argument parsing ────────────────────────────────────────────
 
@@ -25,6 +26,9 @@ let yamlPath = "";
 let workspaceDir = "";
 let verbose = false;
 let supervised = false;
+let keepalive: boolean | undefined;
+let keepaliveInterval: string | undefined;
+let ipcRequestTimeout: string | undefined;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i]!;
@@ -35,6 +39,17 @@ for (let i = 0; i < args.length; i++) {
     verbose = true;
   } else if (arg === "--supervised") {
     supervised = true;
+  } else if (arg === "--keepalive") {
+    keepalive = true;
+  } else if (arg === "--no-keepalive") {
+    keepalive = false;
+  } else if (arg === "--keepalive-interval") {
+    keepalive = true;
+    i++;
+    keepaliveInterval = args[i] ?? "";
+  } else if (arg === "--ipc-request-timeout") {
+    i++;
+    ipcRequestTimeout = args[i] ?? "";
   } else if (arg === "--help" || arg === "-h") {
     console.log(`Usage: bun run src/workflow/run.ts <workflow.yaml> [options]
 
@@ -42,6 +57,10 @@ Options:
   --workspace, -w <dir>   Working directory for steps (default: temp dir)
   --verbose, -v           Show step output
   --supervised            Delegate steps via Core IPC (Supervisor -> Core -> Worker)
+  --keepalive             Emit periodic output to avoid no-output watchdogs
+  --no-keepalive          Disable keepalive output
+  --keepalive-interval <d>  Keepalive interval (DurationString; default: 10s)
+  --ipc-request-timeout <d>  IPC request timeout in supervised mode (DurationString; default: 2m)
   --help, -h              Show help`);
     process.exit(0);
   } else if (!arg.startsWith("-")) {
@@ -51,6 +70,81 @@ Options:
 
 if (verbose) {
   process.env.AGENTCORE_VERBOSE = "1";
+}
+
+// Keepalive flags should propagate to any supervised child processes (Core).
+if (keepalive !== undefined) {
+  process.env.AGENTCORE_KEEPALIVE = keepalive ? "1" : "0";
+}
+if (keepaliveInterval !== undefined && keepaliveInterval !== "") {
+  process.env.AGENTCORE_KEEPALIVE_INTERVAL = keepaliveInterval;
+}
+
+function resolveIpcRequestTimeoutMs(supervisedMode: boolean): number {
+  if (!supervisedMode) return 0;
+
+  const fromCli = ipcRequestTimeout;
+  const fromEnv = process.env.AGENTCORE_IPC_REQUEST_TIMEOUT;
+  const fromEnvMs = process.env.AGENTCORE_IPC_REQUEST_TIMEOUT_MS;
+
+  if (fromCli !== undefined) {
+    return parseDurationOrThrow(fromCli, "IPC request timeout");
+  }
+  if (fromEnv !== undefined) {
+    return parseDurationOrThrow(fromEnv, "IPC request timeout");
+  }
+  if (fromEnvMs !== undefined) {
+    const n = Number(fromEnvMs);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`Invalid IPC request timeout ms: ${fromEnvMs}`);
+    }
+    return Math.floor(n);
+  }
+
+  return parseDuration("2m");
+}
+
+function parseDurationOrThrow(value: string, label: string): number {
+  try {
+    return parseDuration(value);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid ${label}: ${value} (${msg})`);
+  }
+}
+
+function isNonInteractive(): boolean {
+  // Bun sets isTTY on stdout/stderr similarly to Node.
+  // Treat either stream being a TTY as interactive.
+  return !(process.stdout.isTTY || process.stderr.isTTY);
+}
+
+function parseEnvBool(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return undefined;
+}
+
+function resolveKeepaliveEnabled(): boolean {
+  if (keepalive !== undefined) return keepalive;
+  const env = parseEnvBool(process.env.AGENTCORE_KEEPALIVE);
+  if (env !== undefined) return env;
+  return isNonInteractive();
+}
+
+function resolveKeepaliveIntervalMs(): number {
+  const raw =
+    keepaliveInterval ??
+    process.env.AGENTCORE_KEEPALIVE_INTERVAL ??
+    "10s";
+  try {
+    return parseDuration(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid keepalive interval: ${raw} (${msg})`);
+  }
 }
 
 if (!yamlPath) {
@@ -107,6 +201,14 @@ async function main(): Promise<void> {
   console.log(`\x1b[1mWorkspace:\x1b[0m${ws}`);
   console.log("");
 
+  // Default supervised IPC transport.
+  //
+  // Some non-interactive runners exhibit broken stdio pipes between parent/child
+  // processes. Use the socket transport by default in non-interactive mode.
+  if (supervised && process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT === undefined) {
+    process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
+  }
+
   // 4. Execute
   const runner = supervised
     ? new CoreIpcStepRunner({
@@ -116,6 +218,7 @@ async function main(): Promise<void> {
           "..",
           "index.ts",
         ),
+        ipcRequestTimeoutMs: resolveIpcRequestTimeoutMs(true),
       })
     : new MultiWorkerStepRunner(verbose);
 
@@ -153,10 +256,24 @@ async function main(): Promise<void> {
   );
 
   const startTime = Date.now();
+  const keepaliveEnabled = resolveKeepaliveEnabled();
+  const keepaliveIntervalMs = keepaliveEnabled ? resolveKeepaliveIntervalMs() : 0;
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+  if (keepaliveEnabled) {
+    keepaliveTimer = setInterval(() => {
+      const elapsedS = Math.floor((Date.now() - startTime) / 1000);
+      process.stderr.write(`[workflow] keepalive: running (${elapsedS}s elapsed)\n`);
+    }, keepaliveIntervalMs);
+  }
+
   let state;
   try {
     state = await executor.execute();
   } finally {
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+    }
     if (supervised) {
       try {
         await (runner as CoreIpcStepRunner).shutdown();

@@ -336,6 +336,7 @@ Step start (iteration 1)
 | `instructions` | string | yes | check instructions |
 | `capabilities` | enum[] | yes | checker capabilities (usually `[READ]`) |
 | `timeout` | DurationString | no | timeout per check |
+| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs and maps `PASS/COMPLETE` -> complete, `FAIL/INCOMPLETE` -> incomplete. |
 
 ---
 
@@ -479,6 +480,10 @@ bun run src/workflow/run.ts <workflow.yaml>
 | `--workspace <dir>` | `-w` | working directory | temp directory |
 | `--verbose` | `-v` | show step output | off |
 | `--supervised` | - | delegate steps via Core IPC (Supervisor -> Core -> Worker) | off |
+| `--keepalive` | - | emit periodic output to avoid no-output watchdogs | auto (on when non-TTY) |
+| `--no-keepalive` | - | disable keepalive output | - |
+| `--keepalive-interval <d>` | - | keepalive interval (DurationString) | `10s` |
+| `--ipc-request-timeout <d>` | - | IPC request timeout for supervised mode (DurationString) | `2m` |
 | `--help` | `-h` | show help | - |
 
 ### Examples

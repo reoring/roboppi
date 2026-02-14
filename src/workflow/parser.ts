@@ -52,6 +52,7 @@ function validateCompletionCheck(check: unknown, stepId: string): CompletionChec
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
+  validateOptionalString(obj["decision_file"], `steps.${stepId}.completion_check.decision_file`);
   return obj as unknown as CompletionCheckDef;
 }
 

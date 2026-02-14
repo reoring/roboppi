@@ -26,6 +26,8 @@ export class JsonLinesTransport {
   private closed = false;
   private readLoopPromise: Promise<void> | null = null;
 
+  private readonly traceEnabled = process.env.AGENTCORE_IPC_TRACE === "1";
+
   constructor(
     input: ReadableStream<Uint8Array>,
     output: WritableStream<Uint8Array>,
@@ -96,6 +98,10 @@ export class JsonLinesTransport {
       throw new IpcSerializeError(err);
     }
     const bytes = this.encoder.encode(line);
+
+    if (this.traceEnabled) {
+      traceIpc("tx", message, bytes.byteLength);
+    }
     if (bytes.byteLength > this.maxLineSize) {
       throw new IpcBufferOverflowError(bytes.byteLength, this.maxLineSize);
     }
@@ -212,6 +218,11 @@ export class JsonLinesTransport {
 
           try {
             const parsed: unknown = JSON.parse(line);
+
+            if (this.traceEnabled) {
+              traceIpc("rx", parsed);
+            }
+
             this.emitMessage(parsed);
           } catch (err) {
             this.emitError(new IpcParseError(line, err));
@@ -246,5 +257,27 @@ export class JsonLinesTransport {
     for (const handler of this.closeHandlers) {
       handler();
     }
+  }
+}
+
+function traceIpc(direction: "tx" | "rx", msg: unknown, byteLength?: number): void {
+  try {
+    if (typeof msg !== "object" || msg === null) {
+      process.stderr.write(`[IPC][${direction}] pid=${process.pid} non-object\n`);
+      return;
+    }
+
+    const m = msg as Record<string, unknown>;
+    const type = typeof m.type === "string" ? m.type : "?";
+    const requestId = typeof m.requestId === "string" ? m.requestId : "";
+    const jobId = typeof m.jobId === "string" ? m.jobId : "";
+
+    const parts: string[] = [`[IPC][${direction}]`, `pid=${process.pid}`, `type=${type}`];
+    if (requestId) parts.push(`requestId=${requestId}`);
+    if (jobId) parts.push(`jobId=${jobId}`);
+    if (byteLength !== undefined) parts.push(`bytes=${byteLength}`);
+    process.stderr.write(parts.join(" ") + "\n");
+  } catch {
+    // ignore
   }
 }

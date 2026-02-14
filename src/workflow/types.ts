@@ -38,6 +38,15 @@ export interface CompletionCheckDef {
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
   timeout?: DurationString;
+
+  /**
+   * Optional: derive completion decision from a file written in the workspace.
+   *
+   * Supported file values (trimmed, case-insensitive):
+   * - COMPLETE / PASS      => complete
+   * - INCOMPLETE / FAIL    => incomplete
+   */
+  decision_file?: string;
 }
 
 export interface InputRef {

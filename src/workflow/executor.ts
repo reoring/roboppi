@@ -432,9 +432,14 @@ export class WorkflowExecutor {
           }
 
           // No more retries or not retry policy
+          const obs = (result.observations ?? []).find((o) => typeof o.summary === "string" && o.summary.trim())
+            ?.summary;
+          const preview = obs
+            ? obs.replace(/\s+/g, " ").trim().slice(0, 240)
+            : "";
           this.markStepFailed(
             stepId,
-            `Step failed (errorClass: ${result.errorClass ?? "unknown"})`,
+            `Step failed (errorClass: ${result.errorClass ?? "unknown"})${preview ? `: ${preview}` : ""}`,
           );
 
           if (onFailure === "abort" || onFailure === "retry") {
@@ -443,13 +448,15 @@ export class WorkflowExecutor {
           return;
         }
 
-        // Step SUCCEEDED — collect outputs if defined
-        if (stepDef.outputs && stepDef.outputs.length > 0) {
-          await this.contextManager.collectOutputs(stepId, stepDef.outputs, this.workspaceDir);
-        }
+        const collectOutputsIfDefined = async () => {
+          if (stepDef.outputs && stepDef.outputs.length > 0) {
+            await this.contextManager.collectOutputs(stepId, stepDef.outputs, this.workspaceDir);
+          }
+        };
 
         // Check for completion_check
         if (!stepDef.completion_check) {
+          await collectOutputsIfDefined();
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
           return;
@@ -472,12 +479,18 @@ export class WorkflowExecutor {
         } catch (err) {
           if (this.workflowAbortController!.signal.aborted) return;
           const msg = err instanceof Error ? err.message : String(err);
+
+          await collectOutputsIfDefined();
           this.markStepFailed(stepId, `Completion check threw an error: ${msg}`);
           this.handleFailurePolicy(stepId, ErrorClass.FATAL);
           return;
         }
 
         if (this.workflowAbortController!.signal.aborted) return;
+
+        // Collect outputs after completion_check so both the main step and the check
+        // can contribute artifacts (e.g. review reports, verdict files).
+        await collectOutputsIfDefined();
 
         if (checkResult.failed) {
           const reason = checkResult.reason ? `: ${checkResult.reason}` : "";
