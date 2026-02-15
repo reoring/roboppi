@@ -142,6 +142,14 @@ steps:
     on_failure: retry
     max_retries: 1
 
+    # Convergence Controller (opt-in): detect stalled, repeating failures and
+    # switch to a minimal-change mode before fail-fast with diagnosis.
+    convergence:
+      enabled: true
+      stall_threshold: 2
+      max_stage: 3
+      fail_on_max_stage: true
+
     completion_check:
       worker: OPENCODE
       model: "openai/gpt-5.2"
@@ -153,7 +161,7 @@ steps:
         - Review the work against the request.
         - Write/update:
           - .agentcore-loop/review.md
-          - .agentcore-loop/review.verdict (PASS or FAIL only)
+          - .agentcore-loop/review.verdict (structured JSON; see Output rules)
         - If verdict is FAIL, also write/update:
           - .agentcore-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
         - If verdict is PASS:
@@ -176,7 +184,17 @@ steps:
         - Sections: Summary, Strengths, Issues, Verification
 
         Output rules:
-        - Write the verdict to .agentcore-loop/review.verdict as EXACTLY "PASS" or "FAIL" (no extra words).
+        - Write .agentcore-loop/review.verdict as a single-line JSON object:
+          - PASS => {"decision":"complete","check_id":"$AGENTCORE_COMPLETION_CHECK_ID"}
+          - FAIL => {"decision":"incomplete","check_id":"$AGENTCORE_COMPLETION_CHECK_ID"}
+        - When FAIL, also include:
+          - "reasons": ["..."]        (human-readable, short)
+          - "fingerprints": ["..."]   (stable IDs; used by the Convergence Controller)
+        - Fingerprint rules:
+          - Stable across iterations for the *same* underlying issue.
+          - Prefer file/line/test identifiers (e.g. "test:pkg/foo TestBar", "lint:src/x.ts:42", "scope:charts/...").
+          - Keep each item short.
+        - Fallback: if you cannot emit JSON, write legacy text "PASS" or "FAIL" only (no extra words).
         - If verdict is PASS, clear .agentcore-loop/fix.md if it exists (truncate to empty).
       capabilities: [READ, EDIT, RUN_COMMANDS]
       timeout: "15m"

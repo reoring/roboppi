@@ -99,6 +99,7 @@ steps:
 | `max_steps` | number | no | max worker steps |
 | `max_command_time` | DurationString | no | per-command timeout |
 | `completion_check` | object | no | completion check definition (see below) |
+| `convergence` | object | no | optional convergence control for completion-check loops (stall detection, scope guard, fail-fast) |
 | `max_iterations` | number | no | max completion-check iterations (default: 1) |
 | `on_iterations_exhausted` | enum | no | behavior on hitting iteration limit: `abort` / `continue` |
 | `on_failure` | enum | no | behavior on failure: `retry` / `continue` / `abort` (default: `abort`) |
@@ -336,7 +337,47 @@ Step start (iteration 1)
 | `instructions` | string | yes | check instructions |
 | `capabilities` | enum[] | yes | checker capabilities (usually `[READ]`) |
 | `timeout` | DurationString | no | timeout per check |
-| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs and maps `PASS/COMPLETE` -> complete, `FAIL/INCOMPLETE` -> incomplete. |
+| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs. Supported formats: structured JSON `{"decision":"complete"|"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}` (recommended) and legacy `PASS/COMPLETE` / `FAIL/INCOMPLETE` text. When `decision_file` is set, the runner provides `AGENTCORE_COMPLETION_CHECK_ID` in the check environment so the checker can include it as `check_id`. |
+
+### convergence fields (opt-in)
+
+The Convergence Controller helps prevent non-terminating `INCOMPLETE` loops by:
+
+- escalating “stalled” iterations (same `fingerprints` repeating)
+- optionally enforcing `allowed_paths` / diff budget
+- fail-fast with a diagnosis artifact under `context/<step>/_convergence/`
+
+| Field | Type | Required | Description |
+|-----------|-----|------|------|
+| `enabled` | boolean | no | enable convergence control (default: false) |
+| `stall_threshold` | number | no | repeats before escalating stage (default: 2) |
+| `max_stage` | number | no | max stage; reaching it triggers fail-fast unless disabled (default: 3) |
+| `fail_on_max_stage` | boolean | no | fail-fast when escalating to `max_stage` (default: true) |
+| `stages` | object[] | no | per-stage instruction overlays (`stage`, `append_instructions`) |
+| `allowed_paths` | string[] | no | restrict changed files to these patterns (prefix or glob) |
+| `ignored_paths` | string[] | no | ignore patterns for scope/budget checks |
+| `diff_base_ref` | string | no | git base ref used for diff/scope checks (default: `HEAD`) |
+| `diff_base_ref_file` | string | no | file containing git base ref (first line) |
+| `max_changed_files` | number | no | diff budget: max changed files (tracked + untracked) |
+
+Example:
+
+```yaml
+steps:
+  implement:
+    # ...
+    completion_check:
+      decision_file: .agentcore-loop/review.verdict
+      # ...
+    max_iterations: 10
+    convergence:
+      enabled: true
+      stall_threshold: 2
+      max_stage: 3
+      diff_base_ref_file: .agentcore-loop/review.base_ref
+      allowed_paths: ["src/**", "test/**"]
+      max_changed_files: 200
+```
 
 ---
 

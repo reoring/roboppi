@@ -14,7 +14,7 @@ export interface SupervisorConfig {
   coreEntryPoint: string;
   healthCheck?: Partial<HealthCheckerConfig>;
   ipc?: IpcProtocolOptions;
-  ipcTransport?: "stdio" | "socket";
+  ipcTransport?: "stdio" | "socket" | "tcp";
   gracefulShutdownMs?: number;
   maxRestarts?: number;
   restartWindowMs?: number;
@@ -69,6 +69,9 @@ export class Supervisor {
     const transport = resolveSupervisedIpcTransport(this.config);
     if (transport === "socket") {
       return this.spawnCoreSocket(childEnv);
+    }
+    if (transport === "tcp") {
+      return this.spawnCoreTcp(childEnv);
     }
     return this.spawnCoreStdio(childEnv);
   }
@@ -194,24 +197,46 @@ export class Supervisor {
     const server = createServer();
     this.ipcServer = server;
 
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-      const onListening = () => {
-        cleanup();
-        resolve();
-      };
-      const cleanup = () => {
-        server.off("error", onError);
-        server.off("listening", onListening);
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-      server.listen(socketPath);
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const onListening = () => {
+          cleanup();
+          resolve();
+        };
+        const cleanup = () => {
+          server.off("error", onError);
+          server.off("listening", onListening);
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(socketPath);
+      });
+    } catch (err) {
+      // Some sandboxed environments disallow Unix domain sockets entirely (listen EPERM/EACCES).
+      if (isUnixSocketListenUnsupported(err)) {
+        if (process.env.AGENTCORE_IPC_TRACE === "1") {
+          try {
+            const code = getErrCode(err) ?? "unknown";
+            process.stderr.write(
+              `[IPC][supervisor] unix socket listen failed (code=${code}); falling back to tcp\n`,
+            );
+          } catch {
+            // ignore
+          }
+        }
+        await this.cleanupSocketArtifacts();
+        return this.spawnCoreTcp(childEnv);
+      }
+      throw err;
+    }
 
+    // Ensure Core selects the Unix socket path mode.
+    delete childEnv.AGENTCORE_IPC_SOCKET_HOST;
+    delete childEnv.AGENTCORE_IPC_SOCKET_PORT;
     childEnv.AGENTCORE_IPC_SOCKET_PATH = socketPath;
 
     const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
@@ -244,26 +269,166 @@ export class Supervisor {
 
     // Wait for Core to connect.
     const connectTimeoutMs = Math.min(15000, this.config.ipc?.requestTimeoutMs ?? 15000);
-    const socket = await withTimeout(
-      new Promise<Socket>((resolve, reject) => {
-        const onError = (err: Error) => {
-          cleanup();
-          reject(err);
-        };
-        const onConn = (s: Socket) => {
-          cleanup();
-          resolve(s);
-        };
-        const cleanup = () => {
-          server.off("error", onError);
-          server.off("connection", onConn);
-        };
-        server.once("error", onError);
-        server.once("connection", onConn);
-      }),
-      connectTimeoutMs,
-      new Error(`Timed out waiting for Core IPC socket connection after ${connectTimeoutMs}ms`),
-    );
+    let socket: Socket;
+    try {
+      socket = await withTimeout(
+        new Promise<Socket>((resolve, reject) => {
+          const onError = (err: Error) => {
+            cleanup();
+            reject(err);
+          };
+          const onConn = (s: Socket) => {
+            cleanup();
+            resolve(s);
+          };
+          const cleanup = () => {
+            server.off("error", onError);
+            server.off("connection", onConn);
+          };
+          server.once("error", onError);
+          server.once("connection", onConn);
+        }),
+        connectTimeoutMs,
+        new Error(`Timed out waiting for Core IPC socket connection after ${connectTimeoutMs}ms`),
+      );
+    } catch (err) {
+      // Avoid leaving an orphaned Core process or a dangling server.
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      await this.procExitPromise;
+      this.proc = null;
+      this.procExitPromise = null;
+      await this.cleanupSocketArtifacts();
+      throw err;
+    }
+
+    try {
+      socket.setNoDelay(true);
+    } catch {
+      // ignore
+    }
+
+    // Stop accepting new connections (do NOT await full close; it can block until
+    // the active IPC socket disconnects).
+    try {
+      server.close();
+    } catch {
+      // ignore
+    }
+
+    const input = Readable.toWeb(socket) as unknown as ReadableStream<Uint8Array>;
+    const output = Writable.toWeb(socket) as unknown as WritableStream<Uint8Array>;
+    const transport = new JsonLinesTransport(input, output);
+
+    const ipc = this.finishSpawn(transport);
+    return ipc;
+  }
+
+  private async spawnCoreTcp(childEnv: Record<string, string>): Promise<IpcProtocol> {
+    // TCP loopback transport for supervised mode.
+    // Intended as a fallback for environments where Unix domain sockets are blocked.
+
+    await this.cleanupSocketArtifacts();
+
+    const server = createServer();
+    this.ipcServer = server;
+
+    const host = "127.0.0.1";
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+      const onListening = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        server.off("error", onError);
+        server.off("listening", onListening);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen({ host, port: 0 });
+    });
+
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      throw new Error(`Failed to resolve TCP IPC listen address: ${String(addr)}`);
+    }
+
+    // Ensure Core selects the TCP mode.
+    delete childEnv.AGENTCORE_IPC_SOCKET_PATH;
+    childEnv.AGENTCORE_IPC_SOCKET_HOST = addr.address || host;
+    childEnv.AGENTCORE_IPC_SOCKET_PORT = String(addr.port);
+
+    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
+    }) as unknown as ChildProcessWithoutNullStreams;
+
+    if (!proc.pid || !proc.stdin || !proc.stdout || !proc.stderr) {
+      throw new Error("Failed to spawn Core process: missing stdio handles");
+    }
+
+    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+      try {
+        process.stderr.write(
+          `[IPC][spawn] impl=node_child_process transport=tcp core pid=${proc.pid} entry=${this.config.coreEntryPoint} addr=${addr.address}:${addr.port}\n`,
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    this.proc = proc;
+    this.procExitPromise = new Promise<number | null>((resolve) => {
+      proc.once("exit", (code) => resolve(code));
+      proc.once("error", () => resolve(null));
+    });
+
+    // Forward Core stderr to parent stderr for visibility.
+    this.forwardCoreStderr(proc.stderr);
+
+    const connectTimeoutMs = Math.min(15000, this.config.ipc?.requestTimeoutMs ?? 15000);
+    let socket: Socket;
+    try {
+      socket = await withTimeout(
+        new Promise<Socket>((resolve, reject) => {
+          const onError = (err: Error) => {
+            cleanup();
+            reject(err);
+          };
+          const onConn = (s: Socket) => {
+            cleanup();
+            resolve(s);
+          };
+          const cleanup = () => {
+            server.off("error", onError);
+            server.off("connection", onConn);
+          };
+          server.once("error", onError);
+          server.once("connection", onConn);
+        }),
+        connectTimeoutMs,
+        new Error(`Timed out waiting for Core IPC TCP connection after ${connectTimeoutMs}ms`),
+      );
+    } catch (err) {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      await this.procExitPromise;
+      this.proc = null;
+      this.procExitPromise = null;
+      await this.cleanupSocketArtifacts();
+      throw err;
+    }
 
     try {
       socket.setNoDelay(true);
@@ -470,7 +635,7 @@ function collectChildEnv(): Record<string, string> {
   return childEnv;
 }
 
-function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "socket" {
+function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "socket" | "tcp" {
   const raw = (
     config.ipcTransport ??
     process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT ??
@@ -478,7 +643,30 @@ function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "soc
   ).toLowerCase();
 
   if (raw === "socket") return "socket";
+  if (raw === "tcp") return "tcp";
   return "stdio";
+}
+
+function getErrCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const code = (err as any).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isUnixSocketListenUnsupported(err: unknown): boolean {
+  const code = getErrCode(err);
+  return (
+    code === "EPERM" ||
+    code === "EACCES" ||
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "EAFNOSUPPORT" ||
+    code === "EPROTONOSUPPORT" ||
+    code === "ENOSYS" ||
+    code === "EINVAL" ||
+    code === "ENAMETOOLONG"
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutError: Error): Promise<T> {

@@ -1,6 +1,6 @@
 # Supervised IPC: submit_job ACK timeout (non-interactive)
 
-Status: resolved (socket transport for supervised IPC); stdio root-cause remains environment-dependent
+Status: resolved (socket transport for supervised IPC; Unix socket w/ TCP fallback); stdio root-cause remains environment-dependent
 
 ## Problem
 
@@ -22,6 +22,10 @@ So the break is: Runner -> Core stdin (message never observed by Core).
 
 Mitigation: use the socket-based supervised IPC transport (`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`) which bypasses stdio pipes entirely.
 
+If your environment blocks Unix domain sockets (e.g. `listen` fails with `EPERM`/`EACCES`), use the TCP loopback transport instead:
+
+- `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`
+
 ## Repro
 
 Typical demo repro (force stdio; may fail in affected environments):
@@ -36,6 +40,14 @@ Socket transport (expected to succeed):
 
 ```bash
 AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket \
+  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+  bash examples/agent-pr-loop-demo/run-in-tmp.sh
+```
+
+TCP transport (useful when Unix sockets are blocked):
+
+```bash
+AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
   AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
@@ -97,9 +109,11 @@ These changes improve supervised IPC in many environments, but some setups still
 
 8) Socket-based supervised IPC transport
 
-- Added a Unix socket transport for supervised IPC to bypass stdio pipes: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`.
-- `src/workflow/run.ts` defaults to `socket` in non-interactive `--supervised` runs (override via `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket`).
-- Core connects via `AGENTCORE_IPC_SOCKET_PATH` (set by Supervisor).
+- Added a socket transport for supervised IPC to bypass stdio pipes: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`.
+  - Uses a Unix domain socket by default; falls back to TCP loopback when Unix sockets are not permitted.
+  - You can force TCP with `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`.
+- `src/workflow/run.ts` defaults to `socket` in non-interactive `--supervised` runs (override via `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`).
+- Core connects via `AGENTCORE_IPC_SOCKET_PATH` (Unix) or `AGENTCORE_IPC_SOCKET_HOST` + `AGENTCORE_IPC_SOCKET_PORT` (TCP), set by Supervisor.
 
 ## Related Work (Agent PR Loop Demo)
 

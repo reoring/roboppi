@@ -1,6 +1,6 @@
 # Supervised IPC: submit_job ACK タイムアウト (非対話)
 
-ステータス: 解決済み (supervised IPC における socket transport)
+ステータス: 解決済み (supervised IPC における socket transport; Unix socket + TCP フォールバック)
 （stdio 側の根本原因は環境依存のまま）
 
 ## 問題
@@ -24,6 +24,10 @@ IPC トレースで見えた主な症状:
 
 対処: socket ベースの supervised IPC transport（`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`）を使い、stdio パイプを完全に迂回します。
 
+もし環境側で Unix ドメインソケット作成が禁止されている（例: `listen` が `EPERM` / `EACCES` で失敗する）場合は、TCP ループバックを使います:
+
+- `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`
+
 ## 再現
 
 典型的な再現手順（stdio を強制。影響を受ける環境では失敗する可能性あり）:
@@ -42,8 +46,16 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
+TCP transport（Unix socket がブロックされている環境向け）:
+
+```bash
+AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
+  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+  bash examples/agent-pr-loop-demo/run-in-tmp.sh
+```
+
 注記: `src/workflow/run.ts` では非対話の `--supervised` 実行時に
-`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket` がデフォルトになっています。
+`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket` がデフォルトになっています（`stdio|socket|tcp` で上書き可）。
 
 補足:
 
@@ -100,9 +112,11 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket \
 
 8) socket ベースの supervised IPC transport
 
-- supervised IPC に Unix socket transport を追加し、stdio パイプを回避: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`。
-- `src/workflow/run.ts` は非対話の `--supervised` 実行で既定値を `socket` に設定（`AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket` で上書き可）。
-- Core は Supervisor がセットする `AGENTCORE_IPC_SOCKET_PATH` へ接続します。
+- supervised IPC に socket transport を追加し、stdio パイプを回避: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`。
+  - 既定は Unix ドメインソケット。Unix socket が許可されない場合は TCP ループバックへフォールバック。
+  - 明示的に TCP を使う場合は `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`。
+- `src/workflow/run.ts` は非対話の `--supervised` 実行で既定値を `socket` に設定（`AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp` で上書き可）。
+- Core は Supervisor がセットする `AGENTCORE_IPC_SOCKET_PATH`（Unix）または `AGENTCORE_IPC_SOCKET_HOST` + `AGENTCORE_IPC_SOCKET_PORT`（TCP）へ接続します。
 
 ## 関連作業（Agent PR Loop デモ）
 

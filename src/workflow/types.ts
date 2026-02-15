@@ -29,6 +29,58 @@ export interface StepDefinition {
   max_iterations?: number;
   on_iterations_exhausted?: "abort" | "continue";
   on_failure?: "retry" | "continue" | "abort";
+
+  /** Optional: convergence control for completion_check loops (opt-in). */
+  convergence?: ConvergenceDef;
+}
+
+export interface ConvergenceStageDef {
+  /** 2..max_stage (stage 1 is the default / no special handling). */
+  stage: number;
+
+  /** Instructions appended to the step.instructions when this stage is active. */
+  append_instructions?: string;
+}
+
+export interface ConvergenceDef {
+  /** Enables convergence control. Default: false. */
+  enabled?: boolean;
+
+  /**
+   * Number of consecutive iterations with an identical failure fingerprint set
+   * before escalating to the next stage.
+   *
+   * Default: 2.
+   */
+  stall_threshold?: number;
+
+  /**
+   * Maximum stage (>= 1). Default: 3.
+   * When the controller would escalate to max_stage, it fails the step unless
+   * fail_on_max_stage is set to false.
+   */
+  max_stage?: number;
+
+  /** Default: true. */
+  fail_on_max_stage?: boolean;
+
+  /** Optional: per-stage instruction overlays. */
+  stages?: ConvergenceStageDef[];
+
+  /** Optional: enforce file scope by allowed path patterns (workspace-relative). */
+  allowed_paths?: string[];
+
+  /** Optional: paths to ignore for scope/budget checks. */
+  ignored_paths?: string[];
+
+  /** Optional: git base ref (e.g. origin/main) used for diff/scope checks. */
+  diff_base_ref?: string;
+
+  /** Optional: file containing git base ref (first line). */
+  diff_base_ref_file?: string;
+
+  /** Optional: diff budget (count of changed files, tracked + untracked). */
+  max_changed_files?: number;
 }
 
 export interface CompletionCheckDef {
@@ -43,6 +95,14 @@ export interface CompletionCheckDef {
    * Optional: derive completion decision from a file written in the workspace.
    *
    * Supported file values (trimmed, case-insensitive):
+   * - Structured JSON:
+   *   {
+   *     "decision": "complete" | "incomplete",
+   *     "check_id": "<runner-generated token>",
+   *     "reasons": ["..."],
+   *     "fingerprints": ["..."]
+   *   }
+   *   (check_id is optional for backward compatibility; reasons/fingerprints are optional).
    * - COMPLETE / PASS      => complete
    * - INCOMPLETE / FAIL    => incomplete
    */
@@ -89,6 +149,22 @@ export interface StepState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+
+  /**
+   * Convergence guard state for completion_check.
+   * Used to fail-fast when the completion decision channel is consistently broken.
+   */
+  completionInfraFailureCount?: number;
+  lastCompletionInfraFailure?: string;
+
+  /** Convergence Controller stage (1 = normal). */
+  convergenceStage?: number;
+
+  /** Consecutive stall counter for identical failure sets. */
+  convergenceStallCount?: number;
+
+  /** Last computed stall key (hash). */
+  convergenceLastStallKey?: string;
 }
 
 export interface WorkflowState {

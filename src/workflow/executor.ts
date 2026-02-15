@@ -1,16 +1,21 @@
 import { ErrorClass } from "../types/common.js";
 import type { Artifact, Observation, WorkerCost } from "../types/worker-result.js";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import type {
   WorkflowDefinition,
   StepDefinition,
   CompletionCheckDef,
   WorkflowState,
   StepState,
+  ConvergenceDef,
 } from "./types.js";
 import { WorkflowStatus, StepStatus } from "./types.js";
 import { validateDag } from "./dag-validator.js";
 import { parseDuration } from "./duration.js";
 import type { ContextManager } from "./context-manager.js";
+import type { CompletionDecisionSource } from "./completion-decision.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -29,7 +34,25 @@ export interface CheckResult {
   failed: boolean;
   errorClass?: ErrorClass;
   reason?: string;
+
+  /**
+   * Optional: completion decision diagnostics.
+   * When present, used for convergence guarding and debuggability.
+   */
+  decisionSource?: CompletionDecisionSource;
+  decisionCheckIdMatch?: boolean;
+
+  /** Optional: structured diagnostics from completion_check decision_file. */
+  reasons?: string[];
+  fingerprints?: string[];
 }
+
+const COMPLETION_INFRA_FAILURE_LIMIT = 2;
+
+const DEFAULT_CONVERGENCE_STALL_THRESHOLD = 2;
+const DEFAULT_CONVERGENCE_MAX_STAGE = 3;
+const CONVERGENCE_ARTIFACT_DIR = "_convergence";
+const MAX_CONVERGENCE_SIGNAL_ITEMS = 40;
 
 export interface StepRunner {
   runStep(
@@ -113,6 +136,13 @@ export class WorkflowExecutor {
   private runningCount = 0;
   private workflowAbortController: AbortController | null = null;
   private abortReason: "timeout" | "external" | null = null;
+
+  // Internal: latest convergence signals per step (not persisted in StepState).
+  private readonly convergenceSignals: Record<string, {
+    fingerprints?: string[];
+    reasons?: string[];
+    lastStallKey?: string;
+  }> = {};
 
   // Notification mechanism — resolved whenever a step reaches a terminal state
   // or when a running slot becomes free.
@@ -392,9 +422,10 @@ export class WorkflowExecutor {
         const stepAbort = this.createStepAbort();
         let result: StepRunResult;
         try {
+          const effectiveStepDef = this.applyConvergenceToStepDef(stepId, stepDef, state);
           result = await this.stepRunner.runStep(
             stepId,
-            stepDef,
+            effectiveStepDef,
             this.workspaceDir,
             stepAbort,
             this.env,
@@ -502,10 +533,73 @@ export class WorkflowExecutor {
           return;
         }
 
-        if (checkResult.complete) {
+        let effectiveCheckResult: CheckResult = checkResult;
+        if (this.isConvergenceEnabled(stepDef)) {
+          try {
+            effectiveCheckResult = await this.applyConvergenceGuards(
+              stepId,
+              stepDef,
+              state,
+              effectiveCheckResult,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.markStepFailed(stepId, `Convergence guard failed: ${msg}`);
+            const onFailure = stepDef.on_failure ?? "abort";
+            if (onFailure === "abort" || onFailure === "retry") {
+              this.skipDependents(stepId);
+            }
+            return;
+          }
+        }
+
+        if (effectiveCheckResult.complete) {
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
           return;
+        }
+
+        // Not complete — detect completion_check infrastructure failures early.
+        // This is distinct from a "real" INCOMPLETE (i.e., work remaining).
+        if (this.isCompletionInfraFailure(effectiveCheckResult)) {
+          const count = (state.completionInfraFailureCount ?? 0) + 1;
+          state.completionInfraFailureCount = count;
+
+          const detail = this.formatCompletionInfraFailure(effectiveCheckResult);
+          state.lastCompletionInfraFailure = detail;
+
+          if (count >= COMPLETION_INFRA_FAILURE_LIMIT) {
+            this.markStepFailed(
+              stepId,
+              `Completion check infrastructure failure repeated (${count}x): ${detail}`,
+            );
+            const onFailure = stepDef.on_failure ?? "abort";
+            if (onFailure === "abort" || onFailure === "retry") {
+              this.skipDependents(stepId);
+            }
+            return;
+          }
+        } else {
+          // Reset infra failure streak when we successfully get a stable decision.
+          state.completionInfraFailureCount = 0;
+          state.lastCompletionInfraFailure = undefined;
+        }
+
+        // Convergence Controller: detect stalled identical failure sets and escalate.
+        if (this.isConvergenceEnabled(stepDef)) {
+          const shouldFail = await this.updateConvergenceState(
+            stepId,
+            stepDef,
+            state,
+            effectiveCheckResult,
+          );
+          if (shouldFail) {
+            const onFailure = stepDef.on_failure ?? "abort";
+            if (onFailure === "abort" || onFailure === "retry") {
+              this.skipDependents(stepId);
+            }
+            return;
+          }
         }
 
         // Not complete — check iteration limit
@@ -529,6 +623,395 @@ export class WorkflowExecutor {
       this.runningCount--;
       this.notify();
     }
+  }
+
+  private isCompletionInfraFailure(checkResult: CheckResult): boolean {
+    // Signals we treat as infrastructure / decision-channel failures:
+    // - could not determine decision (source none)
+    // - stale/missing/unsupported decision_file (reason set by resolver)
+    // - explicit check_id mismatch
+    if (checkResult.decisionCheckIdMatch === false) return true;
+
+    const src = checkResult.decisionSource;
+    if (src === "none") return true;
+
+    const r = (checkResult.reason ?? "").toLowerCase();
+    if (!r) return false;
+    if (r.includes("could not parse completion decision")) return true;
+    if (r.includes("decision_file")) return true;
+    return false;
+  }
+
+  private formatCompletionInfraFailure(checkResult: CheckResult): string {
+    const parts: string[] = [];
+    if (checkResult.decisionSource) parts.push(`source=${checkResult.decisionSource}`);
+    if (checkResult.decisionCheckIdMatch !== undefined) {
+      parts.push(`check_id_match=${checkResult.decisionCheckIdMatch}`);
+    }
+    if (checkResult.reason && checkResult.reason.trim()) {
+      parts.push(`reason=${checkResult.reason.trim()}`);
+    }
+    return parts.length > 0 ? parts.join(" ") : "unknown";
+  }
+
+  // -----------------------------------------------------------------------
+  // Convergence Controller (opt-in)
+  // -----------------------------------------------------------------------
+
+  private resolveConvergenceConfig(stepDef: StepDefinition): ConvergenceDef | null {
+    const cfg = stepDef.convergence;
+    if (!cfg) return null;
+    if (cfg.enabled !== true) return null;
+    if (!stepDef.completion_check) return null;
+    return cfg;
+  }
+
+  private isConvergenceEnabled(stepDef: StepDefinition): boolean {
+    return this.resolveConvergenceConfig(stepDef) !== null;
+  }
+
+  private applyConvergenceToStepDef(
+    stepId: string,
+    stepDef: StepDefinition,
+    state: StepState,
+  ): StepDefinition {
+    const cfg = this.resolveConvergenceConfig(stepDef);
+    if (!cfg) return stepDef;
+
+    if (state.convergenceStage === undefined) {
+      state.convergenceStage = 1;
+    }
+
+    const stage = state.convergenceStage ?? 1;
+    if (stage <= 1) return stepDef;
+
+    const append = this.buildConvergenceInstructionsAppend(stepId, state, cfg);
+    if (!append) return stepDef;
+
+    return {
+      ...stepDef,
+      instructions: stepDef.instructions.trimEnd() + "\n\n" + append.trim() + "\n",
+    };
+  }
+
+  private buildConvergenceInstructionsAppend(
+    stepId: string,
+    state: StepState,
+    cfg: ConvergenceDef,
+  ): string | null {
+    const stage = state.convergenceStage ?? 1;
+    if (stage <= 1) return null;
+
+    const maxStage = cfg.max_stage ?? DEFAULT_CONVERGENCE_MAX_STAGE;
+    const signals = this.convergenceSignals[stepId] ?? {};
+    const fingerprints = signals.fingerprints ?? [];
+    const reasons = signals.reasons ?? [];
+
+    const lines: string[] = [];
+    lines.push("[Convergence Controller]");
+    lines.push(`Stage: ${stage}/${maxStage}`);
+    lines.push("The workflow detected stalled, repeating failures. Switch to minimal, targeted changes.");
+    lines.push("");
+    lines.push("Rules:");
+    lines.push("- Make the smallest possible change that resolves the listed fingerprints.");
+    lines.push("- Avoid refactors, formatting-only edits, and unrelated changes.");
+    lines.push("- If you already made out-of-scope changes, revert them.");
+    if (cfg.allowed_paths && cfg.allowed_paths.length > 0) {
+      const preview = cfg.allowed_paths.slice(0, 12).join(", ");
+      lines.push(`- Allowed paths: ${preview}${cfg.allowed_paths.length > 12 ? ", ..." : ""}`);
+    }
+    if (typeof cfg.max_changed_files === "number") {
+      lines.push(`- Diff budget: max_changed_files=${cfg.max_changed_files}`);
+    }
+
+    if (fingerprints.length > 0) {
+      lines.push("");
+      lines.push("Fingerprints (top):");
+      for (const fp of fingerprints.slice(0, 20)) {
+        lines.push(`- ${fp}`);
+      }
+    }
+    if (reasons.length > 0) {
+      lines.push("");
+      lines.push("Reasons (top):");
+      for (const r of reasons.slice(0, 12)) {
+        lines.push(`- ${r}`);
+      }
+    }
+
+    const stageOverride = (cfg.stages ?? []).find((s) => s.stage === stage);
+    if (stageOverride?.append_instructions && stageOverride.append_instructions.trim()) {
+      lines.push("");
+      lines.push(stageOverride.append_instructions.trim());
+    }
+
+    return lines.join("\n");
+  }
+
+  private async applyConvergenceGuards(
+    stepId: string,
+    stepDef: StepDefinition,
+    state: StepState,
+    checkResult: CheckResult,
+  ): Promise<CheckResult> {
+    const cfg = this.resolveConvergenceConfig(stepDef);
+    if (!cfg) return checkResult;
+
+    // Scope/diff-budget guard (git-based). Only run when configured.
+    const needsGit =
+      (cfg.allowed_paths && cfg.allowed_paths.length > 0) ||
+      typeof cfg.max_changed_files === "number";
+    if (!needsGit) return checkResult;
+
+    const scope = await this.evaluateGitScope(cfg);
+
+    const extraFingerprints: string[] = [];
+    const extraReasons: string[] = [];
+    let forceIncomplete = false;
+
+    if (typeof cfg.max_changed_files === "number") {
+      if (scope.changedFiles.length > cfg.max_changed_files) {
+        forceIncomplete = true;
+        extraFingerprints.push("diff_budget:max_changed_files_exceeded");
+        extraReasons.push(
+          `changed files (${scope.changedFiles.length}) exceed max_changed_files (${cfg.max_changed_files})`,
+        );
+      }
+    }
+
+    if (cfg.allowed_paths && cfg.allowed_paths.length > 0) {
+      if (scope.violations.length > 0) {
+        forceIncomplete = true;
+        extraFingerprints.push("scope:outside_allowed_paths");
+        for (const f of scope.violations.slice(0, 25)) {
+          extraFingerprints.push(`scope:file:${f}`);
+        }
+        const preview = scope.violations.slice(0, 12).join(", ");
+        extraReasons.push(
+          `files outside allowed_paths (${scope.violations.length}): ${preview}${scope.violations.length > 12 ? ", ..." : ""}`,
+        );
+      }
+    }
+
+    if (forceIncomplete) {
+      await this.writeConvergenceJson(stepId, "scope.json", scope);
+    }
+
+    const mergedFingerprints = mergeStringLists(checkResult.fingerprints, extraFingerprints, MAX_CONVERGENCE_SIGNAL_ITEMS);
+    const mergedReasons = mergeStringLists(checkResult.reasons, extraReasons, MAX_CONVERGENCE_SIGNAL_ITEMS);
+
+    const out: CheckResult = {
+      ...checkResult,
+      ...(mergedFingerprints ? { fingerprints: mergedFingerprints } : {}),
+      ...(mergedReasons ? { reasons: mergedReasons } : {}),
+    };
+
+    if (forceIncomplete && out.complete) {
+      out.complete = false;
+    }
+
+    // Keep convergence stage initialized.
+    if (state.convergenceStage === undefined) {
+      state.convergenceStage = 1;
+    }
+
+    return out;
+  }
+
+  private async updateConvergenceState(
+    stepId: string,
+    stepDef: StepDefinition,
+    state: StepState,
+    checkResult: CheckResult,
+  ): Promise<boolean> {
+    const cfg = this.resolveConvergenceConfig(stepDef);
+    if (!cfg) return false;
+
+    if (state.convergenceStage === undefined) {
+      state.convergenceStage = 1;
+    }
+
+    const stallThreshold = cfg.stall_threshold ?? DEFAULT_CONVERGENCE_STALL_THRESHOLD;
+    const maxStage = cfg.max_stage ?? DEFAULT_CONVERGENCE_MAX_STAGE;
+    const failOnMaxStage = cfg.fail_on_max_stage !== false;
+
+    const fingerprints = normalizeSignalList(checkResult.fingerprints, MAX_CONVERGENCE_SIGNAL_ITEMS);
+    const reasons = normalizeSignalList(checkResult.reasons, MAX_CONVERGENCE_SIGNAL_ITEMS);
+
+    // Save latest signals for instruction overlays.
+    this.convergenceSignals[stepId] = {
+      fingerprints,
+      reasons,
+      lastStallKey: state.convergenceLastStallKey,
+    };
+
+    const keyInputs = (fingerprints && fingerprints.length > 0)
+      ? fingerprints
+      : (reasons && reasons.length > 0)
+          ? reasons.map((r) => `reason:${r}`)
+          : null;
+
+    if (!keyInputs || keyInputs.length === 0) {
+      await this.writeConvergenceJson(stepId, "state.json", {
+        iteration: state.iteration,
+        stage: state.convergenceStage,
+        stallCount: state.convergenceStallCount ?? 0,
+        lastStallKey: state.convergenceLastStallKey,
+        decisionSource: checkResult.decisionSource,
+        checkIdMatch: checkResult.decisionCheckIdMatch,
+        fingerprints: fingerprints ?? [],
+        reasons: reasons ?? [],
+        note: "no fingerprints/reasons provided; stall detection skipped",
+        updatedAt: Date.now(),
+      });
+      return false;
+    }
+
+    const stallKey = hashStrings(keyInputs);
+    const prevKey = state.convergenceLastStallKey;
+    if (prevKey === stallKey) {
+      state.convergenceStallCount = (state.convergenceStallCount ?? 0) + 1;
+    } else {
+      state.convergenceLastStallKey = stallKey;
+      state.convergenceStallCount = 1;
+    }
+
+    const snapshot = {
+      iteration: state.iteration,
+      stage: state.convergenceStage,
+      stallCount: state.convergenceStallCount,
+      stallThreshold,
+      maxStage,
+      lastStallKey: state.convergenceLastStallKey,
+      decisionSource: checkResult.decisionSource,
+      checkIdMatch: checkResult.decisionCheckIdMatch,
+      fingerprints: fingerprints ?? [],
+      reasons: reasons ?? [],
+      updatedAt: Date.now(),
+    };
+
+    await this.writeConvergenceJson(stepId, "state.json", snapshot);
+
+    if ((state.convergenceStallCount ?? 0) < stallThreshold) {
+      return false;
+    }
+
+    // Escalate stage.
+    const currentStage = state.convergenceStage ?? 1;
+    const nextStage = Math.min(currentStage + 1, maxStage);
+    state.convergenceStage = nextStage;
+    state.convergenceStallCount = 0;
+
+    await this.writeConvergenceJson(stepId, "stage-transition.json", {
+      from: currentStage,
+      to: nextStage,
+      reason: "stalled identical failure set",
+      stallKey: state.convergenceLastStallKey,
+      iteration: state.iteration,
+      transitionedAt: Date.now(),
+    });
+
+    if (nextStage >= maxStage && failOnMaxStage) {
+      const preview = (fingerprints ?? []).slice(0, 6).join(", ");
+      this.markStepFailed(
+        stepId,
+        `Convergence stalled: reached stage ${nextStage}/${maxStage} after ${stallThreshold} repeats` +
+          (preview ? ` (fingerprints: ${preview}${(fingerprints?.length ?? 0) > 6 ? ", ..." : ""})` : ""),
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  private async evaluateGitScope(cfg: ConvergenceDef): Promise<{
+    baseRef: string;
+    changedFiles: string[];
+    ignoredFiles: string[];
+    violations: string[];
+  }> {
+    const baseRef = await this.resolveGitBaseRef(cfg);
+    const changedFiles = await this.listGitChangedFiles(baseRef);
+
+    const ignoredPatterns = [
+      "context/**",
+      ".agentcore-loop/**",
+      ".git/**",
+      ...(cfg.ignored_paths ?? []),
+    ];
+
+    const normalized = changedFiles.map(normalizeRelPath);
+    const ignoredFiles: string[] = [];
+    const scoped: string[] = [];
+    for (const f of normalized) {
+      if (matchesAnyPattern(ignoredPatterns, f)) {
+        ignoredFiles.push(f);
+      } else {
+        scoped.push(f);
+      }
+    }
+
+    const allowed = cfg.allowed_paths ?? [];
+    const violations: string[] = [];
+    if (allowed.length > 0) {
+      for (const f of scoped) {
+        if (!matchesAnyPattern(allowed, f)) {
+          violations.push(f);
+        }
+      }
+    }
+
+    return {
+      baseRef,
+      changedFiles: scoped.sort(),
+      ignoredFiles: ignoredFiles.sort(),
+      violations: violations.sort(),
+    };
+  }
+
+  private async resolveGitBaseRef(cfg: ConvergenceDef): Promise<string> {
+    if (cfg.diff_base_ref && cfg.diff_base_ref.trim()) {
+      return cfg.diff_base_ref.trim();
+    }
+    if (cfg.diff_base_ref_file && cfg.diff_base_ref_file.trim()) {
+      const full = resolveWithin(this.workspaceDir, cfg.diff_base_ref_file.trim());
+      const content = await readFile(full, "utf-8").catch(() => "");
+      const firstLine = content.split("\n")[0]?.trim() ?? "";
+      if (firstLine) return firstLine;
+    }
+    return "HEAD";
+  }
+
+  private async listGitChangedFiles(baseRef: string): Promise<string[]> {
+    // Tracked changes (baseRef -> working tree).
+    const tracked = await runCommand(this.workspaceDir, ["git", "diff", "--name-only", baseRef]);
+    if (tracked.code !== 0 && tracked.code !== 1) {
+      throw new Error(`git diff failed (code ${tracked.code}): ${tracked.stderr.trim() || tracked.stdout.trim()}`);
+    }
+
+    // Untracked (non-ignored).
+    const untracked = await runCommand(this.workspaceDir, ["git", "ls-files", "--others", "--exclude-standard"]);
+    if (untracked.code !== 0) {
+      throw new Error(`git ls-files failed (code ${untracked.code}): ${untracked.stderr.trim() || untracked.stdout.trim()}`);
+    }
+
+    const set = new Set<string>();
+    for (const line of tracked.stdout.split("\n")) {
+      const v = line.trim();
+      if (v) set.add(v);
+    }
+    for (const line of untracked.stdout.split("\n")) {
+      const v = line.trim();
+      if (v) set.add(v);
+    }
+    return [...set];
+  }
+
+  private async writeConvergenceJson(stepId: string, name: string, data: unknown): Promise<void> {
+    const dir = this.contextManager.getArtifactPath(stepId, CONVERGENCE_ARTIFACT_DIR);
+    await mkdir(dir, { recursive: true });
+    const p = path.join(dir, name);
+    await writeFile(p, JSON.stringify(data, null, 2));
   }
 
   // -----------------------------------------------------------------------
@@ -641,5 +1124,147 @@ export class WorkflowExecutor {
   private createStepAbort(): AbortSignal {
     // Link to workflow-level abort
     return this.workflowAbortController!.signal;
+  }
+}
+
+function normalizeSignalList(list: string[] | undefined, limit: number): string[] | undefined {
+  if (!list || list.length === 0) return undefined;
+  const out: string[] = [];
+  for (const v of list) {
+    if (typeof v !== "string") continue;
+    const s = v.trim();
+    if (!s) continue;
+    out.push(s.length > 240 ? s.slice(0, 240) : s);
+    if (out.length >= limit) break;
+  }
+  if (out.length === 0) return undefined;
+  // Deduplicate while preserving order.
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const s of out) {
+    if (seen.has(s)) continue;
+    seen.add(s);
+    deduped.push(s);
+  }
+  return deduped;
+}
+
+function mergeStringLists(
+  a: string[] | undefined,
+  b: string[] | undefined,
+  limit: number,
+): string[] | undefined {
+  const merged = normalizeSignalList([...(a ?? []), ...(b ?? [])], limit);
+  return merged;
+}
+
+function hashStrings(items: string[]): string {
+  const stable = [...new Set(items.map((s) => s.trim()).filter(Boolean))].sort();
+  const h = createHash("sha256");
+  h.update(stable.join("\n"), "utf8");
+  return h.digest("hex");
+}
+
+function normalizeRelPath(p: string): string {
+  let s = p.replace(/\\/g, "/");
+  while (s.startsWith("./")) s = s.slice(2);
+  while (s.startsWith("/")) s = s.slice(1);
+  // Collapse accidental repeated slashes.
+  s = s.replace(/\/+/g, "/");
+  return s;
+}
+
+function matchesAnyPattern(patterns: string[], file: string): boolean {
+  const f = normalizeRelPath(file);
+  for (const p of patterns) {
+    if (matchesPattern(p, f)) return true;
+  }
+  return false;
+}
+
+function matchesPattern(pattern: string, file: string): boolean {
+  const patRaw = typeof pattern === "string" ? pattern.trim() : "";
+  if (!patRaw) return false;
+  let pat = normalizeRelPath(patRaw);
+
+  // Fast path: no wildcards => treat as path prefix.
+  if (!hasWildcard(pat)) {
+    // Allow both "dir" and "dir/" forms.
+    if (pat.endsWith("/")) pat = pat.slice(0, -1);
+    return file === pat || file.startsWith(pat + "/");
+  }
+
+  const re = globToRegExp(pat);
+  return re.test(file);
+}
+
+function hasWildcard(pattern: string): boolean {
+  return pattern.includes("*") || pattern.includes("?") || pattern.includes("[");
+}
+
+function globToRegExp(glob: string): RegExp {
+  // Very small glob subset:
+  // - "**" => ".*" (crosses path separators)
+  // - "*"  => "[^/]*" (single segment)
+  // - "?"  => "[^/]" (single char in segment)
+  const g = normalizeRelPath(glob);
+  let re = "^";
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!;
+    if (c === "*") {
+      if (g[i + 1] === "*") {
+        i++;
+        re += ".*";
+      } else {
+        re += "[^/]*";
+      }
+      continue;
+    }
+    if (c === "?") {
+      re += "[^/]";
+      continue;
+    }
+    re += escapeRegExpChar(c);
+  }
+  re += "$";
+  return new RegExp(re);
+}
+
+function escapeRegExpChar(c: string): string {
+  return /[\\^$.*+?()[\]{}|]/.test(c) ? `\\${c}` : c;
+}
+
+function resolveWithin(baseDir: string, relPath: string): string {
+  const segments = relPath.split(/[\\/]/);
+  if (segments.includes("..")) {
+    throw new Error(`Path traversal detected: ${relPath}`);
+  }
+  const resolvedBase = path.resolve(baseDir);
+  const resolved = path.resolve(baseDir, relPath);
+  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + path.sep)) {
+    throw new Error(`Path traversal detected: ${relPath}`);
+  }
+  return resolved;
+}
+
+async function runCommand(
+  cwd: string,
+  command: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const proc = Bun.spawn(command, {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { code, stdout, stderr };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { code: 127, stdout: "", stderr: msg };
   }
 }

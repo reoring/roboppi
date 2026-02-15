@@ -139,9 +139,28 @@ interface StepDefinition {
   max_steps?: number;
   max_command_time?: DurationString;
   completion_check?: CompletionCheckDef;
+  convergence?: ConvergenceDef;         // optional; opt-in convergence control for loops
   max_iterations?: number;              // default: 1 (no loop)
   on_iterations_exhausted?: "abort" | "continue";
   on_failure?: "retry" | "continue" | "abort";
+}
+
+interface ConvergenceStageDef {
+  stage: number;                        // 2..max_stage
+  append_instructions?: string;
+}
+
+interface ConvergenceDef {
+  enabled?: boolean;                    // default: false
+  stall_threshold?: number;             // default: 2
+  max_stage?: number;                   // default: 3
+  fail_on_max_stage?: boolean;          // default: true
+  stages?: ConvergenceStageDef[];
+  allowed_paths?: string[];
+  ignored_paths?: string[];
+  diff_base_ref?: string;               // default: HEAD
+  diff_base_ref_file?: string;
+  max_changed_files?: number;
 }
 
 interface CompletionCheckDef {
@@ -149,6 +168,7 @@ interface CompletionCheckDef {
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
   timeout?: DurationString;
+  decision_file?: string; // optional; supports JSON {"decision":"complete"/"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]} and legacy PASS/FAIL
 }
 
 interface InputRef {

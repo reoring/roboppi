@@ -125,6 +125,19 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+async function runCmd(
+  cwd: string,
+  command: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -273,6 +286,115 @@ describe("WorkflowExecutor", () => {
         expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
         const copied = await readFile(path.join(ctxDir, "A", "out", "out.txt"), "utf-8");
         expect(copied).toBe("from-check");
+      });
+    });
+
+    it("escalates convergence stage on repeating fingerprints and fails at max_stage", async () => {
+      await withTempDir(async (dir) => {
+        const instructionsByIter: string[] = [];
+        const runner = new MockStepRunner(
+          async (_stepId, step) => {
+            instructionsByIter.push(step.instructions);
+            return { status: "SUCCEEDED" };
+          },
+          async () => ({
+            complete: false,
+            failed: false,
+            fingerprints: ["fp:test:one"],
+          }),
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 10,
+            on_iterations_exhausted: "abort",
+            convergence: {
+              enabled: true,
+              stall_threshold: 2,
+              max_stage: 3,
+              fail_on_max_stage: true,
+            },
+          }),
+        });
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.FAILED);
+        expect(result.steps["A"]!.status).toBe(StepStatus.FAILED);
+        expect(result.steps["A"]!.iteration).toBe(4);
+        expect(result.steps["A"]!.convergenceStage).toBe(3);
+        expect(instructionsByIter.length).toBe(4);
+        expect(instructionsByIter[0]!).not.toContain("[Convergence Controller]");
+        expect(instructionsByIter[2]!).toContain("[Convergence Controller]");
+
+        const stateJson = await readFile(
+          path.join(ctxDir, "A", "_convergence", "state.json"),
+          "utf-8",
+        );
+        const parsed = JSON.parse(stateJson) as { stage?: number };
+        expect(parsed.stage).toBeDefined();
+      });
+    });
+
+    it("forces INCOMPLETE when allowed_paths is violated (even if check says complete)", async () => {
+      await withTempDir(async (dir) => {
+        await runCmd(dir, ["git", "init"]);
+        await writeFile(path.join(dir, "README.md"), "init\n", "utf-8");
+        await runCmd(dir, ["git", "add", "README.md"]);
+        await runCmd(dir, [
+          "git",
+          "-c",
+          "user.name=test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-m",
+          "init",
+        ]);
+
+        const runner = new MockStepRunner(
+          async () => {
+            // Create an out-of-scope untracked file.
+            await writeFile(path.join(dir, "outside.txt"), "oops\n", "utf-8");
+            return { status: "SUCCEEDED" };
+          },
+          async () => ({ complete: true, failed: false }),
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 2,
+            on_iterations_exhausted: "abort",
+            convergence: {
+              enabled: true,
+              stall_threshold: 99,
+              max_stage: 3,
+              fail_on_max_stage: true,
+              allowed_paths: ["README.md"],
+            },
+          }),
+        });
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.FAILED);
+        expect(result.steps["A"]!.iteration).toBe(2);
+        expect(result.steps["A"]!.error).toContain("Max iterations exhausted");
       });
     });
   });

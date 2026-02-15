@@ -78,9 +78,29 @@ const logger = {
 
 // IPC transport: JSONL over either stdio or a supervised IPC socket.
 const ipcSocketPath = process.env.AGENTCORE_IPC_SOCKET_PATH?.trim();
-const ipcSocket: Socket | null = ipcSocketPath
-  ? createConnection(ipcSocketPath)
-  : null;
+const ipcSocketHost = process.env.AGENTCORE_IPC_SOCKET_HOST?.trim();
+const ipcSocketPortRaw = process.env.AGENTCORE_IPC_SOCKET_PORT?.trim();
+
+let ipcSocket: Socket | null = null;
+let ipcSocketKind: "unix" | "tcp" | null = null;
+let resolvedIpcHost: string | undefined;
+let resolvedIpcPort: number | undefined;
+
+// Prefer TCP host/port when provided (useful for environments where Unix sockets are blocked).
+if (ipcSocketPortRaw) {
+  const port = Number.parseInt(ipcSocketPortRaw, 10);
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid AGENTCORE_IPC_SOCKET_PORT: "${ipcSocketPortRaw}"`);
+  }
+  const host = ipcSocketHost && ipcSocketHost !== "" ? ipcSocketHost : "127.0.0.1";
+  ipcSocket = createConnection({ host, port });
+  ipcSocketKind = "tcp";
+  resolvedIpcHost = host;
+  resolvedIpcPort = port;
+} else if (ipcSocketPath) {
+  ipcSocket = createConnection(ipcSocketPath);
+  ipcSocketKind = "unix";
+}
 
 if (ipcSocket) {
   try {
@@ -183,6 +203,8 @@ process.on("unhandledRejection", (reason) => {
 logger.info("AgentCore starting");
 core.start();
 logger.info("AgentCore started, awaiting IPC messages", {
-  transport: ipcSocket ? "socket" : "stdio",
-  socketPath: ipcSocketPath || undefined,
+  transport: ipcSocket ? (ipcSocketKind === "tcp" ? "tcp" : "socket") : "stdio",
+  socketPath: ipcSocketKind === "unix" ? (ipcSocketPath || undefined) : undefined,
+  socketHost: ipcSocketKind === "tcp" ? resolvedIpcHost : undefined,
+  socketPort: ipcSocketKind === "tcp" ? resolvedIpcPort : undefined,
 });

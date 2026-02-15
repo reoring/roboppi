@@ -205,6 +205,7 @@ async function main(): Promise<void> {
   //
   // Some non-interactive runners exhibit broken stdio pipes between parent/child
   // processes. Use the socket transport by default in non-interactive mode.
+  // (Override via AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp.)
   if (supervised && process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT === undefined) {
     process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
   }

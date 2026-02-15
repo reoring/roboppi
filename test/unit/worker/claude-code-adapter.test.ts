@@ -77,6 +77,7 @@ function makeMockProcess(
     stdout: stdoutStream,
     stderr: stderrStream,
     exitPromise,
+    processGroup: false,
   };
 }
 

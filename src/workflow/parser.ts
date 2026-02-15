@@ -22,6 +22,71 @@ function validateOptionalString(value: unknown, field: string): void {
   assertString(value, field);
 }
 
+function validateOptionalBoolean(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw new WorkflowParseError(`"${field}" must be a boolean`);
+  }
+}
+
+function validateOptionalNumber(value: unknown, field: string, opts?: { min?: number }): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new WorkflowParseError(`"${field}" must be a finite number`);
+  }
+  if (opts?.min !== undefined && value < opts.min) {
+    throw new WorkflowParseError(`"${field}" must be >= ${opts.min}`);
+  }
+}
+
+function validateOptionalStringArray(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new WorkflowParseError(`"${field}" must be an array`);
+  }
+  for (const v of value) {
+    if (typeof v !== "string" || v.trim() === "") {
+      throw new WorkflowParseError(`"${field}" must contain only non-empty strings`);
+    }
+  }
+}
+
+function validateConvergence(value: unknown, stepId: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`steps.${stepId}.convergence must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], `steps.${stepId}.convergence.enabled`);
+  validateOptionalNumber(obj["stall_threshold"], `steps.${stepId}.convergence.stall_threshold`, { min: 1 });
+  validateOptionalNumber(obj["max_stage"], `steps.${stepId}.convergence.max_stage`, { min: 1 });
+  validateOptionalBoolean(obj["fail_on_max_stage"], `steps.${stepId}.convergence.fail_on_max_stage`);
+
+  validateOptionalStringArray(obj["allowed_paths"], `steps.${stepId}.convergence.allowed_paths`);
+  validateOptionalStringArray(obj["ignored_paths"], `steps.${stepId}.convergence.ignored_paths`);
+  validateOptionalString(obj["diff_base_ref"], `steps.${stepId}.convergence.diff_base_ref`);
+  validateOptionalString(obj["diff_base_ref_file"], `steps.${stepId}.convergence.diff_base_ref_file`);
+  validateOptionalNumber(obj["max_changed_files"], `steps.${stepId}.convergence.max_changed_files`, { min: 1 });
+
+  if (obj["stages"] !== undefined) {
+    if (!Array.isArray(obj["stages"])) {
+      throw new WorkflowParseError(`steps.${stepId}.convergence.stages must be an array`);
+    }
+    for (const s of obj["stages"]) {
+      if (typeof s !== "object" || s === null || Array.isArray(s)) {
+        throw new WorkflowParseError(`steps.${stepId}.convergence.stages entries must be objects`);
+      }
+      const st = s as Record<string, unknown>;
+      validateOptionalNumber(st["stage"], `steps.${stepId}.convergence.stages[].stage`, { min: 2 });
+      if (typeof st["stage"] !== "number") {
+        throw new WorkflowParseError(`steps.${stepId}.convergence.stages[].stage is required`);
+      }
+      validateOptionalString(st["append_instructions"], `steps.${stepId}.convergence.stages[].append_instructions`);
+    }
+  }
+}
+
 function validateWorker(value: unknown, field: string): void {
   if (typeof value !== "string" || !VALID_WORKERS.has(value)) {
     throw new WorkflowParseError(
@@ -125,6 +190,9 @@ function validateStep(stepId: string, step: unknown): StepDefinition {
       );
     }
   }
+
+  // Validate convergence config (opt-in)
+  validateConvergence(obj["convergence"], stepId);
 
   // Validate on_failure enum
   if (obj["on_failure"] !== undefined) {
