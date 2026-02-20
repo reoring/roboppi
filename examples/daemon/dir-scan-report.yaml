@@ -1,0 +1,41 @@
+# Directory Scan Report Daemon — scan a directory every minute
+#
+# This daemon runs a workflow once per minute that:
+# - walks a target directory (no file contents are read)
+# - summarizes counts / sizes / recent changes
+# - writes a markdown report to $REPORT_DIR (default: /tmp/roboppi-dir-scan-report)
+#
+# Run (from repo root):
+#   ROBOPPI_ROOT="$PWD" \
+#   SCAN_DIR="$ROBOPPI_ROOT/docs" \
+#   REPORT_DIR=/tmp/roboppi-dir-scan-report \
+#   bun run src/daemon/cli.ts examples/daemon/dir-scan-report.yaml --verbose
+#
+# Run (binary):
+#   ROBOPPI_ROOT="$PWD" \
+#   SCAN_DIR="$ROBOPPI_ROOT/docs" \
+#   REPORT_DIR=/tmp/roboppi-dir-scan-report \
+#   ./roboppi daemon examples/daemon/dir-scan-report.yaml --verbose
+
+name: dir-scan-report
+version: "1"
+description: "Scan a directory every 1 minute and write a summary report"
+
+# Use a non-git workspace by default (avoids branch-protection guards).
+workspace: "/tmp/roboppi-daemon-dir-scan-report/workspace"
+
+# Daemon internal state (history, last result, trigger state, etc.)
+state_dir: "/tmp/roboppi-daemon-dir-scan-report/.daemon-state"
+max_concurrent_workflows: 1
+
+events:
+  tick:
+    type: interval
+    every: "1m"
+
+triggers:
+  scan:
+    on: tick
+    # Absolute workflow path, resolved from $ROBOPPI_ROOT at daemon start.
+    workflow: "${ROBOPPI_ROOT}/examples/daemon/workflows/dir-scan-report.yaml"
+    on_workflow_failure: ignore

@@ -1,0 +1,289 @@
+# Directory Scan Report — inspect a directory and write a summary report
+name: dir-scan-report
+version: "1"
+description: "Walk a directory, summarize changes, and write a markdown report"
+timeout: "2m"
+
+steps:
+  scan:
+    description: "Scan directory and write report"
+    worker: CUSTOM
+    instructions: |
+      set -euo pipefail
+
+      TARGET_DIR="${SCAN_DIR:-.}"
+      REPORT_DIR="${REPORT_DIR:-/tmp/roboppi-dir-scan-report}"
+      SCAN_MAX_ENTRIES="${SCAN_MAX_ENTRIES:-20000}"
+      SCAN_TOP_N="${SCAN_TOP_N:-20}"
+
+      mkdir -p "$REPORT_DIR"
+
+      # Prefer node; fall back to bun.
+      if command -v node >/dev/null 2>&1; then
+        JS="node"
+      elif command -v bun >/dev/null 2>&1; then
+        JS="bun"
+      else
+        echo "Error: need 'node' or 'bun' in PATH" >&2
+        exit 1
+      fi
+
+      "$JS" --input-type=commonjs <<'NODE'
+      const fs = require("node:fs/promises");
+      const path = require("node:path");
+
+      function asInt(v, fallback) {
+        const n = Number.parseInt(String(v ?? ""), 10);
+        return Number.isFinite(n) ? n : fallback;
+      }
+
+      function humanBytes(bytes) {
+        if (!Number.isFinite(bytes)) return String(bytes);
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let b = Math.max(0, bytes);
+        let i = 0;
+        while (b >= 1024 && i < units.length - 1) {
+          b /= 1024;
+          i++;
+        }
+        const fixed = i === 0 ? 0 : (b < 10 ? 2 : (b < 100 ? 1 : 0));
+        return `${b.toFixed(fixed)} ${units[i]}`;
+      }
+
+      function safeRelPath(root, fullPath) {
+        const rel = path.relative(root, fullPath);
+        return rel === "" ? "." : rel;
+      }
+
+      async function readJsonIfExists(p) {
+        try {
+          const text = await fs.readFile(p, "utf-8");
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      }
+
+      async function main() {
+        const cwd = process.cwd();
+        const targetEnv = process.env.SCAN_DIR || ".";
+        const reportDirEnv = process.env.REPORT_DIR || "/tmp/roboppi-dir-scan-report";
+        const maxEntries = asInt(process.env.SCAN_MAX_ENTRIES, 20000);
+        const topN = asInt(process.env.SCAN_TOP_N, 20);
+
+        // Comma-separated directory names to skip anywhere in the tree.
+        const ignoreNames = new Set(
+          String(process.env.SCAN_IGNORE || ".git,node_modules,.daemon-state")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+
+        const targetDir = path.resolve(cwd, targetEnv);
+        const reportDir = path.resolve(cwd, reportDirEnv);
+        await fs.mkdir(reportDir, { recursive: true });
+
+        const snapshotPath = path.join(reportDir, "last-snapshot.json");
+        const latestJsonPath = path.join(reportDir, "latest.json");
+        const latestMdPath = path.join(reportDir, "latest.md");
+
+        const prev = await readJsonIfExists(snapshotPath);
+        const prevItems = Array.isArray(prev?.items) ? prev.items : [];
+        const prevMap = new Map(prevItems.map((it) => [it.p, it]));
+
+        const now = new Date();
+        const startedAt = Date.now();
+
+        const items = [];
+        let truncated = false;
+        let fileCount = 0;
+        let dirCount = 0;
+        let totalBytes = 0;
+        const largest = [];
+        const newest = [];
+
+        const stack = [targetDir];
+        while (stack.length > 0) {
+          const dir = stack.pop();
+          let entries;
+          try {
+            entries = await fs.readdir(dir, { withFileTypes: true });
+          } catch {
+            continue;
+          }
+
+          for (const ent of entries) {
+            if (ignoreNames.has(ent.name)) continue;
+
+            const full = path.join(dir, ent.name);
+            let st;
+            try {
+              st = await fs.lstat(full);
+            } catch {
+              continue;
+            }
+
+            if (st.isSymbolicLink()) continue;
+
+            const rel = safeRelPath(targetDir, full);
+            if (items.length >= maxEntries) {
+              truncated = true;
+              break;
+            }
+
+            if (st.isDirectory()) {
+              dirCount++;
+              items.push({ p: rel, t: "d", s: 0, m: st.mtimeMs });
+              stack.push(full);
+            } else if (st.isFile()) {
+              fileCount++;
+              totalBytes += st.size;
+              const rec = { p: rel, t: "f", s: st.size, m: st.mtimeMs };
+              items.push(rec);
+
+              largest.push(rec);
+              newest.push(rec);
+            } else {
+              // ignore sockets/devices/etc.
+            }
+          }
+
+          if (truncated) break;
+        }
+
+        items.sort((a, b) => a.p.localeCompare(b.p));
+        largest.sort((a, b) => b.s - a.s);
+        newest.sort((a, b) => b.m - a.m);
+
+        const nextMap = new Map(items.map((it) => [it.p, it]));
+        const added = [];
+        const removed = [];
+        const modified = [];
+
+        for (const [p, it] of nextMap) {
+          const prevIt = prevMap.get(p);
+          if (!prevIt) {
+            added.push(it);
+          } else if (it.t === "f") {
+            if (it.s !== prevIt.s || it.m !== prevIt.m) modified.push(it);
+          } else if (it.t === "d") {
+            if (it.m !== prevIt.m) modified.push(it);
+          }
+        }
+        for (const [p, it] of prevMap) {
+          if (!nextMap.has(p)) removed.push(it);
+        }
+
+        const tookMs = Date.now() - startedAt;
+        const summary = {
+          generatedAt: now.toISOString(),
+          targetDir,
+          reportDir,
+          truncated,
+          maxEntries,
+          counts: {
+            entries: items.length,
+            files: fileCount,
+            dirs: dirCount,
+          },
+          bytes: {
+            total: totalBytes,
+            human: humanBytes(totalBytes),
+          },
+          changes: {
+            added: added.length,
+            removed: removed.length,
+            modified: modified.length,
+          },
+          tookMs,
+          top: {
+            largest: largest.slice(0, topN),
+            newest: newest.slice(0, topN),
+            added: added.slice(0, topN),
+            removed: removed.slice(0, topN),
+            modified: modified.slice(0, topN),
+          },
+        };
+
+        const snapshot = {
+          generatedAt: summary.generatedAt,
+          targetDir,
+          truncated,
+          maxEntries,
+          items,
+        };
+
+        await fs.writeFile(latestJsonPath, JSON.stringify(summary, null, 2));
+        await fs.writeFile(snapshotPath, JSON.stringify(snapshot, null, 2));
+
+        const md = [];
+        md.push(`# Directory Scan Report`);
+        md.push("");
+        md.push(`- Generated: ${summary.generatedAt}`);
+        md.push(`- Target: ${summary.targetDir}`);
+        md.push(`- Entries: ${summary.counts.entries} (files ${summary.counts.files}, dirs ${summary.counts.dirs})`);
+        md.push(`- Total size (files): ${summary.bytes.human}`);
+        md.push(`- Changes: +${summary.changes.added} / -${summary.changes.removed} / ~${summary.changes.modified}`);
+        md.push(`- Took: ${summary.tookMs} ms`);
+        if (summary.truncated) md.push(`- Note: truncated after ${summary.maxEntries} entries`);
+        md.push("");
+
+        function section(title, rows, fmt) {
+          md.push(`## ${title}`);
+          md.push("");
+          if (!rows || rows.length === 0) {
+            md.push("_(none)_");
+            md.push("");
+            return;
+          }
+          md.push("```text");
+          for (const r of rows) md.push(fmt(r));
+          md.push("```");
+          md.push("");
+        }
+
+        section(
+          `Largest files (top ${topN})`,
+          summary.top.largest,
+          (r) => `${humanBytes(r.s).padStart(10)}  ${r.p}`,
+        );
+        section(
+          `Newest files (top ${topN})`,
+          summary.top.newest,
+          (r) => `${new Date(r.m).toISOString()}  ${r.p}`,
+        );
+        section(
+          `Added (top ${topN})`,
+          summary.top.added,
+          (r) => `${r.t}  ${r.p}`,
+        );
+        section(
+          `Removed (top ${topN})`,
+          summary.top.removed,
+          (r) => `${r.t}  ${r.p}`,
+        );
+        section(
+          `Modified (top ${topN})`,
+          summary.top.modified,
+          (r) => `${r.t}  ${r.p}`,
+        );
+
+        await fs.writeFile(latestMdPath, md.join("\n"));
+
+        const oneLine = [
+          `[dir-scan-report] target=${summary.targetDir}`,
+          `entries=${summary.counts.entries}`,
+          `size=${summary.bytes.human}`,
+          `changes=+${summary.changes.added}/-${summary.changes.removed}/~${summary.changes.modified}`,
+          `report=${latestMdPath}`,
+        ].join(" ");
+        process.stdout.write(oneLine + "\n");
+      }
+
+      main().catch((err) => {
+        process.stderr.write(`dir-scan-report failed: ${err?.message ?? String(err)}\n`);
+        process.exit(1);
+      });
+      NODE
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "2m"
