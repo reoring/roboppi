@@ -1,0 +1,362 @@
+# appthrust/dashboard - Roboppi workflow
+#
+# Run example:
+#
+#   export AGENTCORE_ROOT="$HOME/roboppi"
+#
+#   bun run --cwd "$AGENTCORE_ROOT" src/workflow/run.ts \
+#     "$PWD/roboppi/workflow.yaml" \
+#     --workspace "$PWD" \
+#     --base-branch main \
+#     --supervised --verbose
+#
+# Note:
+# - In bash/zsh, `AGENTCORE_ROOT=... bun ... "$AGENTCORE_ROOT"` will expand to the *previous* value.
+#   Set it with `export` first (as above), or use the literal path for `--cwd`.
+
+name: appthrust-dashboard-roboppi
+version: "1"
+description: "Implement roboppi/request.md as a scoped change for AppThrust Dashboard"
+timeout: "240m"
+concurrency: 1
+
+# Keep Roboppi artifacts under PROJECT_ROOT/roboppi/
+context_dir: "./roboppi/context"
+
+# Branch safety (see ~/roboppi/docs/guides/branch.ja.md)
+create_branch: true
+branch_transition_step: "branch"
+
+steps:
+  bootstrap:
+    description: "Validate tools and initialize Roboppi artifacts"
+    worker: CUSTOM
+    instructions: |
+      set -euo pipefail
+
+      if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "Error: workspace must be a git repository" >&2
+        exit 1
+      fi
+
+      mkdir -p roboppi
+
+      # Fail fast if request is missing/empty.
+      if [ ! -f roboppi/request.md ]; then
+        echo "Error: roboppi/request.md not found" >&2
+        exit 1
+      fi
+      REQ_BYTES=$(wc -c < roboppi/request.md | tr -d ' ')
+      if [ "${REQ_BYTES}" -lt 200 ]; then
+        echo "Error: roboppi/request.md is too small. Please fill it in first." >&2
+        exit 1
+      fi
+
+      # Clear derived artifacts from prior runs (keep request + branch/base settings).
+      rm -f \
+        roboppi/design.md \
+        roboppi/todo.md \
+        roboppi/fix.md \
+        roboppi/review.md \
+        roboppi/review.verdict \
+        roboppi/review.base_ref \
+        roboppi/review.diff \
+        roboppi/review.status \
+        roboppi/review.untracked \
+        roboppi/review.untracked.diff \
+        roboppi/validate.ok
+
+      # Tools required by this workflow.
+      command -v bun > /dev/null 2>&1 || { echo "Error: bun not found in PATH" >&2; exit 1; }
+      command -v opencode > /dev/null 2>&1 || { echo "Error: opencode not found in PATH" >&2; exit 1; }
+      command -v claude > /dev/null 2>&1 || { echo "Error: claude not found in PATH" >&2; exit 1; }
+
+      # Persist base branch name for review input generation.
+      if [ -n "${BASE_BRANCH:-}" ]; then
+        echo "${BASE_BRANCH}" > roboppi/base-branch.txt
+      elif [ ! -f roboppi/base-branch.txt ]; then
+        echo "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)" > roboppi/base-branch.txt
+      fi
+
+      echo "OK" > roboppi/bootstrap.ok
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "3m"
+
+  branch:
+    description: "Create or reuse a working branch"
+    worker: CUSTOM
+    depends_on: [bootstrap]
+    instructions: |
+      set -euo pipefail
+
+      mkdir -p roboppi
+      BASE_BRANCH=$(cat roboppi/base-branch.txt 2>/dev/null || echo "${BASE_BRANCH:-main}")
+      BRANCH_FILE=roboppi/branch.txt
+
+      if [ -f "${BRANCH_FILE}" ] && [ -n "$(tr -d ' ' < "${BRANCH_FILE}")" ]; then
+        BRANCH=$(cat "${BRANCH_FILE}")
+      else
+        BRANCH="roboppi/features-$(date +%Y%m%d-%H%M%S)"
+        echo "${BRANCH}" > "${BRANCH_FILE}"
+      fi
+
+      # Prefer the deterministic base commit resolved by Roboppi at startup.
+      BASE_REF=""
+      if [ -n "${AGENTCORE_EFFECTIVE_BASE_SHA:-}" ] \
+        && git cat-file -e "${AGENTCORE_EFFECTIVE_BASE_SHA}^{commit}" 2>/dev/null; then
+        BASE_REF="${AGENTCORE_EFFECTIVE_BASE_SHA}"
+      else
+        git fetch origin "${BASE_BRANCH}" > /dev/null 2>&1 || true
+        git fetch origin "${BRANCH}" > /dev/null 2>&1 || true
+        if git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
+          BASE_REF="${BASE_BRANCH}"
+        elif git show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
+          BASE_REF="origin/${BASE_BRANCH}"
+        else
+          BASE_REF="HEAD"
+        fi
+      fi
+
+      if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
+        git checkout "${BRANCH}"
+        ACTION="reuse-local"
+      elif git show-ref --verify --quiet "refs/remotes/origin/${BRANCH}"; then
+        git checkout -b "${BRANCH}" --track "origin/${BRANCH}"
+        ACTION="track-remote"
+      else
+        git checkout -b "${BRANCH}" "${BASE_REF}"
+        ACTION="create-from-base"
+      fi
+
+      echo "BRANCH=${BRANCH} BASE_REF=${BASE_REF} ACTION=${ACTION}"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "2m"
+
+  deps:
+    description: "Install dependencies (idempotent)"
+    worker: CUSTOM
+    depends_on: [branch]
+    instructions: |
+      set -euo pipefail
+      bun install
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "15m"
+
+  design:
+    description: "Produce an implementation plan (no code changes)"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    depends_on: [deps]
+    instructions: |
+      You are OpenCode.
+
+      Task: Produce an implementation plan ONLY (no code changes in this step).
+
+      Read:
+      - roboppi/request.md
+      - README.md
+      - docs/design/README.md
+      - docs/design/auth.md
+      - docs/design/auth-keycloak-authjs.md
+      - docs/design/auth-signin-keycloak-integration.md
+
+      Write/update:
+      - roboppi/design.md
+
+      Requirements for roboppi/design.md:
+      - MVP scope declaration (what you WILL / WILL NOT implement now)
+      - Route map (TanStack Router file routes -> URL paths)
+      - UI components to build/reuse (by file path)
+      - Data fetching / local mock strategy (if backend not in scope)
+      - Auth/session considerations (if request touches auth)
+      - Edge cases + risks
+      - Verification plan (commands + key manual flows)
+      - Acceptance criteria checklist (copy from request, refine if needed)
+    capabilities: [READ, EDIT]
+    timeout: "30m"
+    on_failure: retry
+    max_retries: 1
+    outputs:
+      - name: design
+        path: "roboppi/design.md"
+        type: review
+
+  todo:
+    description: "Turn the plan into a concrete TODO checklist"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    depends_on: [design]
+    instructions: |
+      You are OpenCode.
+
+      Task: Convert the plan into an implementation TODO checklist.
+
+      Read:
+      - roboppi/request.md
+      - roboppi/design.md
+      - README.md
+      - docs/design/auth.md
+
+      Write/update:
+      - roboppi/todo.md
+
+      TODO requirements:
+      - Use Markdown checklist items: "- [ ] ..."
+      - Group by milestones (small batches)
+      - Include file paths whenever possible
+      - Include required repo checks: bun run lint / bun run format:check / bun run build
+      - Include at least 2 manual validation flows
+
+      If roboppi/todo.md already exists, improve it to satisfy the requirements.
+    capabilities: [READ, EDIT]
+    timeout: "30m"
+    on_failure: retry
+    max_retries: 1
+
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        set -euo pipefail
+        TODO=roboppi/todo.md
+        test -s "${TODO}" || { echo "CHECK: missing todo"; exit 1; }
+
+        COUNT=$(grep -c '^- \[ \] ' "${TODO}" || true)
+        if [ "${COUNT}" -lt 10 ]; then
+          echo "CHECK: too few tasks: ${COUNT}"
+          exit 1
+        fi
+
+        if ! grep -Eqi '(bun run lint|bun run format:check|bun run build)' "${TODO}"; then
+          echo "CHECK: missing required validation commands"
+          exit 1
+        fi
+
+        if ! grep -Eq '([A-Za-z0-9_./-]+\.(ts|tsx|js|jsx|md|yml|yaml|json))' "${TODO}"; then
+          echo "CHECK: no file-path hints found"
+          exit 1
+        fi
+
+        echo "CHECK: todo looks complete"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "45s"
+
+    max_iterations: 3
+    on_iterations_exhausted: abort
+    outputs:
+      - name: todo
+        path: "roboppi/todo.md"
+        type: code
+
+  implement:
+    description: "Implement the change set (scoped MVP)"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    depends_on: [todo]
+    instructions: |
+      You are Claude Code.
+
+      Read:
+      - roboppi/request.md
+      - roboppi/design.md
+      - roboppi/todo.md
+      - roboppi/fix.md (if present)
+      - README.md
+      - docs/design/auth.md
+
+      Task:
+      - If roboppi/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted).
+      - Otherwise, implement the TODO checklist.
+      - Update roboppi/todo.md checkboxes as you complete items.
+      - Do not add secrets. Do not commit .env files.
+
+      Mandatory verification (fix failures):
+      - bun run lint
+      - bun run format:check (run bun run format if needed)
+      - bun run build
+
+      Mandatory: generate deterministic review inputs for a checker (overwrite each run):
+      - roboppi/review.base_ref
+      - roboppi/review.diff
+      - roboppi/review.status
+      - roboppi/review.untracked
+      - roboppi/review.untracked.diff
+
+      Use this exact script at the end of the run:
+
+      ```bash
+      set -euo pipefail
+      mkdir -p roboppi
+
+      # Prefer deterministic base SHA if available.
+      if [ -n "${AGENTCORE_EFFECTIVE_BASE_SHA:-}" ] \
+        && git cat-file -e "${AGENTCORE_EFFECTIVE_BASE_SHA}^{commit}" 2>/dev/null; then
+        BASE_REF="${AGENTCORE_EFFECTIVE_BASE_SHA}"
+      else
+        BASE_BRANCH=$(cat roboppi/base-branch.txt 2>/dev/null || echo main)
+        git fetch origin "${BASE_BRANCH}" >/dev/null 2>&1 || true
+        if git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
+          BASE_REF="${BASE_BRANCH}"
+        elif git show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
+          BASE_REF="origin/${BASE_BRANCH}"
+        else
+          BASE_REF="HEAD"
+        fi
+      fi
+      echo "${BASE_REF}" > roboppi/review.base_ref
+      git diff --no-color "${BASE_REF}" > roboppi/review.diff || true
+      git status --porcelain=v1 > roboppi/review.status || true
+      git ls-files --others --exclude-standard > roboppi/review.untracked || true
+
+      # bounded untracked diffs
+      MAX_FILES=200
+      MAX_FILE_BYTES=200000
+      MAX_TOTAL_BYTES=2000000
+      out=roboppi/review.untracked.diff
+      : > "${out}"
+      count=0
+      total=0
+      while IFS= read -r f; do
+        [ -n "${f}" ] || continue
+        [ -f "${f}" ] || continue
+        count=$((count + 1))
+        if [ "${count}" -gt "${MAX_FILES}" ]; then
+          printf 'NOTE: untracked diff truncated after %s files\n' "${MAX_FILES}" >> "${out}"
+          break
+        fi
+        bytes=$(wc -c < "${f}" | tr -d ' ')
+        if [ "${bytes}" -gt "${MAX_FILE_BYTES}" ]; then
+          printf 'NOTE: skipped large untracked file (%s bytes): %s\n' "${bytes}" "${f}" >> "${out}"
+          continue
+        fi
+        if [ $((total + bytes)) -gt "${MAX_TOTAL_BYTES}" ]; then
+          printf 'NOTE: untracked diff truncated at ~%s bytes\n' "${MAX_TOTAL_BYTES}" >> "${out}"
+          break
+        fi
+        total=$((total + bytes))
+        git diff --no-color --no-index -- /dev/null "${f}" >> "${out}" || true
+        printf '\n' >> "${out}"
+      done < roboppi/review.untracked
+      ```
+
+      At the end, briefly report what you implemented and how to verify.
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
+    timeout: "120m"
+    on_failure: retry
+    max_retries: 1
+
+  validate:
+    description: "Run repo checks (lint/format/build)"
+    worker: CUSTOM
+    depends_on: [implement]
+    instructions: |
+      set -euo pipefail
+      bun run lint
+      bun run format:check
+      bun run build
+      echo "OK" > roboppi/validate.ok
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "30m"
+    outputs:
+      - name: validate
+        path: "roboppi/validate.ok"
+        type: text
