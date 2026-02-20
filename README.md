@@ -4,6 +4,13 @@
   <img src="assets/roboppi-hero.png" alt="Roboppi" width="900" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/reoring/roboppi/actions/workflows/ci.yml"><img src="https://github.com/reoring/roboppi/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/reoring/roboppi/releases/latest"><img src="https://img.shields.io/github/v/release/reoring/roboppi" alt="GitHub Release" /></a>
+  <a href="https://github.com/reoring/roboppi"><img src="https://img.shields.io/github/stars/reoring/roboppi?style=social" alt="GitHub Stars" /></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun" alt="Bun" /></a>
+</p>
+
 English | [日本語](README.ja.md)
 
 Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for agentic workers. It does not try to be "the agent" — it enforces safety invariants around external worker CLIs (OpenCode / Claude Code / Codex CLI / plain shell), so your automation stops when it should, stays within budgets, and leaves a trail you can audit.

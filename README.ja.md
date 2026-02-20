@@ -4,6 +4,13 @@
   <img src="assets/roboppi-hero.png" alt="Roboppi" width="900" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/reoring/roboppi/actions/workflows/ci.yml"><img src="https://github.com/reoring/roboppi/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/reoring/roboppi/releases/latest"><img src="https://img.shields.io/github/v/release/reoring/roboppi" alt="GitHub Release" /></a>
+  <a href="https://github.com/reoring/roboppi"><img src="https://img.shields.io/github/stars/reoring/roboppi?style=social" alt="GitHub Stars" /></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun" alt="Bun" /></a>
+</p>
+
 [English](README.md) | 日本語
 
 Roboppi（ろぼっぴ）は、エージェント（worker）の実行を安全に制御するための「実行制御ランタイム」です。Roboppi 自身がエージェントとして仕事をするのではなく、外部の worker CLI（OpenCode / Claude Code / Codex CLI / シェル）に重い作業を委譲し、安全の不変条件（止める・制限する・観測する・隔離する）を強制します。
