@@ -76,6 +76,21 @@ Design docs:
 
 ## Install
 
+### Prebuilt binary (recommended)
+
+Install the latest release to `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` is not writable):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reoring/roboppi/main/install.sh | bash
+roboppi --help
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reoring/roboppi/main/install.sh | bash -s -- --tag v0.1.0
+```
+
 Prerequisites:
 
 - Bun (CI uses Bun 1.3.8)
