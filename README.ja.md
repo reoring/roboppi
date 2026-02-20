@@ -72,6 +72,21 @@ Supervisor / Runner（policy, 親プロセス）
 
 ## インストール
 
+### ビルド済みバイナリ（推奨）
+
+最新リリースを `/usr/local/bin` にインストールします（`/usr/local/bin` が書き込めない場合は `~/.local/bin`）。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reoring/roboppi/main/install.sh | bash
+roboppi --help
+```
+
+特定バージョンを入れる場合:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reoring/roboppi/main/install.sh | bash -s -- --tag v0.1.0
+```
+
 前提:
 
 - Bun（CI は Bun 1.3.8）
