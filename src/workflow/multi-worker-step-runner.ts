@@ -7,16 +7,16 @@
  *
  * This allows workflow YAML to specify real worker kinds directly.
  */
-import path from "node:path";
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { ShellStepRunner } from "./shell-step-runner.js";
-import { parseDuration } from "./duration.js";
 import {
   extractWorkerText,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
+  COMPLETION_CHECK_ID_ENV_ROBOPPI,
 } from "./completion-decision.js";
+import { resolveTaskLike, buildWorkerTask } from "./resolve-worker-task.js";
 
 import { ProcessManager } from "../worker/process-manager.js";
 import type { WorkerAdapter, WorkerEvent } from "../worker/worker-adapter.js";
@@ -25,9 +25,6 @@ import { ClaudeCodeAdapter } from "../worker/adapters/claude-code-adapter.js";
 import { CodexCliAdapter } from "../worker/adapters/codex-cli-adapter.js";
 
 import {
-  WorkerKind,
-  WorkerCapability,
-  OutputMode,
   WorkerStatus,
   generateId,
   ErrorClass,
@@ -35,27 +32,6 @@ import {
 import type { WorkerTask, WorkerResult } from "../types/index.js";
 
 type LlmWorker = Exclude<StepDefinition["worker"], "CUSTOM">;
-
-type WorkerTaskDef = {
-  workspace?: string;
-  instructions: string;
-  capabilities: StepDefinition["capabilities"];
-  timeout?: StepDefinition["timeout"];
-  max_steps?: StepDefinition["max_steps"];
-  max_command_time?: StepDefinition["max_command_time"];
-  model?: StepDefinition["model"];
-};
-
-function toWorkerKind(worker: LlmWorker): WorkerKind {
-  switch (worker) {
-    case "OPENCODE":
-      return WorkerKind.OPENCODE;
-    case "CLAUDE_CODE":
-      return WorkerKind.CLAUDE_CODE;
-    case "CODEX_CLI":
-      return WorkerKind.CODEX_CLI;
-  }
-}
 
 export class MultiWorkerStepRunner implements StepRunner {
   private readonly shell: ShellStepRunner;
@@ -91,7 +67,8 @@ export class MultiWorkerStepRunner implements StepRunner {
       return { status: "FAILED", errorClass: ErrorClass.NON_RETRYABLE };
     }
 
-    const task = this.buildWorkerTask(step, workspaceDir, abortSignal, env, toWorkerKind(step.worker));
+    const resolved = resolveTaskLike(step, workspaceDir, env);
+    const task = buildWorkerTask(resolved, abortSignal);
     return this.runViaAdapter(stepId, adapter, task);
   }
 
@@ -113,18 +90,15 @@ export class MultiWorkerStepRunner implements StepRunner {
 
     const checkStartedAt = Date.now();
     const checkId = generateId();
-    const task = this.buildWorkerTask(
-      check,
-      workspaceDir,
-      abortSignal,
-      check.decision_file
-        ? {
-            ...(env ?? {}),
-            [COMPLETION_CHECK_ID_ENV]: checkId,
-          }
-        : env,
-      toWorkerKind(check.worker),
-    );
+    const checkEnv = check.decision_file
+      ? {
+        ...(env ?? {}),
+        [COMPLETION_CHECK_ID_ENV]: checkId,
+        [COMPLETION_CHECK_ID_ENV_ROBOPPI]: checkId,
+      }
+      : env;
+    const resolved = resolveTaskLike(check, workspaceDir, checkEnv);
+    const task = buildWorkerTask(resolved, abortSignal);
     const result = await this.runWorkerTask(stepId, adapter, task);
 
     if (result.status !== WorkerStatus.SUCCEEDED) {
@@ -175,44 +149,6 @@ export class MultiWorkerStepRunner implements StepRunner {
       decisionCheckIdMatch: decision.checkIdMatch,
       ...(decision.reasons ? { reasons: decision.reasons } : {}),
       ...(decision.fingerprints ? { fingerprints: decision.fingerprints } : {}),
-    };
-  }
-
-  private buildWorkerTask(
-    def: WorkerTaskDef,
-    workspaceDir: string,
-    abortSignal: AbortSignal,
-    env?: Record<string, string>,
-    workerKind: WorkerKind = WorkerKind.CUSTOM,
-  ): WorkerTask {
-    const workspaceRef = def.workspace
-      ? path.resolve(workspaceDir, def.workspace)
-      : workspaceDir;
-
-    // If a step-level timeout is provided, also set a deadline.
-    const deadlineAt = def.timeout
-      ? Date.now() + parseDuration(def.timeout)
-      : Date.now() + 24 * 60 * 60 * 1000;
-
-    const maxCommandTimeMs = def.max_command_time
-      ? parseDuration(def.max_command_time)
-      : undefined;
-
-    return {
-      workerTaskId: generateId(),
-      workerKind,
-      workspaceRef,
-      instructions: def.instructions,
-      capabilities: def.capabilities.map((c) => WorkerCapability[c]),
-      outputMode: OutputMode.BATCH,
-      ...(def.model ? { model: def.model } : {}),
-      budget: {
-        deadlineAt,
-        ...(def.max_steps !== undefined ? { maxSteps: def.max_steps } : {}),
-        ...(maxCommandTimeMs !== undefined ? { maxCommandTimeMs } : {}),
-      },
-      env,
-      abortSignal,
     };
   }
 

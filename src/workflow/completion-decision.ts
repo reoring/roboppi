@@ -25,7 +25,11 @@ export interface CompletionDecisionResolution {
   fingerprints?: string[];
 }
 
+// Completion-check correlation id.
+//
+// Legacy name is kept for compatibility; the runner also sets ROBOPPI_COMPLETION_CHECK_ID.
 export const COMPLETION_CHECK_ID_ENV = "AGENTCORE_COMPLETION_CHECK_ID";
+export const COMPLETION_CHECK_ID_ENV_ROBOPPI = "ROBOPPI_COMPLETION_CHECK_ID";
 const STALE_DECISION_FILE_GRACE_MS = 2_000;
 
 const RE_COMPLETE = /\bCOMPLETE\b/i;

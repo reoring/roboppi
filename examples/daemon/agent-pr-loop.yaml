@@ -1,16 +1,16 @@
 # Agent PR Loop Daemon — manual kick + workflow loop
 #
 # Start (from repo root):
-#   bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --supervised --verbose
+#   bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --verbose
 #
 # Start (from any directory):
-#   AGENTCORE_ROOT=/path/to/agentcore \
-#     bun run --cwd "$AGENTCORE_ROOT" src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml \
-#       --workspace "$AGENTCORE_ROOT" --supervised --verbose
+#   ROBOPPI_ROOT=/path/to/roboppi \
+#     bun run --cwd "$ROBOPPI_ROOT" src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml \
+#       --workspace "$ROBOPPI_ROOT" --verbose
 #
 # Kick it (in another terminal):
-#   mkdir -p .agentcore-loop
-#   date +%s > .agentcore-loop/kick.txt
+#   mkdir -p .roboppi-loop
+#   date +%s > .roboppi-loop/kick.txt
 
 name: agent-pr-loop-daemon
 version: "1"
@@ -18,13 +18,13 @@ description: "Manual kick daemon that runs the agent-pr-loop workflow"
 
 # Keep workflow YAML resolvable relative to this repo
 workspace: "."
-state_dir: "/tmp/agentcore-daemon-agent-pr-loop/.daemon-state"
+state_dir: "/tmp/roboppi-daemon-agent-pr-loop/.daemon-state"
 max_concurrent_workflows: 1
 
 events:
   kick:
     type: command
-    command: "cat .agentcore-loop/kick.txt 2>/dev/null || echo 0"
+    command: "cat .roboppi-loop/kick.txt 2>/dev/null || echo 0"
     interval: "2s"
     trigger_on: change
 
@@ -41,13 +41,11 @@ triggers:
       worker: CUSTOM
       instructions: |
         set -euo pipefail
-        echo "${AGENTCORE_EVENT:-}" | grep -q '"changed":true'
+        echo "${ROBOPPI_EVENT:-}" | grep -q '"changed":true'
       capabilities: [READ, RUN_COMMANDS]
       timeout: "5s"
 
     context:
-      env:
-        BASE_BRANCH: "main"
       last_result: true
       event_payload: true
 
@@ -55,16 +53,16 @@ triggers:
       worker: CUSTOM
       instructions: |
         set -e
-        echo "=== Agent PR Loop (last run) ===" > .agentcore-loop/daemon-summary.txt
-        echo "Status: $AGENTCORE_WORKFLOW_STATUS" >> .agentcore-loop/daemon-summary.txt
-        echo "Trigger: $AGENTCORE_TRIGGER_ID" >> .agentcore-loop/daemon-summary.txt
-        echo "At: $AGENTCORE_TIMESTAMP" >> .agentcore-loop/daemon-summary.txt
-        if [ -f .agentcore-loop/pr-url.txt ]; then
-          echo "PR: $(cat .agentcore-loop/pr-url.txt)" >> .agentcore-loop/daemon-summary.txt
+        echo "=== Agent PR Loop (last run) ===" > .roboppi-loop/daemon-summary.txt
+        echo "Status: $ROBOPPI_WORKFLOW_STATUS" >> .roboppi-loop/daemon-summary.txt
+        echo "Trigger: $ROBOPPI_TRIGGER_ID" >> .roboppi-loop/daemon-summary.txt
+        echo "At: $ROBOPPI_TIMESTAMP" >> .roboppi-loop/daemon-summary.txt
+        if [ -f .roboppi-loop/pr-url.txt ]; then
+          echo "PR: $(cat .roboppi-loop/pr-url.txt)" >> .roboppi-loop/daemon-summary.txt
         fi
-        cat .agentcore-loop/daemon-summary.txt
+        cat .roboppi-loop/daemon-summary.txt
       capabilities: [READ, EDIT, RUN_COMMANDS]
       timeout: "30s"
       outputs:
         - name: summary
-          path: ".agentcore-loop/daemon-summary.txt"
+          path: ".roboppi-loop/daemon-summary.txt"

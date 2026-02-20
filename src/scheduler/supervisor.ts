@@ -11,6 +11,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
 export interface SupervisorConfig {
+  /**
+   * Core entrypoint.
+   *
+   * - If this ends with .ts/.js, Supervisor spawns: `bun <coreEntryPoint>`
+   * - Otherwise, Supervisor spawns: `<coreEntryPoint>` (as an executable on PATH or a file path)
+   */
   coreEntryPoint: string;
   healthCheck?: Partial<HealthCheckerConfig>;
   ipc?: IpcProtocolOptions;
@@ -76,10 +82,22 @@ export class Supervisor {
     return this.spawnCoreStdio(childEnv);
   }
 
+  private resolveCoreCommand(): { command: string; args: string[] } {
+    const entry = this.config.coreEntryPoint;
+    const lower = entry.toLowerCase();
+    // Treat TS/JS entrypoints as Bun scripts.
+    if (lower.endsWith(".ts") || lower.endsWith(".js") || lower.endsWith(".tsx") || lower.endsWith(".jsx")) {
+      return { command: "bun", args: [entry] };
+    }
+    // Otherwise spawn as an executable.
+    return { command: entry, args: [] };
+  }
+
   private async spawnCoreStdio(childEnv: Record<string, string>): Promise<IpcProtocol> {
     // Use node:child_process.spawn rather than Bun.spawn for Core IPC.
     // Some environments exhibit dropped/undelivered stdin data with Bun.spawn.
-    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+    const core = this.resolveCoreCommand();
+    const proc = nodeSpawn(core.command, core.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv,
     }) as unknown as ChildProcessWithoutNullStreams;
@@ -88,10 +106,10 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
       try {
         process.stderr.write(
-          `[IPC][spawn] impl=node_child_process transport=stdio core pid=${proc.pid} entry=${this.config.coreEntryPoint}\n`,
+          `[IPC][spawn] impl=node_child_process transport=stdio core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint}\n`,
         );
       } catch {
         // ignore
@@ -218,7 +236,7 @@ export class Supervisor {
     } catch (err) {
       // Some sandboxed environments disallow Unix domain sockets entirely (listen EPERM/EACCES).
       if (isUnixSocketListenUnsupported(err)) {
-        if (process.env.AGENTCORE_IPC_TRACE === "1") {
+        if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
           try {
             const code = getErrCode(err) ?? "unknown";
             process.stderr.write(
@@ -237,9 +255,13 @@ export class Supervisor {
     // Ensure Core selects the Unix socket path mode.
     delete childEnv.AGENTCORE_IPC_SOCKET_HOST;
     delete childEnv.AGENTCORE_IPC_SOCKET_PORT;
+    delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
+    delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
+    childEnv.ROBOPPI_IPC_SOCKET_PATH = socketPath;
     childEnv.AGENTCORE_IPC_SOCKET_PATH = socketPath;
 
-    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+    const core = this.resolveCoreCommand();
+    const proc = nodeSpawn(core.command, core.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv,
     }) as unknown as ChildProcessWithoutNullStreams;
@@ -248,10 +270,10 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
       try {
         process.stderr.write(
-          `[IPC][spawn] impl=node_child_process transport=socket core pid=${proc.pid} entry=${this.config.coreEntryPoint} socket=${socketPath}\n`,
+          `[IPC][spawn] impl=node_child_process transport=socket core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint} socket=${socketPath}\n`,
         );
       } catch {
         // ignore
@@ -363,10 +385,14 @@ export class Supervisor {
 
     // Ensure Core selects the TCP mode.
     delete childEnv.AGENTCORE_IPC_SOCKET_PATH;
+    delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
+    childEnv.ROBOPPI_IPC_SOCKET_HOST = addr.address || host;
+    childEnv.ROBOPPI_IPC_SOCKET_PORT = String(addr.port);
     childEnv.AGENTCORE_IPC_SOCKET_HOST = addr.address || host;
     childEnv.AGENTCORE_IPC_SOCKET_PORT = String(addr.port);
 
-    const proc = nodeSpawn("bun", [this.config.coreEntryPoint], {
+    const core = this.resolveCoreCommand();
+    const proc = nodeSpawn(core.command, core.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv,
     }) as unknown as ChildProcessWithoutNullStreams;
@@ -375,10 +401,10 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if (process.env.AGENTCORE_IPC_TRACE === "1") {
+    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
       try {
         process.stderr.write(
-          `[IPC][spawn] impl=node_child_process transport=tcp core pid=${proc.pid} entry=${this.config.coreEntryPoint} addr=${addr.address}:${addr.port}\n`,
+          `[IPC][spawn] impl=node_child_process transport=tcp core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint} addr=${addr.address}:${addr.port}\n`,
         );
       } catch {
         // ignore
@@ -638,6 +664,7 @@ function collectChildEnv(): Record<string, string> {
 function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "socket" | "tcp" {
   const raw = (
     config.ipcTransport ??
+    process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT ??
     process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT ??
     "stdio"
   ).toLowerCase();

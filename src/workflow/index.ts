@@ -5,3 +5,6 @@ export * from "./dag-validator.js";
 export * from "./context-manager.js";
 export * from "./executor.js";
 export * from "./shell-step-runner.js";
+export * from "./branch-context.js";
+export * from "./agent-catalog.js";
+export * from "./resolve-worker-task.js";

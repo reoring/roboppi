@@ -5,7 +5,7 @@ import type {
   EscalationEvent,
   UUID,
 } from "../types/index.js";
-import { JobType, ErrorClass, PermitRejectionReason, now } from "../types/index.js";
+import { JobType, ErrorClass, PermitRejectionReason, now, isWorkerTaskJobPayload } from "../types/index.js";
 import { WorkerStatus } from "../types/index.js";
 import type { IpcProtocol } from "../ipc/protocol.js";
 import { CancellationManager } from "./cancellation.js";
@@ -252,27 +252,31 @@ export class AgentCore {
     permit: PermitHandle,
     logger: ReturnType<ObservabilityProvider["createLogger"]>,
   ): void {
-    const payload = job.payload as {
-      workerTaskId: string;
-      workerKind: string;
-      workspaceRef: string;
-      instructions: string;
-      model?: string;
-      capabilities: string[];
-      outputMode: string;
-      budget: { deadlineAt: number; maxSteps?: number; maxCommandTimeMs?: number };
-      env?: Record<string, string>;
-    };
+    if (!isWorkerTaskJobPayload(job.payload)) {
+      logger.error("Invalid WORKER_TASK payload", { jobId: job.jobId });
+      this.permitGate.completePermit(permit.permitId);
+      this.cancellation.removeController(permit.permitId);
+      this.activePermitsByJob.delete(job.jobId);
+      this.jobs.delete(job.jobId);
+      this.protocol
+        .sendJobCompleted(job.jobId, "failed", undefined, ErrorClass.NON_RETRYABLE)
+        .catch((err: unknown) => {
+          logger.error("Failed to send job_completed for invalid payload", { error: err });
+        });
+      return;
+    }
+
+    const payload = job.payload;
 
     const workerTask = {
-      workerTaskId: payload.workerTaskId ?? job.jobId,
+      workerTaskId: payload.workerTaskId,
       workerKind: payload.workerKind,
       workspaceRef: payload.workspaceRef,
       instructions: payload.instructions,
       ...(payload.model ? { model: payload.model } : {}),
-      capabilities: payload.capabilities ?? [],
-      outputMode: payload.outputMode ?? "BATCH",
-      budget: payload.budget ?? { deadlineAt: permit.deadlineAt },
+      capabilities: payload.capabilities,
+      outputMode: payload.outputMode,
+      budget: payload.budget,
       ...(payload.env ? { env: payload.env } : {}),
       abortSignal: permit.abortController.signal,
     };

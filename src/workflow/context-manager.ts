@@ -16,6 +16,35 @@ export interface StepMeta {
   workerResult?: unknown;
 }
 
+/**
+ * Resolved execution parameters written to `_resolved.json` for
+ * observability / debugging. Kept separate from {@link StepMeta} so
+ * that the two files can evolve independently and concurrent writers
+ * do not stomp each other.
+ */
+export interface StepResolvedMeta {
+  stepId: string;
+  status: string;
+  startedAt: number;
+  completedAt?: number;
+  wallTimeMs?: number;
+  attempts: number;
+  iterations?: number;
+  maxIterations?: number;
+  workerKind: string;
+  artifacts: Array<{ name: string; path: string; type?: string }>;
+  workerResult?: unknown;
+  resolved: {
+    timeoutMs?: number;
+    workspaceRef?: string;
+    workerKind?: string;
+    model?: string;
+    capabilities?: string[];
+    maxSteps?: number;
+    maxCommandTimeMs?: number;
+  };
+}
+
 function validatePathSegment(name: string): void {
   if (name.includes("..") || name.includes(path.sep) || name.includes("/")) {
     throw new Error(`Invalid path segment: ${name}`);
@@ -43,6 +72,7 @@ export class ContextManager {
     workflowId: string,
     workflowName: string,
     startedAt: number = Date.now(),
+    metadata?: Record<string, unknown>,
   ): Promise<void> {
     await mkdir(this.contextDir, { recursive: true });
     const workflowMeta = {
@@ -50,6 +80,7 @@ export class ContextManager {
       name: workflowName,
       startedAt,
       status: "RUNNING",
+      ...(metadata ?? {}),
     };
     await writeFile(
       path.join(this.contextDir, "_workflow.json"),
@@ -104,6 +135,12 @@ export class ContextManager {
     const metaPath = path.join(this.contextDir, stepId, "_meta.json");
     await mkdir(path.join(this.contextDir, stepId), { recursive: true });
     await writeFile(metaPath, JSON.stringify(meta, null, 2));
+  }
+
+  async writeStepResolved(stepId: string, meta: StepResolvedMeta): Promise<void> {
+    const dir = path.join(this.contextDir, stepId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "_resolved.json"), JSON.stringify(meta, null, 2));
   }
 
   async readStepMeta(stepId: string): Promise<StepMeta | null> {

@@ -5,3 +5,4 @@ export * from "./worker-task.js";
 export * from "./worker-result.js";
 export * from "./escalation.js";
 export * from "./ipc-messages.js";
+export * from "./worker-task-job-payload.js";

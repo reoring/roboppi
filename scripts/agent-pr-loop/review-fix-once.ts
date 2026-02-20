@@ -2,7 +2,7 @@
 // NOTE: Legacy/experimental helper.
 // This script spawns worker CLIs directly (not via Core IPC) and is no longer used
 // by the supervised demo workflow.
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 
 import { MultiWorkerStepRunner } from "../../src/workflow/multi-worker-step-runner.js";
@@ -42,10 +42,21 @@ async function sh(cmd: string): Promise<{ code: number; stdout: string; stderr: 
 
 async function main(): Promise<void> {
   const workspaceDir = process.cwd();
-  const loopDir = path.join(workspaceDir, ".agentcore-loop");
+  const loopDir = path.join(workspaceDir, ".roboppi-loop");
+  const legacyLoopDir = path.join(workspaceDir, ".agentcore-loop");
   await mkdir(loopDir, { recursive: true });
 
+  // Best-effort migration from legacy loop directory.
+  for (const f of ["request.md", "design.md", "todo.md", "base-branch.txt"] as const) {
+    const dst = path.join(loopDir, f);
+    const src = path.join(legacyLoopDir, f);
+    if (!(await exists(dst)) && (await exists(src))) {
+      await copyFile(src, dst);
+    }
+  }
+
   const verbose =
+    process.env.ROBOPPI_VERBOSE === "1" ||
     process.env.AGENTCORE_VERBOSE === "1" ||
     process.env.VERBOSE === "1" ||
     process.env.DEBUG === "1";
@@ -88,20 +99,20 @@ async function main(): Promise<void> {
 Task:
 - Review the work against the request.
 - Use apply_patch to create/overwrite these files:
-  - .agentcore-loop/review.md
-  - .agentcore-loop/review.verdict (PASS or FAIL only)
+  - .roboppi-loop/review.md
+  - .roboppi-loop/review.verdict (PASS or FAIL only)
 - If verdict is FAIL, also create/overwrite:
-  - .agentcore-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
+  - .roboppi-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
 
 You must read at least:
-- .agentcore-loop/request.md
-- .agentcore-loop/design.md (if present)
-- .agentcore-loop/todo.md (if present)
-- .agentcore-loop/review.diff
-- .agentcore-loop/review.status
-- .agentcore-loop/review.untracked
+- .roboppi-loop/request.md
+- .roboppi-loop/design.md (if present)
+- .roboppi-loop/todo.md (if present)
+- .roboppi-loop/review.diff
+- .roboppi-loop/review.status
+- .roboppi-loop/review.untracked
 
-Format for .agentcore-loop/review.md:
+Format for .roboppi-loop/review.md:
 - Sections: Summary, Strengths, Issues, Verification
 `,
     capabilities: ["READ", "EDIT"],
@@ -132,16 +143,16 @@ Format for .agentcore-loop/review.md:
       worker: "OPENCODE",
       model: "openai/gpt-5.2",
       instructions: `Use apply_patch to write:
-- .agentcore-loop/review.md
-- .agentcore-loop/review.verdict (PASS or FAIL)
+- .roboppi-loop/review.md
+- .roboppi-loop/review.verdict (PASS or FAIL)
 
 If verdict is FAIL, also write:
-- .agentcore-loop/fix.md (non-empty)
+- .roboppi-loop/fix.md (non-empty)
 
 Base your decision on:
-- .agentcore-loop/request.md
-- .agentcore-loop/artifacts/problem.md
-- .agentcore-loop/artifacts/solution.md
+- .roboppi-loop/request.md
+- .roboppi-loop/artifacts/problem.md
+- .roboppi-loop/artifacts/solution.md
 `,
       capabilities: ["READ", "EDIT"],
       timeout: "10m",
@@ -180,18 +191,18 @@ Base your decision on:
 The previous review produced verdict FAIL but did not provide fix instructions.
 
 Task:
-- Write .agentcore-loop/fix.md with concrete, actionable instructions to make the implementation pass.
+- Write .roboppi-loop/fix.md with concrete, actionable instructions to make the implementation pass.
 
 Read:
-- .agentcore-loop/request.md
-- .agentcore-loop/design.md
-- .agentcore-loop/todo.md
-- .agentcore-loop/review.diff
-- .agentcore-loop/review.status
-- .agentcore-loop/review.untracked
+- .roboppi-loop/request.md
+- .roboppi-loop/design.md
+- .roboppi-loop/todo.md
+- .roboppi-loop/review.diff
+- .roboppi-loop/review.status
+- .roboppi-loop/review.untracked
 
 Write:
-- .agentcore-loop/fix.md
+- .roboppi-loop/fix.md
 
 Rules:
 - Include file paths.
@@ -215,7 +226,7 @@ Rules:
 
   const fixBytes2 = (await readText(fixPath)).trim().length;
   if (fixBytes2 === 0) {
-    throw new Error("verdict was FAIL but .agentcore-loop/fix.md is still empty");
+    throw new Error("verdict was FAIL but .roboppi-loop/fix.md is still empty");
   }
 
   const fixStep: StepDefinition = {
@@ -226,8 +237,8 @@ Rules:
 Task: Apply the requested fixes.
 
 Read:
-- .agentcore-loop/fix.md
-- .agentcore-loop/todo.md
+- .roboppi-loop/fix.md
+- .roboppi-loop/todo.md
 
 Do:
 - Make the minimal changes required to address the issues.
@@ -257,7 +268,7 @@ Do:
       .trim();
     if (obs) {
       await writeFile(path.join(loopDir, "fix.last-output.txt"), obs + "\n");
-      console.log("[review-fix-once] fix: wrote .agentcore-loop/fix.last-output.txt");
+      console.log("[review-fix-once] fix: wrote .roboppi-loop/fix.last-output.txt");
     }
     throw new Error("fix step failed");
   }

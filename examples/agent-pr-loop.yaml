@@ -5,10 +5,10 @@
 # - Small orchestration lives in scripts.
 #
 # Run on another workspace (any git repo directory):
-#   AGENTCORE_ROOT=/path/to/agentcore
+#   ROBOPPI_ROOT=/path/to/roboppi
 #   TARGET=/path/to/your/repo
-#   AGENTCORE_ROOT="$AGENTCORE_ROOT" bun run --cwd "$AGENTCORE_ROOT" ./src/workflow/run.ts \
-#     "$AGENTCORE_ROOT/examples/agent-pr-loop.yaml" --workspace "$TARGET" --supervised --verbose
+#   ROBOPPI_ROOT="$ROBOPPI_ROOT" bun run --cwd "$ROBOPPI_ROOT" ./src/workflow/run.ts \
+#     "$ROBOPPI_ROOT/examples/agent-pr-loop.yaml" --workspace "$TARGET" --verbose
 
 name: agent-pr-loop
 version: "1"
@@ -16,13 +16,15 @@ description: "Design+Todo by OpenCode, implement by Claude Code (looped), review
 # Budget note: full path with max review iterations can exceed 90m.
 timeout: "300m"
 concurrency: 1
+create_branch: true
+branch_transition_step: "branch"
 
 steps:
   bootstrap:
     description: "Validate inputs/tools and initialize loop state"
     worker: CUSTOM
     instructions: |
-      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/bootstrap.sh"
+      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/bootstrap.sh"
     capabilities: [READ, EDIT, RUN_COMMANDS]
     timeout: "2m"
 
@@ -31,7 +33,7 @@ steps:
     worker: CUSTOM
     depends_on: [bootstrap]
     instructions: |
-      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/branch.sh"
+      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/branch.sh"
     capabilities: [READ, RUN_COMMANDS]
     timeout: "1m"
 
@@ -46,10 +48,10 @@ steps:
       Task: Produce a design doc ONLY (no implementation).
 
       Read:
-      - .agentcore-loop/request.md
+      - .roboppi-loop/request.md
 
       Write/update:
-      - .agentcore-loop/design.md
+      - .roboppi-loop/design.md
 
       Design doc requirements:
       - Problem statement + goals/non-goals
@@ -64,7 +66,7 @@ steps:
     max_retries: 2
     outputs:
       - name: design
-        path: ".agentcore-loop/design.md"
+        path: ".roboppi-loop/design.md"
         type: review
 
   todo:
@@ -78,11 +80,11 @@ steps:
       Task: Convert the design into a concrete TODO checklist.
 
       Read:
-      - .agentcore-loop/request.md
-      - .agentcore-loop/design.md
+      - .roboppi-loop/request.md
+      - .roboppi-loop/design.md
 
       Write/update:
-      - .agentcore-loop/todo.md
+      - .roboppi-loop/todo.md
 
       TODO requirements:
       - Use Markdown checklist items: "- [ ] ..."
@@ -92,7 +94,7 @@ steps:
       - Include at least 1 validation step (manual or automated)
       - Include rollback/escape hatch notes if risky
 
-      If .agentcore-loop/todo.md already exists, improve it to satisfy the requirements.
+      If .roboppi-loop/todo.md already exists, improve it to satisfy the requirements.
     capabilities: [READ, EDIT]
     timeout: "20m"
     on_failure: retry
@@ -101,7 +103,7 @@ steps:
     completion_check:
       worker: CUSTOM
       instructions: |
-        bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/todo-check.sh"
+        bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/todo-check.sh"
       capabilities: [READ, RUN_COMMANDS]
       timeout: "30s"
 
@@ -109,7 +111,7 @@ steps:
     on_iterations_exhausted: abort
     outputs:
       - name: todo
-        path: ".agentcore-loop/todo.md"
+        path: ".roboppi-loop/todo.md"
         type: code
 
   implement:
@@ -123,14 +125,14 @@ steps:
       Use Claude's team feature if available (split into implement/test/review roles internally).
 
       Read:
-      - .agentcore-loop/request.md
-      - .agentcore-loop/design.md
-      - .agentcore-loop/todo.md
-      - .agentcore-loop/review.md (if present)
-      - .agentcore-loop/fix.md (if present)
+      - .roboppi-loop/request.md
+      - .roboppi-loop/design.md
+      - .roboppi-loop/todo.md
+      - .roboppi-loop/review.md (if present)
+      - .roboppi-loop/fix.md (if present)
 
       Task:
-      - If .agentcore-loop/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted changes).
+      - If .roboppi-loop/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted changes).
       - Otherwise, implement the TODO checklist.
       - Update the TODO checkboxes as you complete items.
       - Run the repo's tests (or the best available test command) and fix failures.
@@ -153,40 +155,40 @@ steps:
     completion_check:
       worker: OPENCODE
       model: "openai/gpt-5.2"
-      decision_file: ".agentcore-loop/review.verdict"
+      decision_file: ".roboppi-loop/review.verdict"
       instructions: |
         You are OpenCode.
 
         Task:
         - Review the work against the request.
         - Write/update:
-          - .agentcore-loop/review.md
-          - .agentcore-loop/review.verdict (structured JSON; see Output rules)
+          - .roboppi-loop/review.md
+          - .roboppi-loop/review.verdict (structured JSON; see Output rules)
         - If verdict is FAIL, also write/update:
-          - .agentcore-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
+          - .roboppi-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
         - If verdict is PASS:
-          - Clear .agentcore-loop/fix.md if it exists (truncate to empty) so stale FAIL instructions cannot leak into future runs.
+          - Clear .roboppi-loop/fix.md if it exists (truncate to empty) so stale FAIL instructions cannot leak into future runs.
 
         Before reviewing, generate these review inputs (workspace is a git repo):
-        - bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/review-inputs.sh"
+        - bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/review-inputs.sh"
 
         You must read at least:
-        - .agentcore-loop/request.md
-        - .agentcore-loop/design.md (if present)
-        - .agentcore-loop/todo.md (if present)
-        - .agentcore-loop/review.base_ref
-        - .agentcore-loop/review.diff
-        - .agentcore-loop/review.status
-        - .agentcore-loop/review.untracked
-        - .agentcore-loop/review.untracked.diff
+        - .roboppi-loop/request.md
+        - .roboppi-loop/design.md (if present)
+        - .roboppi-loop/todo.md (if present)
+        - .roboppi-loop/review.base_ref
+        - .roboppi-loop/review.diff
+        - .roboppi-loop/review.status
+        - .roboppi-loop/review.untracked
+        - .roboppi-loop/review.untracked.diff
 
-        Format for .agentcore-loop/review.md:
+        Format for .roboppi-loop/review.md:
         - Sections: Summary, Strengths, Issues, Verification
 
         Output rules:
-        - Write .agentcore-loop/review.verdict as a single-line JSON object:
-          - PASS => {"decision":"complete","check_id":"$AGENTCORE_COMPLETION_CHECK_ID"}
-          - FAIL => {"decision":"incomplete","check_id":"$AGENTCORE_COMPLETION_CHECK_ID"}
+        - Write .roboppi-loop/review.verdict as a single-line JSON object:
+          - PASS => {"decision":"complete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+          - FAIL => {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
         - When FAIL, also include:
           - "reasons": ["..."]        (human-readable, short)
           - "fingerprints": ["..."]   (stable IDs; used by the Convergence Controller)
@@ -195,7 +197,7 @@ steps:
           - Prefer file/line/test identifiers (e.g. "test:pkg/foo TestBar", "lint:src/x.ts:42", "scope:charts/...").
           - Keep each item short.
         - Fallback: if you cannot emit JSON, write legacy text "PASS" or "FAIL" only (no extra words).
-        - If verdict is PASS, clear .agentcore-loop/fix.md if it exists (truncate to empty).
+        - If verdict is PASS, clear .roboppi-loop/fix.md if it exists (truncate to empty).
       capabilities: [READ, EDIT, RUN_COMMANDS]
       timeout: "15m"
 
@@ -203,24 +205,24 @@ steps:
     on_iterations_exhausted: abort
     outputs:
       - name: review
-        path: ".agentcore-loop/review.md"
+        path: ".roboppi-loop/review.md"
         type: review
       - name: verdict
-        path: ".agentcore-loop/review.verdict"
+        path: ".roboppi-loop/review.verdict"
         type: text
       - name: fix
-        path: ".agentcore-loop/fix.md"
+        path: ".roboppi-loop/fix.md"
         type: code
 
   create_pr:
-    description: "Create a PR (optional; requires .agentcore-loop/enable_pr)"
+    description: "Create a PR (optional; requires .roboppi-loop/enable_pr)"
     worker: CUSTOM
     depends_on: [implement]
     instructions: |
-      bash "${AGENTCORE_ROOT:-.}/scripts/agent-pr-loop/create-pr.sh"
+      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/create-pr.sh"
     capabilities: [READ, EDIT, RUN_COMMANDS]
     timeout: "10m"
     outputs:
       - name: pr
-        path: ".agentcore-loop/pr-url.txt"
+        path: ".roboppi-loop/pr-url.txt"
         type: text

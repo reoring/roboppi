@@ -1,8 +1,9 @@
 {
-  "name": "agentcore",
+  "name": "roboppi",
   "version": "0.1.0",
   "type": "module",
   "bin": {
+    "roboppi": "src/cli.ts",
     "agentcore": "src/cli.ts"
   },
   "scripts": {
@@ -14,7 +15,7 @@
     "test:integration": "bun test test/integration",
     "test:at": "bun test tests/at",
     "typecheck": "bun x tsc --noEmit",
-    "build": "bun build --compile src/cli.ts --outfile agentcore"
+    "build": "make build"
   },
   "devDependencies": {
     "@types/bun": "latest",

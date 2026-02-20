@@ -1,121 +1,301 @@
 # Roboppi
 
-Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for AI agents.
+English | [日本語](README.ja.md)
 
-"Roboppi" is a cute, nickname-style Japanese name: "robo" (robot) + a playful diminutive-style ending ("-ppi") that can feel a bit like saying "little" or "mini". The vibe is a small robot sidekick that keeps your automation safe and on track.
+Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for agentic workers.
 
-It delegates heavy work (code edits, commands, tests) to external worker CLIs (OpenCode / Claude Code / Codex CLI), while Roboppi focuses on the safety mechanics:
+It does not try to be "the agent". It enforces safety invariants around external worker CLIs (OpenCode / Claude Code / Codex CLI / plain shell), so your automation stops when it should, stays within budgets, and leaves a trail you can audit.
 
-- stop (timeouts, cancellation)
-- limit (concurrency/RPS/budgets)
-- observe (structured events and artifacts)
-- isolate (separate processes for workers)
+Note: the primary CLI/binary name is `roboppi`.
+- Compatibility: `agentcore` remains as a legacy alias.
+- Env vars/state dirs: prefer `ROBOPPI_` / `.roboppi-loop/` (legacy `AGENTCORE_` / `.agentcore-loop/` are still accepted).
 
-The goal is to prevent common event-loop automation failures: duplicate runs, infinite retries, cascading failures, and hangs.
+## What Roboppi Can Do (Capabilities)
 
-## What You Get
+Execution control (Core runtime):
 
-- Hard stop guarantees via budgets (timeouts, max attempts, concurrency)
-- End-to-end cancellation (Job -> Permit -> Worker) via AbortSignal/AbortController
-- Failure containment via circuit breakers (LLM + workers)
-- Better auditability: stdout/stderr/progress/patches as events
+- Enforce hard budgets: timeouts, max attempts, concurrency, RPS, optional cost caps
+- End-to-end cancellation: Job -> Permit -> Worker via AbortSignal (best-effort SIGTERM -> SIGKILL)
+- Failure containment: circuit breakers + backpressure responses under overload
+- Process isolation: delegate heavy work to separate worker processes (limit blast radius)
+- Auditability: structured logs + artifacts (stdout/stderr summaries, diffs/patches, executed commands, timings)
 
-## Quickstart
+Workflow orchestration (YAML):
+
+- Run multi-step DAG workflows (`depends_on`) with optional parallelism (`concurrency`)
+- Pass files between steps with declared `outputs`/`inputs` via a `context/` directory
+- Automatic step retries and failure policy (`retry` / `continue` / `abort`)
+- Loop until complete with `completion_check` + `max_iterations`
+- Optional convergence guard for loops: stall detection + scope/diff budgets (`allowed_paths`, `max_changed_files`)
+
+Automation (Daemon mode):
+
+- Run workflows on interval/cron/fswatch/webhook/command events
+- Optional evaluate/analyze gates (run LLM work only when conditions are met)
+- Supervised execution: Supervisor -> Core -> Worker process tree via IPC (socket-based transport available)
+
+Repo safety (git workspaces):
+
+- Deterministic base branch resolution (records base commit SHA)
+- Branch Lock drift detection (fail-fast before a step runs)
+- Protected-branch guard to avoid direct edits on `main` (override must be explicit)
+
+Extensibility:
+
+- Add worker adapters behind a unified `WorkerAdapter` interface
+- Reusable agent profiles via agent catalogs (`agents.yaml`) referenced by `step.agent`
+
+Scheduling (reference implementation):
+
+- Prioritized job queue (interactive vs batch)
+- Deduplication via idempotency keys (`coalesce` / `latest-wins` / `reject`)
+- Retry policy (exponential backoff + jitter) + DLQ storage
+- Supervisor that launches/monitors the Core process (crash/hang handling)
+
+## Architecture (High Level)
+
+Roboppi is designed as a 3-layer system:
+
+```
+Supervisor / Runner (policy, parent process)
+  -> Core (mechanism, child process)
+      -> Worker processes (external CLIs)
+```
+
+- Core owns safety invariants (permits, budgets, cancellation, cutoffs).
+- Policy (ordering, retries, dedup strategy) stays swappable at the supervisor/runner level.
+- Core and supervisor communicate over JSON Lines IPC.
+
+Design docs:
+
+- `docs/design.md`
+- `docs/guide/architecture.md`
+
+## Install
 
 Prerequisites:
 
-- Bun
-- Worker CLIs you plan to use: `opencode`, `claude`, `codex`
-- Optional (PR creation): `gh`
+- Bun (CI uses Bun 1.3.8)
 
-Install:
+Optional worker CLIs (depending on what you want to delegate to):
+
+- OpenCode: `opencode`
+- Claude Code: `claude`
+- Codex CLI: `codex`
+- Optional (PR creation in demos): `gh`
+
+Install dependencies:
 
 ```bash
 bun install
 ```
 
-## Example: Agent PR Loop
+Build the binary (optional):
 
-Note: some paths and environment variables in the examples still use the legacy `agentcore` prefix (e.g. `.agentcore-loop/`, `AGENTCORE_ROOT`).
+```bash
+make build
+./roboppi --help
+./roboppi workflow --help
+./roboppi daemon --help
+```
 
-This is the default multi-worker loop:
+## Quickstart
 
-`design -> todo -> (implement <-> review)* -> (optional) create_pr`
+### 0) IPC server mode (`roboppi`)
 
-### 1) Run the demo (creates real code in /tmp)
+Start a JSON Lines IPC server (reads stdin, writes stdout; logs go to stderr):
+
+```bash
+./roboppi
+```
+
+If you are building your own Supervisor/Scheduler, this is the Core process you talk to.
+
+### 1) One-shot worker task (`roboppi run`)
+
+`roboppi run` delegates a single task to a worker with a strict timeout/budget.
+
+```bash
+# One-shot: have OpenCode create files
+./roboppi run --worker opencode --workspace /tmp/demo \
+  --capabilities READ,EDIT --timeout 60000 \
+  "Write a README for this repo"
+```
+
+### 2) Run a workflow YAML
+
+Workflows are executed by the workflow runner.
+
+```bash
+./roboppi workflow examples/hello-world.yaml --verbose
+# (dev) bun run src/workflow/run.ts examples/hello-world.yaml --verbose
+```
+
+By default, workflows run in supervised mode (Supervisor -> Core -> Worker).
+Use `--direct` to spawn workers directly from the runner (no Core IPC).
+
+```bash
+ROBOPPI_VERBOSE=1 bun run src/workflow/run.ts examples/agent-pr-loop.yaml \
+  --workspace /tmp/my-work --verbose
+```
+
+Docs:
+
+- `docs/guide/workflow.md`
+- `docs/workflow-design.md`
+
+### 3) Run daemon mode (resident workflows)
+
+```bash
+./roboppi daemon examples/daemon/agent-pr-loop.yaml --verbose
+# (dev) bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --verbose
+```
+
+Docs:
+
+- `docs/guide/daemon.md`
+
+### 4) Agent PR Loop demo
+
+The demo creates a scratch git repo under `/tmp/` and runs the full loop:
+
+`design -> todo -> (implement <-> review/fix)* -> (optional) create_pr`
 
 ```bash
 bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
-This creates a scratch repo under `/tmp/` and runs `examples/agent-pr-loop.yaml` end-to-end.
-
-### 2) Run against your own repo
+To enable PR creation in the demo, create the marker file in the target repo:
 
 ```bash
-AGENTCORE_ROOT=/path/to/agentcore
+touch "/path/to/target/.roboppi-loop/enable_pr"
+```
+
+Run the PR loop against your own repo (recommended: run from this repo, target another workspace):
+
+```bash
+ROBOPPI_ROOT=/path/to/roboppi
 TARGET=/path/to/your/repo
 
-mkdir -p "$TARGET/.agentcore-loop"
-$EDITOR "$TARGET/.agentcore-loop/request.md"
+mkdir -p "$TARGET/.roboppi-loop"
+$EDITOR "$TARGET/.roboppi-loop/request.md"
 
-AGENTCORE_ROOT="$AGENTCORE_ROOT" bun run --cwd "$AGENTCORE_ROOT" ./src/workflow/run.ts \
-  "$AGENTCORE_ROOT/examples/agent-pr-loop.yaml" \
-  --supervised \
-  --workspace "$TARGET" \
-  --verbose
+ROBOPPI_ROOT="$ROBOPPI_ROOT" bun run --cwd "$ROBOPPI_ROOT" src/workflow/run.ts \
+  "$ROBOPPI_ROOT/examples/agent-pr-loop.yaml" \
+  --workspace "$TARGET" --verbose
 ```
 
 Notes:
 
-- Workflow definition: `examples/agent-pr-loop.yaml`
-- Helper scripts: `scripts/agent-pr-loop/`
-- Loop state/artifacts live under `.agentcore-loop/` (typically gitignored in the target repo)
+- The workflow writes state/artifacts under `.roboppi-loop/` and `context/` inside the target workspace (typically gitignored; legacy `.agentcore-loop/` is still accepted).
+- PR creation is opt-in via `.roboppi-loop/enable_pr`.
 
-To enable PR creation (disabled by default), create the marker file in the target repo and rerun:
+## Workflow YAML At A Glance
 
-```bash
-touch "$TARGET/.agentcore-loop/enable_pr"
+Minimal example:
+
+```yaml
+name: build-test
+version: "1"
+timeout: "10m"
+
+steps:
+  build:
+    worker: CUSTOM
+    instructions: "make build"
+    capabilities: [RUN_COMMANDS]
+
+  test:
+    depends_on: [build]
+    worker: CUSTOM
+    instructions: "make test"
+    capabilities: [RUN_TESTS]
 ```
 
-## Daemon Mode (manual kick)
+For loops:
 
-Start the daemon:
+- use `completion_check` + `max_iterations`
+- prefer `decision_file` for deterministic COMPLETE/INCOMPLETE decisions
 
-```bash
-bun run src/daemon/cli.ts examples/daemon/agent-pr-loop.yaml --supervised --verbose
+See `docs/guide/workflow.md` for the full schema.
+
+## Agent Catalogs (Reusable Agent Profiles)
+
+If you repeat the same worker/model/capabilities/base-instructions across steps, define an agent catalog:
+
+```yaml
+version: "1"
+agents:
+  research:
+    worker: OPENCODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      You are a research agent.
+      - Only read files. Do not edit.
 ```
 
-Kick it from another terminal:
+Then reference it from workflow steps:
 
-```bash
-mkdir -p .agentcore-loop
-date +%s > .agentcore-loop/kick.txt
+```yaml
+steps:
+  investigate:
+    agent: research
+    instructions: "Investigate the codebase and write notes."
 ```
 
-## One-shot Worker Task
+Docs:
 
-Run a single worker task with a budget:
+- `docs/guides/agents.md`
+- `docs/guides/agents.ja.md`
 
-```bash
-bun run src/cli.ts run --worker opencode --workspace /tmp/demo \
-  --capabilities READ,EDIT --timeout 60000 "Write a README for this repo"
-```
+## Branch Safety (Git Workspaces)
 
-## Project Layout
+For workflows that operate on git repos, Roboppi provides base-branch resolution, Branch Lock drift detection, and protected-branch guards.
 
-- Roboppi CLI: `src/cli.ts` (IPC server + one-shot run)
-- Workflow runner: `src/workflow/run.ts`
-- Multi-worker step runner: `src/workflow/multi-worker-step-runner.ts`
-- Design document: `docs/design.md`
+Useful flags:
 
-## Status
+- `--base-branch <name>` (overrides `BASE_BRANCH`)
+- `--protected-branches <csv>` (default: `main,master,release/*`)
+- `--allow-protected-branch` (dangerous; explicit override)
 
-This project is still evolving and APIs/behavior may change. See `docs/design.md` for the underlying design principles.
+Docs:
+
+- `docs/guides/branch.md`
+- `docs/guides/branch.ja.md`
+
+## Supervised IPC Transport (For `--supervised`)
+
+Workflows/daemon run supervised by default. In supervised mode, the runner starts a Core child process and delegates steps over IPC.
+
+- Default: interactive runs typically use stdio; non-interactive runs default to a socket transport.
+- Override transport: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`
+- Debug IPC: `AGENTCORE_IPC_TRACE=1`
+- Tune request timeouts: `AGENTCORE_IPC_REQUEST_TIMEOUT=2m` (or `AGENTCORE_IPC_REQUEST_TIMEOUT_MS=120000`)
+
+Disable supervised mode:
+
+- Workflow runner: `--direct`
+- Daemon CLI: `--direct`
+
+## Documentation
+
+- `docs/guide/quickstart.md`
+- `docs/guide/workflow.md`
+- `docs/guide/daemon.md`
+- `docs/guide/architecture.md`
+- `docs/design.md`
+- `docs/guides/agents.md`
+- `docs/guides/branch.md`
 
 ## Development
 
 ```bash
-bun test
-bun run typecheck
+make typecheck
+make test
+make test-all
 ```
+
+## Status
+
+This project is still evolving and APIs/behavior may change. The design intent is stable (mechanism/policy separation + permits + process isolation); the surface area (CLI flags, YAML schema) may continue to iterate.

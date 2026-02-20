@@ -86,6 +86,7 @@ steps:
 | Field | Type | Required | Description |
 |-----------|-----|------|------|
 | `description` | string | no | step description |
+| `agent` | string | no | agent profile id (resolved from an external agent catalog) |
 | `worker` | enum | yes | worker kind (see below) |
 | `model` | string | no | model id (format depends on worker/CLI) |
 | `instructions` | string | yes | instructions passed to the worker |
@@ -103,6 +104,57 @@ steps:
 | `max_iterations` | number | no | max completion-check iterations (default: 1) |
 | `on_iterations_exhausted` | enum | no | behavior on hitting iteration limit: `abort` / `continue` |
 | `on_failure` | enum | no | behavior on failure: `retry` / `continue` / `abort` (default: `abort`) |
+
+When `agent` is set, the runner can fill defaults from the agent profile. In that case, `worker`, `model`, `capabilities`, `workspace`, and timeout/budget fields can be omitted and will be inherited from the profile (step-level fields override profile defaults).
+
+If the agent profile defines `base_instructions`, they are prepended before `instructions`.
+
+---
+
+## Agent catalogs (reusable agent profiles)
+
+To reuse a worker+model+base instructions bundle across workflows, define agents in a separate YAML file and reference them from steps.
+
+See also: `docs/guides/agents.md`.
+
+### Agent catalog file format
+
+Create an `agents.yaml` next to your workflow YAML (or pass an explicit path).
+
+```yaml
+version: "1"
+agents:
+  research:
+    worker: OPENCODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      You are a research agent.
+      - Only read files. Do not edit.
+      - Write findings as Markdown.
+```
+
+### Reference from a workflow
+
+```yaml
+steps:
+  investigate:
+    agent: research
+    instructions: |
+      Investigate how workflow execution works in this repo.
+      Write a short report to docs/research.md.
+    outputs:
+      - name: report
+        path: docs/research.md
+        type: review
+```
+
+### How the catalog is loaded
+
+The runner loads agent catalogs from these sources:
+
+- Explicit: `AGENTCORE_AGENTS_FILE` (colon-separated list) + `--agents <path>` (repeatable). If the same agent id is defined multiple times, later definitions override earlier ones (so `--agents` wins over `AGENTCORE_AGENTS_FILE`).
+- Implicit (only when no explicit paths are provided): `agents.yaml` / `agents.yml` next to the workflow YAML.
 
 ### capabilities
 
@@ -337,7 +389,7 @@ Step start (iteration 1)
 | `instructions` | string | yes | check instructions |
 | `capabilities` | enum[] | yes | checker capabilities (usually `[READ]`) |
 | `timeout` | DurationString | no | timeout per check |
-| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs. Supported formats: structured JSON `{"decision":"complete"|"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}` (recommended) and legacy `PASS/COMPLETE` / `FAIL/INCOMPLETE` text. When `decision_file` is set, the runner provides `AGENTCORE_COMPLETION_CHECK_ID` in the check environment so the checker can include it as `check_id`. |
+| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs. Supported formats: structured JSON `{"decision":"complete"|"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}` (recommended) and legacy `PASS/COMPLETE` / `FAIL/INCOMPLETE` text. When `decision_file` is set, the runner provides `ROBOPPI_COMPLETION_CHECK_ID` (and legacy `AGENTCORE_COMPLETION_CHECK_ID`) in the check environment so the checker can include it as `check_id`. |
 
 ### convergence fields (opt-in)
 
@@ -367,14 +419,14 @@ steps:
   implement:
     # ...
     completion_check:
-      decision_file: .agentcore-loop/review.verdict
+      decision_file: .roboppi-loop/review.verdict
       # ...
     max_iterations: 10
     convergence:
       enabled: true
       stall_threshold: 2
       max_stage: 3
-      diff_base_ref_file: .agentcore-loop/review.base_ref
+      diff_base_ref_file: .roboppi-loop/review.base_ref
       allowed_paths: ["src/**", "test/**"]
       max_changed_files: 200
 ```
@@ -511,8 +563,12 @@ These workers require the corresponding tools to be installed (see prerequisites
 ### Basic
 
 ```bash
-bun run src/workflow/run.ts <workflow.yaml>
+roboppi workflow <workflow.yaml>
+# (dev) bun run src/workflow/run.ts <workflow.yaml>
 ```
+
+By default, workflows run in **supervised** mode (Supervisor -> Core -> Worker) so all steps go through Core safety mechanisms.
+Use `--direct` to spawn worker processes directly from the runner (no Core IPC).
 
 ### Options
 
@@ -520,27 +576,38 @@ bun run src/workflow/run.ts <workflow.yaml>
 |-----------|--------|------|----------|
 | `--workspace <dir>` | `-w` | working directory | temp directory |
 | `--verbose` | `-v` | show step output | off |
-| `--supervised` | - | delegate steps via Core IPC (Supervisor -> Core -> Worker) | off |
+| `--supervised` | - | supervised mode: delegate steps via Core IPC (Supervisor -> Core -> Worker) | on |
+| `--direct` | - | direct mode: spawn worker processes directly (no Core IPC) | off |
+| `--no-supervised` | - | alias for `--direct` | - |
 | `--keepalive` | - | emit periodic output to avoid no-output watchdogs | auto (on when non-TTY) |
 | `--no-keepalive` | - | disable keepalive output | - |
 | `--keepalive-interval <d>` | - | keepalive interval (DurationString) | `10s` |
 | `--ipc-request-timeout <d>` | - | IPC request timeout for supervised mode (DurationString) | `2m` |
+| `--agents <path>` | - | agent catalog YAML (repeatable); merged with `AGENTCORE_AGENTS_FILE` | auto-load `agents.yaml` / `agents.yml` next to workflow |
 | `--help` | `-h` | show help | - |
 
 ### Examples
 
 ```bash
 # run with a temp directory
-bun run src/workflow/run.ts examples/hello-world.yaml
+roboppi workflow examples/hello-world.yaml
+# (dev) bun run src/workflow/run.ts examples/hello-world.yaml
 
 # specify a workspace
-bun run src/workflow/run.ts examples/build-test-report.yaml --workspace /tmp/my-work
+roboppi workflow examples/build-test-report.yaml --workspace /tmp/my-work
+# (dev) bun run src/workflow/run.ts examples/build-test-report.yaml --workspace /tmp/my-work
 
 # verbose output
-bun run src/workflow/run.ts examples/todo-loop.yaml --verbose
+roboppi workflow examples/todo-loop.yaml --verbose
+# (dev) bun run src/workflow/run.ts examples/todo-loop.yaml --verbose
 
-# supervised mode (Core spawns worker processes)
-bun run src/workflow/run.ts examples/agent-pr-loop.yaml --supervised --verbose
+# supervised mode is the default
+roboppi workflow examples/agent-pr-loop.yaml --verbose
+# (dev) bun run src/workflow/run.ts examples/agent-pr-loop.yaml --verbose
+
+# direct mode (runner spawns worker processes)
+roboppi workflow examples/agent-pr-loop.yaml --direct --verbose
+# (dev) bun run src/workflow/run.ts examples/agent-pr-loop.yaml --direct --verbose
 ```
 
 ### Reading results
@@ -610,7 +677,8 @@ steps:
 Run:
 
 ```bash
-bun run src/workflow/run.ts examples/hello-world.yaml --verbose
+roboppi workflow examples/hello-world.yaml --verbose
+# (dev) bun run src/workflow/run.ts examples/hello-world.yaml --verbose
 ```
 
 Key point: best for learning the basic structure (`name`, `version`, `timeout`, `steps`).

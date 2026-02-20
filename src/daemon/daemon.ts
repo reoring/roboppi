@@ -17,17 +17,30 @@ import { CommandSource } from "./events/command-source.js";
 import { mergeEventSources } from "./events/event-source.js";
 import type { EventSource } from "./events/event-source.js";
 import { parseWorkflow } from "../workflow/parser.js";
+import { parseAgentCatalog, type AgentCatalog } from "../workflow/agent-catalog.js";
 import type { StepRunner } from "../workflow/executor.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import { MultiWorkerStepRunner } from "../workflow/multi-worker-step-runner.js";
 import { CoreIpcStepRunner } from "../workflow/core-ipc-step-runner.js";
 import { ContextManager } from "../workflow/context-manager.js";
 import { Logger } from "../core/observability.js";
+import {
+  resolveBranchRuntimeContext,
+  type BranchRuntimeContext,
+} from "../workflow/branch-context.js";
 
 export interface DaemonOptions {
   supervised?: boolean;
   /** Path to Core entrypoint for supervised mode (default: src/index.ts). */
   coreEntryPoint?: string;
+}
+
+function splitPathList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(":")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 interface QueuedItem {
@@ -407,8 +420,8 @@ export class Daemon {
       }
 
       // 1b. Context injection — build env to pass to executor (not process.env)
-      const workflowEnv: Record<string, string> | undefined =
-        trigger.context?.env ? { ...trigger.context.env } : undefined;
+      const workflowEnv: Record<string, string> =
+        trigger.context?.env ? { ...trigger.context.env } : {};
 
       const daemonContextDir = path.join(workspaceDir, ".daemon-context");
       await mkdir(daemonContextDir, { recursive: true });
@@ -431,7 +444,74 @@ export class Daemon {
       // 2. Read and parse the workflow YAML
       const workflowPath = path.resolve(workspaceDir, trigger.workflow);
       const yamlContent = await readFile(workflowPath, "utf-8");
-      const definition = parseWorkflow(yamlContent);
+      const agentCatalog = await this.loadAgentCatalogForWorkflow(workflowPath, workflowEnv);
+      const definition = parseWorkflow(yamlContent, { agents: agentCatalog });
+
+        const branchContext = await resolveBranchRuntimeContext({
+          workspaceDir,
+          envBaseBranch: workflowEnv.BASE_BRANCH ?? process.env.BASE_BRANCH,
+          envProtectedBranches:
+          workflowEnv.ROBOPPI_PROTECTED_BRANCHES ??
+          workflowEnv.AGENTCORE_PROTECTED_BRANCHES ??
+          process.env.ROBOPPI_PROTECTED_BRANCHES ??
+          process.env.AGENTCORE_PROTECTED_BRANCHES,
+          envAllowProtectedBranch:
+          workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH ??
+          workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH ??
+          process.env.ROBOPPI_ALLOW_PROTECTED_BRANCH ??
+          process.env.AGENTCORE_ALLOW_PROTECTED_BRANCH,
+          createBranch: definition.create_branch ?? false,
+          expectedWorkBranch: definition.expected_work_branch,
+          branchTransitionStep: definition.branch_transition_step,
+          stepIds: Object.keys(definition.steps),
+        });
+      this.logBranchContext(safeTriggerId, branchContext);
+
+      workflowEnv.AGENTCORE_CREATE_BRANCH = branchContext.createBranch ? "1" : "0";
+      workflowEnv.ROBOPPI_CREATE_BRANCH = workflowEnv.AGENTCORE_CREATE_BRANCH;
+      workflowEnv.AGENTCORE_PROTECTED_BRANCHES = branchContext.protectedBranches.join(",");
+      workflowEnv.ROBOPPI_PROTECTED_BRANCHES = workflowEnv.AGENTCORE_PROTECTED_BRANCHES;
+      workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH = branchContext.allowProtectedBranch
+        ? "1"
+        : "0";
+      workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH = workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH;
+      if (branchContext.effectiveBaseBranch) {
+        workflowEnv.BASE_BRANCH = branchContext.effectiveBaseBranch;
+        workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
+        workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
+      }
+      if (branchContext.effectiveBaseBranchSource) {
+        workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH_SOURCE =
+          branchContext.effectiveBaseBranchSource;
+        workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH_SOURCE =
+          branchContext.effectiveBaseBranchSource;
+      }
+      if (branchContext.effectiveBaseSha) {
+        workflowEnv.AGENTCORE_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
+        workflowEnv.ROBOPPI_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
+      }
+      if (branchContext.startupBranch) {
+        workflowEnv.AGENTCORE_STARTUP_BRANCH = branchContext.startupBranch;
+        workflowEnv.ROBOPPI_STARTUP_BRANCH = branchContext.startupBranch;
+      }
+      if (branchContext.startupHeadSha) {
+        workflowEnv.AGENTCORE_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
+        workflowEnv.ROBOPPI_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
+      }
+      if (branchContext.startupToplevel) {
+        workflowEnv.AGENTCORE_STARTUP_TOPLEVEL = branchContext.startupToplevel;
+        workflowEnv.ROBOPPI_STARTUP_TOPLEVEL = branchContext.startupToplevel;
+      }
+      if (branchContext.expectedWorkBranch) {
+        workflowEnv.AGENTCORE_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
+        workflowEnv.ROBOPPI_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
+      }
+      if (branchContext.expectedCurrentBranch) {
+        workflowEnv.AGENTCORE_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
+        workflowEnv.ROBOPPI_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
+      }
+      const executorEnv =
+        Object.keys(workflowEnv).length > 0 ? workflowEnv : undefined;
 
       // 3. Setup context dir
       const contextDir = path.join(workspaceDir, "context", safeTriggerId);
@@ -444,8 +524,9 @@ export class Daemon {
         ctx,
         this.stepRunner,
         workspaceDir,
-        workflowEnv,
+        executorEnv,
         this.shutdownAbortController.signal,
+        branchContext,
       );
       const result = await executor.execute();
 
@@ -478,6 +559,89 @@ export class Daemon {
         this.workflowDoneResolve();
         this.workflowDoneResolve = null;
       }
+    }
+  }
+
+  private async loadAgentCatalogForWorkflow(
+    workflowPath: string,
+    workflowEnv: Record<string, string>,
+  ): Promise<AgentCatalog | undefined> {
+    const fromProcessEnv = splitPathList(
+      process.env.ROBOPPI_AGENTS_FILE ?? process.env.AGENTCORE_AGENTS_FILE,
+    );
+    const fromConfig = this.config.agents_file ? [this.config.agents_file] : [];
+    const fromWorkflowEnv = splitPathList(
+      workflowEnv.ROBOPPI_AGENTS_FILE ?? workflowEnv.AGENTCORE_AGENTS_FILE,
+    );
+
+    // Precedence: process env (lowest) -> daemon config -> trigger env (highest).
+    const explicit = [...fromProcessEnv, ...fromConfig, ...fromWorkflowEnv];
+
+    const resolveFromWorkspace = (p: string): string =>
+      path.isAbsolute(p) ? p : path.resolve(this.workspaceDir, p);
+
+    const candidates: string[] = [];
+    if (explicit.length > 0) {
+      candidates.push(...explicit.map(resolveFromWorkspace));
+    } else {
+      const dir = path.dirname(workflowPath);
+      candidates.push(path.join(dir, "agents.yaml"));
+      candidates.push(path.join(dir, "agents.yml"));
+    }
+
+    let catalog: AgentCatalog | undefined;
+    for (const p of candidates) {
+      try {
+        const content = await readFile(p, "utf-8");
+        const parsed = parseAgentCatalog(content);
+        catalog = { ...(catalog ?? {}), ...parsed };
+      } catch (err: unknown) {
+        const code = (err as any)?.code;
+
+        // In implicit mode, missing default files are ignored.
+        if (explicit.length === 0 && code === "ENOENT") {
+          continue;
+        }
+
+        if (code === "ENOENT") {
+          throw new Error(`Agent catalog not found: ${p}`);
+        }
+        throw err;
+      }
+    }
+
+    return catalog;
+  }
+
+  private logBranchContext(triggerId: string, context: BranchRuntimeContext): void {
+    if (!context.enabled) {
+      for (const warning of context.warnings) {
+        if (warning.includes("not a git repository")) {
+          this.logger.debug("Branch lock disabled", { triggerId, warning });
+        } else {
+          this.logger.warn("Branch lock warning", { triggerId, warning });
+        }
+      }
+      return;
+    }
+
+    this.logger.info("Branch lock resolved", {
+      triggerId,
+      startup_branch: context.startupBranch,
+      startup_head_sha: context.startupHeadSha,
+      startup_toplevel: context.startupToplevel,
+      effective_base_branch: context.effectiveBaseBranch,
+      effective_base_branch_source: context.effectiveBaseBranchSource,
+      effective_base_sha: context.effectiveBaseSha,
+      create_branch: context.createBranch,
+      expected_work_branch: context.expectedWorkBranch,
+      protected_branches: context.protectedBranches,
+      protected_branches_source: context.protectedBranchesSource,
+      allow_protected_branch: context.allowProtectedBranch,
+    });
+
+    for (const warning of context.warnings) {
+      this.logger.warn("Branch lock warning", { triggerId, warning });
     }
   }
 }

@@ -49,6 +49,9 @@ steps:
   <step_id>:
     description?: string                    # step description
 
+    # Optional: reference a reusable agent profile (external catalog)
+    agent?: string                          # agent profile id
+
     # ---- Worker config ----
     worker: enum                            # CODEX_CLI | CLAUDE_CODE | OPENCODE | CUSTOM
     workspace?: string                      # working directory (default: ".")
@@ -127,6 +130,7 @@ interface WorkflowDefinition {
 
 interface StepDefinition {
   description?: string;
+  agent?: string;                          // optional agent profile id
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   workspace?: string;
   instructions: string;
@@ -164,6 +168,7 @@ interface ConvergenceDef {
 }
 
 interface CompletionCheckDef {
+  agent?: string;                           // optional agent profile id
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
@@ -187,6 +192,47 @@ type DurationString = string;   // e.g. "5m", "30s", "2h"
 ```
 
 ---
+
+## 2.7 Agent catalogs (reusable agent profiles)
+
+Many workflows repeat the same worker/model/capabilities/base-instructions across steps (e.g. a dedicated research agent). To avoid duplication, workflows can reference an external agent catalog.
+
+### Agent catalog file format
+
+```yaml
+version: "1"
+agents:
+  research:
+    worker: OPENCODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      You are a research agent.
+      Only read files. Do not edit.
+```
+
+### Use from a workflow
+
+Steps (and `completion_check`) can set `agent: <id>` and omit repeated fields.
+
+```yaml
+steps:
+  investigate:
+    agent: research
+    instructions: |
+      Investigate the codebase and write a short report.
+```
+
+### Resolution rules
+
+- When `agent` is set, missing step fields are filled from the agent profile (e.g. `worker`, `model`, `capabilities`, `workspace`, `timeout`, `max_steps`, `max_command_time`).
+- If the agent profile defines `base_instructions`, they are prepended before `instructions`.
+- Step-level fields override profile defaults.
+
+### Loading rules
+
+- Explicit: load catalogs from `AGENTCORE_AGENTS_FILE` (colon-separated list) and `--agents <path>` (repeatable). Catalogs are merged in order; later definitions override earlier ones.
+- Implicit: if no explicit catalogs are provided, the runner looks for `agents.yaml` / `agents.yml` next to the workflow YAML.
 
 ## 3. Examples
 

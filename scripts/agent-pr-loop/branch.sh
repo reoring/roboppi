@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p .agentcore-loop
-BASE_BRANCH=$(cat .agentcore-loop/base-branch.txt 2>/dev/null || echo main)
-BRANCH_FILE=.agentcore-loop/branch.txt
+LOOP_DIR=.roboppi-loop
+LEGACY_DIR=.agentcore-loop
+
+mkdir -p "${LOOP_DIR}"
+
+BASE_BRANCH_FILE="${LOOP_DIR}/base-branch.txt"
+if [ ! -f "${BASE_BRANCH_FILE}" ] && [ -f "${LEGACY_DIR}/base-branch.txt" ]; then
+  BASE_BRANCH_FILE="${LEGACY_DIR}/base-branch.txt"
+fi
+
+BASE_BRANCH=$(
+  cat "${BASE_BRANCH_FILE}" 2>/dev/null \
+    || echo "${BASE_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)}"
+)
+
+BRANCH_FILE="${LOOP_DIR}/branch.txt"
+if [ ! -f "${BRANCH_FILE}" ] && [ -f "${LEGACY_DIR}/branch.txt" ]; then
+  cp "${LEGACY_DIR}/branch.txt" "${BRANCH_FILE}"
+fi
 
 if [ -f "${BRANCH_FILE}" ] && [ -n "$(tr -d ' ' < "${BRANCH_FILE}")" ]; then
   BRANCH=$(cat "${BRANCH_FILE}")
 else
-  BRANCH="agentcore/loop-$(date +%Y%m%d-%H%M%S)"
+  BRANCH="roboppi/loop-$(date +%Y%m%d-%H%M%S)"
   echo "${BRANCH}" > "${BRANCH_FILE}"
 fi
 
