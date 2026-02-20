@@ -1,58 +1,78 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import {
-  parseCompletionDecision,
-  parseCompletionDecisionFromFile,
-} from "../../../src/workflow/completion-decision.js";
+import { resolveCompletionDecision } from "../../../src/workflow/completion-decision.js";
+import type { CompletionCheckDef } from "../../../src/workflow/types.js";
 
-describe("parseCompletionDecision", () => {
-  test("returns fail on empty", () => {
-    expect(parseCompletionDecision("")).toBe("fail");
-    expect(parseCompletionDecision("\n\n")).toBe("fail");
-  });
+let lastTmpDir: string | null = null;
 
-  test("detects COMPLETE marker", () => {
-    expect(parseCompletionDecision("COMPLETE\n")).toBe("complete");
-    expect(parseCompletionDecision("some text\nCOMPLETE\nmore\n")).toBe("complete");
-  });
-
-  test("detects INCOMPLETE marker", () => {
-    expect(parseCompletionDecision("INCOMPLETE\n")).toBe("incomplete");
-    expect(parseCompletionDecision("foo\nINCOMPLETE\nbar\n")).toBe("incomplete");
-  });
-
-  test("does not confuse completed with COMPLETE", () => {
-    expect(parseCompletionDecision('{"type":"turn.completed"}\n')).toBe("fail");
-    expect(parseCompletionDecision('{"type":"item.completed"}\n')).toBe("fail");
-  });
-
-  test("detects markers inside JSON output", () => {
-    const text = [
-      '{"type":"item.completed","item":{"type":"agent_message","text":"INCOMPLETE"}}',
-      '{"type":"turn.completed"}',
-    ].join("\n");
-    expect(parseCompletionDecision(text)).toBe("incomplete");
-
-    const text2 = [
-      '{"type":"item.completed","item":{"type":"agent_message","text":"COMPLETE"}}',
-      '{"type":"turn.completed"}',
-    ].join("\n");
-    expect(parseCompletionDecision(text2)).toBe("complete");
-  });
+afterEach(async () => {
+  if (!lastTmpDir) return;
+  await rm(lastTmpDir, { recursive: true, force: true });
+  lastTmpDir = null;
 });
 
-describe("parseCompletionDecisionFromFile", () => {
-  test("maps PASS/FAIL", () => {
-    expect(parseCompletionDecisionFromFile("PASS\n")).toBe("complete");
-    expect(parseCompletionDecisionFromFile("FAIL\n")).toBe("incomplete");
+function makeCheck(decisionFile: string): CompletionCheckDef {
+  return {
+    worker: "OPENCODE",
+    model: "openai/gpt-5.2",
+    instructions: "Write a decision_file",
+    capabilities: ["READ"],
+    decision_file: decisionFile,
+  } as unknown as CompletionCheckDef;
+}
+
+describe("resolveCompletionDecision (decision_file JSON)", () => {
+  test("fails when decision_file is missing", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roboppi-decision-"));
+    lastTmpDir = dir;
+
+    const check = makeCheck("decision.json");
+    const res = await resolveCompletionDecision(check, dir, Date.now(), "check-1");
+    expect(res.decision).toBe("fail");
+    expect(res.source).toBe("none");
+    expect(res.reason).toBe("decision_file missing");
   });
 
-  test("maps COMPLETE/INCOMPLETE", () => {
-    expect(parseCompletionDecisionFromFile("COMPLETE\n")).toBe("complete");
-    expect(parseCompletionDecisionFromFile("INCOMPLETE\n")).toBe("incomplete");
+  test("reads decision=complete with matching check_id", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roboppi-decision-"));
+    lastTmpDir = dir;
+
+    const check = makeCheck("decision.json");
+    const checkId = "check-123";
+    const startedAt = Date.now();
+    await writeFile(
+      path.join(dir, "decision.json"),
+      JSON.stringify({ decision: "complete", check_id: checkId, reasons: ["ok"], fingerprints: ["t:1"] }),
+      "utf-8",
+    );
+
+    const res = await resolveCompletionDecision(check, dir, startedAt, checkId);
+    expect(res.decision).toBe("complete");
+    expect(res.source).toBe("file-json");
+    expect(res.checkIdMatch).toBe(true);
+    expect(res.reasons).toEqual(["ok"]);
+    expect(res.fingerprints).toEqual(["t:1"]);
   });
 
-  test("returns fail on unknown", () => {
-    expect(parseCompletionDecisionFromFile("maybe")).toBe("fail");
+  test("fails when check_id mismatches", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roboppi-decision-"));
+    lastTmpDir = dir;
+
+    const check = makeCheck("decision.json");
+    const startedAt = Date.now();
+    await writeFile(
+      path.join(dir, "decision.json"),
+      JSON.stringify({ decision: "complete", check_id: "wrong" }),
+      "utf-8",
+    );
+
+    const res = await resolveCompletionDecision(check, dir, startedAt, "expected");
+    expect(res.decision).toBe("fail");
+    expect(res.source).toBe("file-json");
+    expect(res.checkIdMatch).toBe(false);
+    expect(res.reason).toContain("check_id mismatch");
   });
 });

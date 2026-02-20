@@ -11,13 +11,8 @@ set -euo pipefail
 #   .roboppi-loop/review.untracked.diff - diffs for untracked files (as /dev/null -> file)
 
 LOOP_DIR=.roboppi-loop
-LEGACY_DIR=.agentcore-loop
 
 mkdir -p "${LOOP_DIR}"
-
-if [ ! -f "${LOOP_DIR}/base-branch.txt" ] && [ -f "${LEGACY_DIR}/base-branch.txt" ]; then
-  cp "${LEGACY_DIR}/base-branch.txt" "${LOOP_DIR}/base-branch.txt"
-fi
 
 BASE_BRANCH=$(
   cat "${LOOP_DIR}/base-branch.txt" 2>/dev/null \
@@ -40,9 +35,9 @@ git status --porcelain=v1 > "${LOOP_DIR}/review.status" || true
 git ls-files --others --exclude-standard > "${LOOP_DIR}/review.untracked" || true
 
 # For large repos, keep untracked diffs bounded.
-MAX_FILES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_FILES:-200}}
-MAX_FILE_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILE_BYTES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_FILE_BYTES:-200000}}
-MAX_TOTAL_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-2000000}}
+MAX_FILES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILES:-200}
+MAX_FILE_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILE_BYTES:-200000}
+MAX_TOTAL_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-2000000}
 
 out="${LOOP_DIR}/review.untracked.diff"
 : > "${out}"

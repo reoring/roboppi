@@ -2,14 +2,10 @@
 set -euo pipefail
 
 LOOP_DIR=.roboppi-loop
-LEGACY_DIR=.agentcore-loop
 
 mkdir -p "${LOOP_DIR}"
 
 BASE_BRANCH_FILE="${LOOP_DIR}/base-branch.txt"
-if [ ! -f "${BASE_BRANCH_FILE}" ] && [ -f "${LEGACY_DIR}/base-branch.txt" ]; then
-  BASE_BRANCH_FILE="${LEGACY_DIR}/base-branch.txt"
-fi
 
 BASE_BRANCH=$(
   cat "${BASE_BRANCH_FILE}" 2>/dev/null \
@@ -17,9 +13,6 @@ BASE_BRANCH=$(
 )
 
 BRANCH_FILE="${LOOP_DIR}/branch.txt"
-if [ ! -f "${BRANCH_FILE}" ] && [ -f "${LEGACY_DIR}/branch.txt" ]; then
-  cp "${LEGACY_DIR}/branch.txt" "${BRANCH_FILE}"
-fi
 
 if [ -f "${BRANCH_FILE}" ] && [ -n "$(tr -d ' ' < "${BRANCH_FILE}")" ]; then
   BRANCH=$(cat "${BRANCH_FILE}")

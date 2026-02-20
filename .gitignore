@@ -5,8 +5,8 @@ dist
 /agentcore
 /roboppi
 
-# Local AgentCore workflow state
-.agentcore-loop/
+# Local Roboppi workflow state
+.roboppi-loop/
 
 # Local scratch notes (do not commit)
 docs/wip/

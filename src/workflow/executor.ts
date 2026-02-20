@@ -1020,7 +1020,6 @@ export class WorkflowExecutor {
 
     const ignoredPatterns = [
       "context/**",
-      ".agentcore-loop/**",
       ".roboppi-loop/**",
       ".git/**",
       ...(cfg.ignored_paths ?? []),

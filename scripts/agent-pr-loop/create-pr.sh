@@ -2,23 +2,8 @@
 set -euo pipefail
 
 LOOP_DIR=.roboppi-loop
-LEGACY_DIR=.agentcore-loop
 
 mkdir -p "${LOOP_DIR}"
-
-if [ ! -f "${LOOP_DIR}/request.md" ] && [ -f "${LEGACY_DIR}/request.md" ]; then
-  cp "${LEGACY_DIR}/request.md" "${LOOP_DIR}/request.md"
-fi
-if [ ! -f "${LOOP_DIR}/base-branch.txt" ] && [ -f "${LEGACY_DIR}/base-branch.txt" ]; then
-  cp "${LEGACY_DIR}/base-branch.txt" "${LOOP_DIR}/base-branch.txt"
-fi
-if [ ! -f "${LOOP_DIR}/branch.txt" ] && [ -f "${LEGACY_DIR}/branch.txt" ]; then
-  cp "${LEGACY_DIR}/branch.txt" "${LOOP_DIR}/branch.txt"
-fi
-
-if [ ! -f "${LOOP_DIR}/enable_pr" ] && [ -f "${LEGACY_DIR}/enable_pr" ]; then
-  cp "${LEGACY_DIR}/enable_pr" "${LOOP_DIR}/enable_pr"
-fi
 
 if [ ! -f "${LOOP_DIR}/enable_pr" ]; then
   cat > "${LOOP_DIR}/pr.txt" <<EOF

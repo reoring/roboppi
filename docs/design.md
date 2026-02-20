@@ -121,19 +121,19 @@ Workers provide execution environments and capabilities. AgentCore calls them th
 ```
 Scheduler (parent)
   |
-  +-- spawn(agentcore, args...)
+  +-- spawn(roboppi, args...)
   +-- JSON Lines IPC over stdin/stdout
   +-- periodic heartbeat/health monitoring
   |
-  +-> AgentCore (child)
+  +-> Roboppi Core (child)
        +-- processes externally submitted jobs
        +-- issues permits and delegates to workers
        +-- observes, limits, cuts off, escalates
 ```
 
-The Scheduler spawns AgentCore as a child process, keeps stdin/stdout open, and uses **JSON Lines** for bidirectional communication. It monitors response latency via heartbeat and checks memory/CPU thresholds periodically.
+The Scheduler spawns Roboppi Core as a child process, keeps stdin/stdout open, and uses **JSON Lines** for bidirectional communication. It monitors response latency via heartbeat and checks memory/CPU thresholds periodically.
 
-AgentCore behaves as a runtime that processes "jobs given from outside", issues Permits, and spawns/uses workers as needed.
+Roboppi Core behaves as a runtime that processes "jobs given from outside", issues Permits, and spawns/uses workers as needed.
 
 ### 3.2 Crash / hang handling (Supervisor policy)
 

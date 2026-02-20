@@ -33,15 +33,11 @@ function createCleanEnv(extra?: Record<string, string | undefined>): NodeJS.Proc
 
   // Keep tests deterministic and avoid accidental dependency on dev shells.
   for (const key of [
-    "AGENTCORE_AGENTS_FILE",
     "ROBOPPI_AGENTS_FILE",
-    "AGENTCORE_CORE_ENTRYPOINT",
     "ROBOPPI_CORE_ENTRYPOINT",
-    "AGENTCORE_SUPERVISED_IPC_TRANSPORT",
     "ROBOPPI_SUPERVISED_IPC_TRANSPORT",
-    "AGENTCORE_KEEPALIVE",
-    "AGENTCORE_KEEPALIVE_INTERVAL",
-    "AGENTCORE_IPC_TRACE",
+    "ROBOPPI_KEEPALIVE",
+    "ROBOPPI_KEEPALIVE_INTERVAL",
     "ROBOPPI_IPC_TRACE",
   ]) {
     delete env[key];

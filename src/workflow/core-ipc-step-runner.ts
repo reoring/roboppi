@@ -4,7 +4,6 @@ import {
   extractWorkerText,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
-  COMPLETION_CHECK_ID_ENV_ROBOPPI,
 } from "./completion-decision.js";
 import { resolveTaskLike, type ResolvedWorkerTaskDef } from "./resolve-worker-task.js";
 
@@ -131,7 +130,6 @@ export class CoreIpcStepRunner implements StepRunner {
       ? {
         ...(env ?? {}),
         [COMPLETION_CHECK_ID_ENV]: checkId,
-        [COMPLETION_CHECK_ID_ENV_ROBOPPI]: checkId,
       }
       : env;
     const task = resolveTaskLike(check, workspaceDir, checkEnv);
@@ -169,7 +167,6 @@ export class CoreIpcStepRunner implements StepRunner {
       check,
       workspaceDir,
       checkStartedAt,
-      result,
       checkId,
     );
 
@@ -200,7 +197,7 @@ export class CoreIpcStepRunner implements StepRunner {
       complete: false,
       failed: false,
       errorClass: ErrorClass.RETRYABLE_TRANSIENT,
-      reason: decision.reason ?? "could not parse completion decision (expected COMPLETE/INCOMPLETE marker)",
+      reason: decision.reason ?? "could not parse completion decision (expected decision_file JSON)",
       decisionSource: decision.source,
       decisionCheckIdMatch: decision.checkIdMatch,
       ...(decision.reasons ? { reasons: decision.reasons } : {}),

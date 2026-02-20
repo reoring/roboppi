@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// NOTE: Legacy/experimental helper.
+// NOTE: Deprecated/experimental helper.
 // This script spawns worker CLIs directly (not via Core IPC) and is no longer used
 // by the supervised demo workflow.
-import { mkdir, writeFile, readFile, copyFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { MultiWorkerStepRunner } from "../../src/workflow/multi-worker-step-runner.js";
@@ -43,21 +43,10 @@ async function sh(cmd: string): Promise<{ code: number; stdout: string; stderr: 
 async function main(): Promise<void> {
   const workspaceDir = process.cwd();
   const loopDir = path.join(workspaceDir, ".roboppi-loop");
-  const legacyLoopDir = path.join(workspaceDir, ".agentcore-loop");
   await mkdir(loopDir, { recursive: true });
-
-  // Best-effort migration from legacy loop directory.
-  for (const f of ["request.md", "design.md", "todo.md", "base-branch.txt"] as const) {
-    const dst = path.join(loopDir, f);
-    const src = path.join(legacyLoopDir, f);
-    if (!(await exists(dst)) && (await exists(src))) {
-      await copyFile(src, dst);
-    }
-  }
 
   const verbose =
     process.env.ROBOPPI_VERBOSE === "1" ||
-    process.env.AGENTCORE_VERBOSE === "1" ||
     process.env.VERBOSE === "1" ||
     process.env.DEBUG === "1";
 
@@ -85,7 +74,7 @@ async function main(): Promise<void> {
   await writeFile(path.join(loopDir, "review.status"), status.stdout);
   await writeFile(path.join(loopDir, "review.untracked"), untracked.stdout);
 
-  await writeFile(path.join(loopDir, "review.verdict"), "FAIL\n");
+  await writeFile(path.join(loopDir, "review.verdict"), '{"decision":"incomplete"}\n');
   await writeFile(path.join(loopDir, "review.md"), "");
   await writeFile(path.join(loopDir, "fix.md"), "");
 
@@ -100,8 +89,8 @@ Task:
 - Review the work against the request.
 - Use apply_patch to create/overwrite these files:
   - .roboppi-loop/review.md
-  - .roboppi-loop/review.verdict (PASS or FAIL only)
-- If verdict is FAIL, also create/overwrite:
+  - .roboppi-loop/review.verdict (structured JSON only: {"decision":"complete"|"incomplete","check_id":"..."} ; include check_id when ROBOPPI_COMPLETION_CHECK_ID is provided)
+- If verdict is incomplete, also create/overwrite:
   - .roboppi-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
 
 You must read at least:
@@ -144,9 +133,9 @@ Format for .roboppi-loop/review.md:
       model: "openai/gpt-5.2",
       instructions: `Use apply_patch to write:
 - .roboppi-loop/review.md
-- .roboppi-loop/review.verdict (PASS or FAIL)
+- .roboppi-loop/review.verdict (structured JSON only: {"decision":"complete"|"incomplete","check_id":"..."})
 
-If verdict is FAIL, also write:
+If verdict is incomplete, also write:
 - .roboppi-loop/fix.md (non-empty)
 
 Base your decision on:
@@ -170,11 +159,22 @@ Base your decision on:
   }
 
   const verdictRaw = await readText(verdictPath);
-  const verdict = verdictRaw.trim().toUpperCase();
+  const trimmed = verdictRaw.trim();
+  let decision: "complete" | "incomplete" | null = null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const d = (parsed as { decision?: unknown }).decision;
+      if (d === "complete" || d === "incomplete") decision = d;
+    }
+  } catch {
+    // ignore
+  }
 
-  console.log(`[review-fix-once] verdict: ${verdict || "(missing)"}`);
-  if (verdict === "PASS") {
-    return;
+  console.log(`[review-fix-once] verdict: ${decision ?? "(invalid)"}`);
+  if (decision === "complete") return;
+  if (decision !== "incomplete") {
+    throw new Error("review.verdict must be JSON with decision=complete|incomplete");
   }
 
   const fixPath = path.join(loopDir, "fix.md");

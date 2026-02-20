@@ -6,8 +6,8 @@ name: simple-cron
 version: "1"
 description: "A simple daemon that runs a health-check every 30 seconds"
 
-workspace: "/tmp/agentcore-daemon-simple"
-state_dir: "/tmp/agentcore-daemon-simple/.daemon-state"
+workspace: "/tmp/roboppi-daemon-simple"
+state_dir: "/tmp/roboppi-daemon-simple/.daemon-state"
 
 events:
   tick:

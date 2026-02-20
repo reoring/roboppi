@@ -1,7 +1,6 @@
 import { JsonLinesTransport } from "../ipc/json-lines-transport.js";
 import { IpcProtocol } from "../ipc/protocol.js";
 import { AgentCore, type AgentCoreConfig } from "./agentcore.js";
-import { applyEnvPrefixAliases } from "./env-aliases.js";
 import { Logger } from "./observability.js";
 
 import { ProcessManager } from "../worker/process-manager.js";
@@ -69,15 +68,12 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
   const logger = new Logger(options.loggerComponent ?? "main", config?.logLevel ?? "info");
 
   // Mark this process as the Core runtime for logging/diagnostics.
-  applyEnvPrefixAliases();
   if (!process.env.ROBOPPI_COMPONENT) process.env.ROBOPPI_COMPONENT = "core";
-  if (!process.env.AGENTCORE_COMPONENT) process.env.AGENTCORE_COMPONENT = "core";
-  applyEnvPrefixAliases();
 
   // IPC transport: JSONL over either stdio or a supervised IPC socket.
-  const ipcSocketPath = (process.env.AGENTCORE_IPC_SOCKET_PATH ?? process.env.ROBOPPI_IPC_SOCKET_PATH)?.trim();
-  const ipcSocketHost = (process.env.AGENTCORE_IPC_SOCKET_HOST ?? process.env.ROBOPPI_IPC_SOCKET_HOST)?.trim();
-  const ipcSocketPortRaw = (process.env.AGENTCORE_IPC_SOCKET_PORT ?? process.env.ROBOPPI_IPC_SOCKET_PORT)?.trim();
+  const ipcSocketPath = process.env.ROBOPPI_IPC_SOCKET_PATH?.trim();
+  const ipcSocketHost = process.env.ROBOPPI_IPC_SOCKET_HOST?.trim();
+  const ipcSocketPortRaw = process.env.ROBOPPI_IPC_SOCKET_PORT?.trim();
 
   let ipcSocket: Socket | null = null;
   let ipcSocketKind: "unix" | "tcp" | null = null;
@@ -88,7 +84,7 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
   if (ipcSocketPortRaw) {
     const port = Number.parseInt(ipcSocketPortRaw, 10);
     if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-      throw new Error(`Invalid AGENTCORE_IPC_SOCKET_PORT: "${ipcSocketPortRaw}"`);
+      throw new Error(`Invalid ROBOPPI_IPC_SOCKET_PORT: "${ipcSocketPortRaw}"`);
     }
     const host = ipcSocketHost && ipcSocketHost !== "" ? ipcSocketHost : "127.0.0.1";
     ipcSocket = createConnection({ host, port });
@@ -139,9 +135,9 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
 
   // Keepalive output for environments that kill silent subprocesses.
   // Enabled by default when non-interactive; can be overridden via env.
-  const keepaliveEnabled = parseEnvBool(process.env.AGENTCORE_KEEPALIVE) ?? isNonInteractive();
+  const keepaliveEnabled = parseEnvBool(process.env.ROBOPPI_KEEPALIVE) ?? isNonInteractive();
   const keepaliveIntervalMs = (() => {
-    const raw = process.env.AGENTCORE_KEEPALIVE_INTERVAL ?? "10s";
+    const raw = process.env.ROBOPPI_KEEPALIVE_INTERVAL ?? "10s";
     try {
       return parseDurationMs(raw);
     } catch {
@@ -198,7 +194,7 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
     shutdown("unhandledRejection").catch(() => process.exit(1));
   });
 
-  logger.info("AgentCore starting", {
+  logger.info("Roboppi core starting", {
     config: {
       concurrency: config?.budget?.maxConcurrency ?? 10,
       rps: config?.budget?.maxRps ?? 50,
@@ -208,7 +204,7 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
 
   core.start();
 
-  logger.info("AgentCore started, awaiting IPC messages", {
+  logger.info("Roboppi core started, awaiting IPC messages", {
     transport: ipcSocket ? (ipcSocketKind === "tcp" ? "tcp" : "socket") : "stdio",
     socketPath: ipcSocketKind === "unix" ? (ipcSocketPath || undefined) : undefined,
     socketHost: ipcSocketKind === "tcp" ? resolvedIpcHost : undefined,

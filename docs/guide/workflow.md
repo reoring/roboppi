@@ -153,7 +153,7 @@ steps:
 
 The runner loads agent catalogs from these sources:
 
-- Explicit: `AGENTCORE_AGENTS_FILE` (colon-separated list) + `--agents <path>` (repeatable). If the same agent id is defined multiple times, later definitions override earlier ones (so `--agents` wins over `AGENTCORE_AGENTS_FILE`).
+- Explicit: `ROBOPPI_AGENTS_FILE` (colon-separated list) + `--agents <path>` (repeatable). If the same agent id is defined multiple times, later definitions override earlier ones (so `--agents` wins over `ROBOPPI_AGENTS_FILE`).
 - Implicit (only when no explicit paths are provided): `agents.yaml` / `agents.yml` next to the workflow YAML.
 
 ### capabilities
@@ -389,7 +389,7 @@ Step start (iteration 1)
 | `instructions` | string | yes | check instructions |
 | `capabilities` | enum[] | yes | checker capabilities (usually `[READ]`) |
 | `timeout` | DurationString | no | timeout per check |
-| `decision_file` | string | no | optional decision file path (workspace-relative). If set, Roboppi reads it after the check runs. Supported formats: structured JSON `{"decision":"complete"|"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}` (recommended) and legacy `PASS/COMPLETE` / `FAIL/INCOMPLETE` text. When `decision_file` is set, the runner provides `ROBOPPI_COMPLETION_CHECK_ID` (and legacy `AGENTCORE_COMPLETION_CHECK_ID`) in the check environment so the checker can include it as `check_id`. |
+| `decision_file` | string | no | decision file path (workspace-relative). Required for non-`CUSTOM` completion checks. Roboppi reads it after the check runs. Format: structured JSON `{"decision":"complete"|"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}`. The runner provides `ROBOPPI_COMPLETION_CHECK_ID` in the check environment so the checker can include it as `check_id`. |
 
 ### convergence fields (opt-in)
 
@@ -583,7 +583,7 @@ Use `--direct` to spawn worker processes directly from the runner (no Core IPC).
 | `--no-keepalive` | - | disable keepalive output | - |
 | `--keepalive-interval <d>` | - | keepalive interval (DurationString) | `10s` |
 | `--ipc-request-timeout <d>` | - | IPC request timeout for supervised mode (DurationString) | `2m` |
-| `--agents <path>` | - | agent catalog YAML (repeatable); merged with `AGENTCORE_AGENTS_FILE` | auto-load `agents.yaml` / `agents.yml` next to workflow |
+| `--agents <path>` | - | agent catalog YAML (repeatable); merged with `ROBOPPI_AGENTS_FILE` | auto-load `agents.yaml` / `agents.yml` next to workflow |
 | `--help` | `-h` | show help | - |
 
 ### Examples
@@ -615,7 +615,7 @@ roboppi workflow examples/agent-pr-loop.yaml --direct --verbose
 Running prints output like:
 
 ```
-Workflow: /home/user/agentcore/examples/build-test-report.yaml
+Workflow: /home/user/roboppi/examples/build-test-report.yaml
 Name:     build-test-report
 Steps:    build, test-math, test-greet, report
 Timeout:  5m

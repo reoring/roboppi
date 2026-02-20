@@ -9,8 +9,8 @@ name: file-watcher
 version: "1"
 description: "Run tests automatically when TypeScript files change"
 
-workspace: "/tmp/agentcore-daemon-watcher"
-state_dir: "/tmp/agentcore-daemon-watcher/.daemon-state"
+workspace: "/tmp/roboppi-daemon-watcher"
+state_dir: "/tmp/roboppi-daemon-watcher/.daemon-state"
 
 events:
   src-change:

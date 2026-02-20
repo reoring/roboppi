@@ -182,7 +182,7 @@ function resolveSetSidPath(): string | null {
   if (process.platform === "win32") return null;
 
   // Prefer fixed locations to avoid PATH scans that may be slow/hang on some systems.
-  const override = process.env.AGENTCORE_SETSID_PATH;
+  const override = process.env.ROBOPPI_SETSID_PATH;
   const candidates = [
     override,
     "/usr/bin/setsid",
@@ -199,7 +199,7 @@ function resolveSetSidPath(): string | null {
   }
 
   // Optional fallback to Bun.which when explicitly enabled.
-  if (process.env.AGENTCORE_SETSID_USE_WHICH === "1") {
+  if (process.env.ROBOPPI_SETSID_USE_WHICH === "1") {
     try {
       return Bun.which("setsid");
     } catch {

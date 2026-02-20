@@ -1,33 +1,33 @@
 /**
- * Manual E2E test: Spawn AgentCore directly and communicate via JSON Lines.
+ * Manual E2E test: Spawn Roboppi Core directly and communicate via JSON Lines.
  */
 import { generateId } from "../src/types/common.js";
 import { JobType, PriorityClass } from "../src/types/index.js";
 
 const log = (msg: string) => console.error(`[manual-test] ${msg}`);
 
-log("=== AgentCore Manual E2E Test ===\n");
+log("=== Roboppi Core Manual E2E Test ===\n");
 
-// Spawn AgentCore as child process
-log("Spawning AgentCore child process...");
+// Spawn Roboppi Core as child process
+log("Spawning Roboppi Core child process...");
 const proc = Bun.spawn(["bun", "run", "src/index.ts"], {
-  cwd: "/home/reoring/agentcore",
+  cwd: process.cwd(),
   stdin: "pipe",
   stdout: "pipe",
   stderr: "inherit",
 });
 
-log(`AgentCore PID: ${proc.pid}`);
+log(`Core PID: ${proc.pid}`);
 
-// Helper: send JSON Lines message to AgentCore's stdin
-function send(msg: object) {
+// Helper: send JSON Lines message to Core's stdin
+function send(msg: { type: string } & Record<string, unknown>) {
   const line = JSON.stringify(msg) + "\n";
   log(`  -> ${msg.type}: ${line.trim()}`);
   proc.stdin.write(line);
   proc.stdin.flush();
 }
 
-// Helper: read responses from AgentCore's stdout
+// Helper: read responses from Core's stdout
 async function readResponses(maxWaitMs: number): Promise<unknown[]> {
   const messages: unknown[] = [];
   const decoder = new TextDecoder();

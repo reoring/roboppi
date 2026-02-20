@@ -26,7 +26,7 @@ export class JsonLinesTransport {
   private closed = false;
   private readLoopPromise: Promise<void> | null = null;
 
-  private readonly traceEnabled = process.env.AGENTCORE_IPC_TRACE === "1";
+  private readonly traceEnabled = process.env.ROBOPPI_IPC_TRACE === "1";
 
   constructor(
     input: ReadableStream<Uint8Array>,

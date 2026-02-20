@@ -4,15 +4,15 @@
 
 ## 問題
 
-2026-02-14 の実行（`/home/reoring/appthrust/platform/.agentcore-loop/run-local-workflow-20260214-214510.log`）で、以下を確認した。
+2026-02-14 の実行（`/home/reoring/appthrust/platform/.roboppi-loop/run-local-workflow-20260214-214510.log`）で、以下を確認した。
 
 - `completion decision` の parse failure（`expected COMPLETE/INCOMPLETE marker`）はこのログでは発生していない
-  - `completion decision: incomplete source=file-legacy` を複数回確認
+  - `completion decision: incomplete source=file-text` を複数回確認
   - parse failure 自体は別 run で発生しており、先行 issue で扱う
 - `implement` は `INCOMPLETE` 判定で iteration を継続する（収束制御が弱い）
 - 少なくとも 1 回はテスト失敗が観測されている
   - `go test ./...` が `template_test.go:104` で FAIL（`gateway-api-crds-template should contain standard install header`）
-  - その後に `go test ./...` が PASS するケースもあり得るが、判定が `INCOMPLETE` のまま反復し得る（例: legacy verdict が FAIL のまま / スコープ逸脱が残る）
+  - その後に `go test ./...` が PASS するケースもあり得るが、判定が `INCOMPLETE` のまま反復し得る（例: 互換 verdict が FAIL のまま / スコープ逸脱が残る）
 
 つまり、判定の安定性問題（前 issue）は改善されつつあるが、"INCOMPLETE を自律的に収束させる" 制御が不足している。
 
@@ -54,7 +54,7 @@ completion 判定は LLM 自由文ではなく、**機械生成 JSON を正経�
 - `decision_file` 例（推奨）:
   - `{"decision":"complete|incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}`
 - `check_id` により stale file 混入を時刻比較なしで防止
-- legacy 互換（PASS/FAIL, COMPLETE/INCOMPLETE）も当面維持
+- 互換（PASS/FAIL, COMPLETE/INCOMPLETE）も当面維持
 
 この issue の self-healing は、`reasons` / `fingerprints` を主要シグナルとして利用する。
 
@@ -97,7 +97,7 @@ workflow に `allowed_paths` を定義し、範囲外変更を検出したら `I
 
 実装メモ:
 - git repo であれば `git status --porcelain` / `git diff --name-only` で変更ファイル集合を取得し、allowed_paths に照合する
-- workflow 生成物（例: `context/`, `.agentcore-loop/`）は scope 判定から除外する（誤検知防止）
+- workflow 生成物（例: `context/`, `.roboppi-loop/`）は scope 判定から除外する（誤検知防止）
 
 ## 6) Completion Check を完全機械判定へ寄せる
 
@@ -117,7 +117,7 @@ workflow に `allowed_paths` を定義し、範囲外変更を検出したら `I
 
 推奨保存先:
 - workflow workspace の `context/<step>/...`（runner が収集しやすい）
-- 併用で `.agentcore-loop/` にも置く場合は `.gitignore` 前提
+- 併用で `.roboppi-loop/` にも置く場合は `.gitignore` 前提
 
 ## 実装計画
 
@@ -149,7 +149,7 @@ workflow に `allowed_paths` を定義し、範囲外変更を検出したら `I
 2. stage 上限到達時、`FAILED` は原因（fingerprint/reason）付きで返る
 3. baseline 差分で `new_failures == 0` のときのみ `COMPLETE` になる
 4. `allowed_paths` 外の変更は検知・記録される
-5. 既存 workflow（legacy verdict）との互換を維持する
+5. 既存 workflow（互換 verdict）との互換を維持する
 
 ## 非目標
 

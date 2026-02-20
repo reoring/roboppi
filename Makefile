@@ -2,7 +2,6 @@
 .PHONY: all build test tests test-unit test-integration test-at test-branch test-all typecheck clean install uninstall dev help
 
 BIN := roboppi
-LEGACY_BIN := agentcore
 
 # Legacy build artifacts (no longer built by default)
 EXTRA_BINS := roboppi-core roboppi-workflow roboppi-daemon
@@ -20,7 +19,6 @@ all: build ## Build the binary (default)
 
 build: ## Build a single binary (roboppi)
 	$(BUN) $(BUN_FLAGS) build $(BUN_BUILD_FLAGS) --compile $(SRC) --outfile $(BIN)
-	@ln -sf $(BIN) $(LEGACY_BIN) 2>/dev/null || cp $(BIN) $(LEGACY_BIN)
 
 test: ## Run all tests
 	$(BUN) $(BUN_FLAGS) test
@@ -46,14 +44,13 @@ typecheck: ## Run TypeScript type checker
 	$(BUN) $(BUN_FLAGS) x tsc --noEmit
 
 clean: ## Remove build artifacts
-	rm -f $(BIN) $(LEGACY_BIN) $(EXTRA_BINS)
+	rm -f $(BIN) $(EXTRA_BINS)
 
 install: build ## Install binary to /usr/local/bin
 	install -m 755 $(BIN) /usr/local/bin/$(BIN)
-	@ln -sf /usr/local/bin/$(BIN) /usr/local/bin/$(LEGACY_BIN) 2>/dev/null || cp /usr/local/bin/$(BIN) /usr/local/bin/$(LEGACY_BIN)
 
 uninstall: ## Remove binary from /usr/local/bin
-	rm -f /usr/local/bin/$(BIN) /usr/local/bin/$(LEGACY_BIN) $(addprefix /usr/local/bin/,$(EXTRA_BINS))
+	rm -f /usr/local/bin/$(BIN) $(addprefix /usr/local/bin/,$(EXTRA_BINS))
 
 dev: ## Run in dev mode (no build)
 	$(BUN) $(BUN_FLAGS) run $(SRC)

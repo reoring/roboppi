@@ -1,10 +1,9 @@
 {
   "name": "roboppi",
-  "version": "0.1.2",
+  "version": "0.1.1",
   "type": "module",
   "bin": {
-    "roboppi": "src/cli.ts",
-    "agentcore": "src/cli.ts"
+    "roboppi": "src/cli.ts"
   },
   "scripts": {
     "start": "bun run src/cli.ts",

@@ -36,7 +36,7 @@
 - サブコマンド分岐: `roboppi workflow`/`roboppi daemon`/`roboppi run`/`roboppi agent`
 - `agent` は `run` のエイリアスとして同等のエラー/終了コードになる
 - Core IPC: stdout（または socket）には JSON Lines のみ、ログは stderr
-- supervised transport: `AGENTCORE_SUPERVISED_IPC_TRANSPORT` / `ROBOPPI_SUPERVISED_IPC_TRANSPORT` の解決
+- supervised transport: `ROBOPPI_SUPERVISED_IPC_TRANSPORT` の解決
 - compiled 時の Core 起動: Core entrypoint が `process.execPath`（=同一バイナリ）でも動作する
 - OOM 対策: `BUN_FLAGS=--smol`（ビルド/テスト時）、`BUN_BUILD_FLAGS=--compile-exec-argv=--smol`（compiled の子 Core）
 

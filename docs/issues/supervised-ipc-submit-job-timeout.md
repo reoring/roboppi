@@ -20,39 +20,39 @@ Key symptom from IPC tracing:
 
 So the break is: Runner -> Core stdin (message never observed by Core).
 
-Mitigation: use the socket-based supervised IPC transport (`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`) which bypasses stdio pipes entirely.
+Mitigation: use the socket-based supervised IPC transport (`ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket`) which bypasses stdio pipes entirely.
 
 If your environment blocks Unix domain sockets (e.g. `listen` fails with `EPERM`/`EACCES`), use the TCP loopback transport instead:
 
-- `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`
+- `ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp`
 
 ## Repro
 
 Typical demo repro (force stdio; may fail in affected environments):
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
 Socket transport (expected to succeed):
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
 TCP transport (useful when Unix sockets are blocked):
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
-Note: `src/workflow/run.ts` defaults `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket` in non-interactive `--supervised` runs.
+Note: `src/workflow/run.ts` defaults `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket` in non-interactive `--supervised` runs.
 
 Notes:
 
@@ -72,7 +72,7 @@ Notes:
 - Found default IPC request timeout of 30s (`DEFAULT_REQUEST_TIMEOUT_MS = 30_000`).
 - Made IPC request timeout configurable and raised default for supervised runner to `2m`:
   - CLI: `--ipc-request-timeout <DurationString>`
-  - env: `AGENTCORE_IPC_REQUEST_TIMEOUT` / `AGENTCORE_IPC_REQUEST_TIMEOUT_MS`
+  - env: `ROBOPPI_IPC_REQUEST_TIMEOUT` / `ROBOPPI_IPC_REQUEST_TIMEOUT_MS`
 
 3) Step timeout interaction
 
@@ -86,10 +86,10 @@ Notes:
 
 5) IPC trace tooling
 
-- Added `AGENTCORE_IPC_TRACE=1` support in `src/ipc/json-lines-transport.ts`:
+- Added `ROBOPPI_IPC_TRACE=1` support in `src/ipc/json-lines-transport.ts`:
   - Logs `tx`/`rx` with pid/type/requestId/jobId.
 - Added demo trace helpers:
-  - `examples/agent-pr-loop-demo/run-in-tmp.sh` prints `AGENTCORE_ROOT` and git SHA when tracing.
+  - `examples/agent-pr-loop-demo/run-in-tmp.sh` prints `ROBOPPI_ROOT` and git SHA when tracing.
 
 6) Transport-level errors
 
@@ -109,11 +109,11 @@ These changes improve supervised IPC in many environments, but some setups still
 
 8) Socket-based supervised IPC transport
 
-- Added a socket transport for supervised IPC to bypass stdio pipes: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`.
+- Added a socket transport for supervised IPC to bypass stdio pipes: `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket`.
   - Uses a Unix domain socket by default; falls back to TCP loopback when Unix sockets are not permitted.
-  - You can force TCP with `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`.
-- `src/workflow/run.ts` defaults to `socket` in non-interactive `--supervised` runs (override via `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`).
-- Core connects via `AGENTCORE_IPC_SOCKET_PATH` (Unix) or `AGENTCORE_IPC_SOCKET_HOST` + `AGENTCORE_IPC_SOCKET_PORT` (TCP), set by Supervisor.
+  - You can force TCP with `ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp`.
+- `src/workflow/run.ts` defaults to `socket` in non-interactive `--supervised` runs (override via `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`).
+- Core connects via `ROBOPPI_IPC_SOCKET_PATH` (Unix) or `ROBOPPI_IPC_SOCKET_HOST` + `ROBOPPI_IPC_SOCKET_PORT` (TCP), set by Supervisor.
 
 ## Related Work (Agent PR Loop Demo)
 
@@ -121,15 +121,15 @@ While investigating, the agent PR loop demo/workflow was also strengthened:
 
 - `examples/agent-pr-loop.yaml`: changed to loop `implement` (Claude Code) based on review verdict, using `completion_check`.
 - `completion_check` decision now supports file-based decision via `decision_file` to avoid reliance on stdout markers.
-- `scripts/agent-pr-loop/review-inputs.sh`: generates `.agentcore-loop/review.untracked.diff` so reviews include untracked file diffs.
+- `scripts/agent-pr-loop/review-inputs.sh`: generates `.roboppi-loop/review.untracked.diff` so reviews include untracked file diffs.
 - `examples/agent-pr-loop-demo/request.md`: raised quality bar with explicit edge cases.
 - `examples/agent-pr-loop-demo/run-in-tmp.sh`: added black-box verification after workflow completion.
 
 ## Current Status / Next Steps
 
 - Root issue: supervised stdio pipes can drop Runner -> Core messages in some non-interactive environments, leading to `submit_job` ACK timeouts.
-- Mitigation implemented: socket transport for supervised IPC (`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`), now the default in non-interactive `--supervised` runs via `src/workflow/run.ts`.
-- If you need the old behavior (or want to repro the original failure), force: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio`.
+- Mitigation implemented: socket transport for supervised IPC (`ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket`), now the default in non-interactive `--supervised` runs via `src/workflow/run.ts`.
+- If you need the old behavior (or want to repro the original failure), force: `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio`.
 
 ## 2026-02-14 Follow-up
 
@@ -147,7 +147,7 @@ Implemented additional stdio hardening to reduce the chance of Supervisor → Co
 
 ### Remaining validation steps (stdio transport)
 
-- Re-run the repro with `AGENTCORE_IPC_TRACE=1`.
+- Re-run the repro with `ROBOPPI_IPC_TRACE=1`.
 - Confirm trace includes:
   - `tx submit_job` (Runner)
   - `rx submit_job` (Core)
@@ -158,15 +158,15 @@ Implemented additional stdio hardening to reduce the chance of Supervisor → Co
 ### 2026-02-14 (stdio) 再実行結果
 
 - Repro command (forced stdio):
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=20s bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=20s bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
 - Both commands still show:
   - Runner `tx submit_job`
   - Core startup logs (`AgentCore starting`, `AgentCore started, awaiting IPC messages`)
   - **No Core `[IPC][rx]` / ack**
   - 20–45s timeout then workflow fail
 - Additional isolation check:
-  - `AGENTCORE_IPC_TRACE=1 bun /home/reoring/roboppi/src/index.ts` with shell pipe (`printf ... | bun src/index.ts`) works and prints Core `[IPC][rx] submit_job` + `ack`.
+  - `ROBOPPI_IPC_TRACE=1 bun /home/reoring/roboppi/src/index.ts` with shell pipe (`printf ... | bun src/index.ts`) works and prints Core `[IPC][rx] submit_job` + `ack`.
   - The supervisor-like path that uses Bun runtime + `node:child_process` writing to a child bun process does not elicit Core `[IPC][rx]`, even when using minimal writer scripts.
 - Current hypothesis update (stdio):
   - On this machine, Bun runtime process-spawn + pipe transport may discard `stdin` for child bun processes at transport layer.
@@ -175,7 +175,7 @@ Implemented additional stdio hardening to reduce the chance of Supervisor → Co
 ### 2026-02-14 (socket) 再実行結果
 
 - Verified socket transport fixes the issue end-to-end:
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh` -> workflow `SUCCEEDED` and demo post-checks passed.
-  - `AGENTCORE_IPC_TRACE=1 bun run src/workflow/run.ts examples/hello-world.yaml --supervised` -> Core `[IPC][rx] submit_job` and `ack` observed; workflow `SUCCEEDED`.
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh` -> workflow `SUCCEEDED` and demo post-checks passed.
+  - `ROBOPPI_IPC_TRACE=1 bun run src/workflow/run.ts examples/hello-world.yaml --supervised` -> Core `[IPC][rx] submit_job` and `ack` observed; workflow `SUCCEEDED`.
 - Full test suite passes: `bun test` (949 tests).
 - Conclusion: use socket transport for non-interactive supervised runs; keep stdio as a fallback/debug option.

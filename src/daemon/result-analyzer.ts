@@ -56,7 +56,6 @@ export class ResultAnalyzer {
     const varsEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(vars)) {
       const upper = key.toUpperCase();
-      varsEnv[`AGENTCORE_${upper}`] = value;
       varsEnv[`ROBOPPI_${upper}`] = value;
     }
     const env: Record<string, string> = { ...process.env as Record<string, string>, ...varsEnv };

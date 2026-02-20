@@ -57,12 +57,12 @@ completion_check:
 
 Workflow runner:
 
-- Explicit: `ROBOPPI_AGENTS_FILE=/a.yaml:/b.yaml` (colon-separated) and/or `--agents <path>` (repeatable) (legacy `AGENTCORE_AGENTS_FILE` also supported)
+- Explicit: `ROBOPPI_AGENTS_FILE=/a.yaml:/b.yaml` (colon-separated) and/or `--agents <path>` (repeatable)
 - Implicit: if no explicit paths are provided, auto-load `agents.yaml` / `agents.yml` next to the workflow YAML
 
 Daemon:
 
 - Daemon config can set `agents_file: "./agents.yaml"` (relative to `workspace`)
-- You can also set `ROBOPPI_AGENTS_FILE` globally or per-trigger via `triggers.<id>.context.env` (legacy `AGENTCORE_AGENTS_FILE` also supported)
+- You can also set `ROBOPPI_AGENTS_FILE` globally or per-trigger via `triggers.<id>.context.env`
 
 When multiple catalogs define the same agent id, later sources override earlier ones.

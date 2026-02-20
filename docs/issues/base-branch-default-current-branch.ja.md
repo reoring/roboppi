@@ -105,11 +105,11 @@ controller loop 実行時に `BASE_BRANCH` の手動指定が前提になって�
 - パターン仕様: `*` を含む場合は glob として扱う（例: `release/*`）。それ以外は完全一致。
 - 設定（リスト上書き）:
   - CLI: `--protected-branches <csv>`（例: `main,master,release/*`）
-  - env: `AGENTCORE_PROTECTED_BRANCHES=<csv>`
+  - env: `ROBOPPI_PROTECTED_BRANCHES=<csv>`
   - 優先順位: CLI > env > default
 - 一時 override（ガード無効化; 危険操作なので明示が必要）:
   - CLI: `--allow-protected-branch`
-  - env: `AGENTCORE_ALLOW_PROTECTED_BRANCH=1`
+  - env: `ROBOPPI_ALLOW_PROTECTED_BRANCH=1`
   - override 有効時も、起動ログ/context に `allow_protected_branch: true` を残し、強い warning を出す
 
 ## 4) 可観測性の強化
@@ -137,8 +137,8 @@ controller loop 実行時に `BASE_BRANCH` の手動指定が前提になって�
 4. mismatch 時のエラーメッセージを定型化
 5. run script / docs を「現在ブランチ既定」前提に更新
 6. `effective_base_branch_source` / `effective_base_sha` / `startup_head_sha` / `startup_toplevel` の schema を追加し、成果物に含める
-7. `protected_branches` resolver（既定 + `AGENTCORE_PROTECTED_BRANCHES` + `--protected-branches`）を追加
-8. `protected_branches` ガードと明示 override（`AGENTCORE_ALLOW_PROTECTED_BRANCH` / `--allow-protected-branch`）を追加し、ログに理由を残す
+7. `protected_branches` resolver（既定 + `ROBOPPI_PROTECTED_BRANCHES` + `--protected-branches`）を追加
+8. `protected_branches` ガードと明示 override（`ROBOPPI_ALLOW_PROTECTED_BRANCH` / `--allow-protected-branch`）を追加し、ログに理由を残す
 
 ## 受け入れ条件
 
@@ -146,10 +146,10 @@ controller loop 実行時に `BASE_BRANCH` の手動指定が前提になって�
 2. 実行中に branch が想定とずれたら、実装 step に入る前に停止する
 3. 起動ログと context から有効 branch 設定（branch 名/由来/SHA）を一意に確認できる
 4. `BASE_BRANCH` 明示指定時は override される（必要なら warning を表示）
-5. `create_branch=false` で保護ブランチに対して実行しようとすると、明示 override（`AGENTCORE_ALLOW_PROTECTED_BRANCH=1` または `--allow-protected-branch`）がない限り停止する
-6. `AGENTCORE_PROTECTED_BRANCHES` / `--protected-branches` 未指定時、`protected_branches` は既定の `main,master,release/*` で確定し、`protected_branches_source=default` になる
-7. `AGENTCORE_PROTECTED_BRANCHES` または `--protected-branches` 指定時、`protected_branches` が上書きされ、`protected_branches_source` が `env|cli` として記録される
-8. `AGENTCORE_ALLOW_PROTECTED_BRANCH=1` または `--allow-protected-branch` 指定時、`allow_protected_branch=true` がログ/context に記録される
+5. `create_branch=false` で保護ブランチに対して実行しようとすると、明示 override（`ROBOPPI_ALLOW_PROTECTED_BRANCH=1` または `--allow-protected-branch`）がない限り停止する
+6. `ROBOPPI_PROTECTED_BRANCHES` / `--protected-branches` 未指定時、`protected_branches` は既定の `main,master,release/*` で確定し、`protected_branches_source=default` になる
+7. `ROBOPPI_PROTECTED_BRANCHES` または `--protected-branches` 指定時、`protected_branches` が上書きされ、`protected_branches_source` が `env|cli` として記録される
+8. `ROBOPPI_ALLOW_PROTECTED_BRANCH=1` または `--allow-protected-branch` 指定時、`allow_protected_branch=true` がログ/context に記録される
 
 ## 非目標
 
@@ -171,4 +171,4 @@ controller loop 実行時に `BASE_BRANCH` の手動指定が前提になって�
 - 緩和: `protected_branches` ガードをデフォルト有効にし、明示 override がない限り fail-fast する
 
 5. `release/*` 既定が運用をブロックする可能性
-- 緩和: `AGENTCORE_PROTECTED_BRANCHES` / `--protected-branches` で `main,master` のみに絞れる。緊急時は `AGENTCORE_ALLOW_PROTECTED_BRANCH=1` / `--allow-protected-branch` を明示し warning 付きで通す
+- 緩和: `ROBOPPI_PROTECTED_BRANCHES` / `--protected-branches` で `main,master` のみに絞れる。緊急時は `ROBOPPI_ALLOW_PROTECTED_BRANCH=1` / `--allow-protected-branch` を明示し warning 付きで通す

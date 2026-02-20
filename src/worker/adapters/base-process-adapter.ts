@@ -84,7 +84,7 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
       processGroup: true,
     });
 
-    if (process.env.AGENTCORE_VERBOSE === "1" && process.env.AGENTCORE_COMPONENT === "core") {
+    if (process.env.ROBOPPI_VERBOSE === "1" && process.env.ROBOPPI_COMPONENT === "core") {
       const rendered = renderCommandForLogs(command, task);
       process.stderr.write(
         `[core][worker:${this.kind}] spawn pid=${managed.pid} cwd=${task.workspaceRef} cmd=${rendered}\n`,
@@ -269,7 +269,7 @@ function toStderrObservation(stderr: string): Observation | null {
 }
 
 function renderCommandForLogs(cmd: string[], task: WorkerTask): string {
-  const showPrompts = process.env.AGENTCORE_SHOW_WORKER_PROMPTS === "1";
+  const showPrompts = process.env.ROBOPPI_SHOW_WORKER_PROMPTS === "1";
   const instr = task.instructions;
 
   const renderedArgs = cmd.map((arg, i) => {

@@ -11,8 +11,7 @@ Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime
 It does not try to be "the agent". It enforces safety invariants around external worker CLIs (OpenCode / Claude Code / Codex CLI / plain shell), so your automation stops when it should, stays within budgets, and leaves a trail you can audit.
 
 Note: the primary CLI/binary name is `roboppi`.
-- Compatibility: `agentcore` remains as a legacy alias.
-- Env vars/state dirs: prefer `ROBOPPI_` / `.roboppi-loop/` (legacy `AGENTCORE_` / `.agentcore-loop/` are still accepted).
+- Env vars/state dirs: use `ROBOPPI_` / `.roboppi-loop/`.
 
 ## What Roboppi Can Do (Capabilities)
 
@@ -191,7 +190,7 @@ ROBOPPI_ROOT="$ROBOPPI_ROOT" bun run --cwd "$ROBOPPI_ROOT" src/workflow/run.ts \
 
 Notes:
 
-- The workflow writes state/artifacts under `.roboppi-loop/` and `context/` inside the target workspace (typically gitignored; legacy `.agentcore-loop/` is still accepted).
+- The workflow writes state/artifacts under `.roboppi-loop/` and `context/` inside the target workspace (typically gitignored).
 - PR creation is opt-in via `.roboppi-loop/enable_pr`.
 
 ## Workflow YAML At A Glance
@@ -273,9 +272,9 @@ Docs:
 Workflows/daemon run supervised by default. In supervised mode, the runner starts a Core child process and delegates steps over IPC.
 
 - Default: interactive runs typically use stdio; non-interactive runs default to a socket transport.
-- Override transport: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`
-- Debug IPC: `AGENTCORE_IPC_TRACE=1`
-- Tune request timeouts: `AGENTCORE_IPC_REQUEST_TIMEOUT=2m` (or `AGENTCORE_IPC_REQUEST_TIMEOUT_MS=120000`)
+- Override transport: `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`
+- Debug IPC: `ROBOPPI_IPC_TRACE=1`
+- Tune request timeouts: `ROBOPPI_IPC_REQUEST_TIMEOUT=2m` (or `ROBOPPI_IPC_REQUEST_TIMEOUT_MS=120000`)
 
 Disable supervised mode:
 

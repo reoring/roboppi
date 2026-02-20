@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository ("Roboppi" / package name: `agentcore`) is a Bun + TypeScript (ESM)
+This repository ("Roboppi" / package name: `roboppi`) is a Bun + TypeScript (ESM)
 codebase that implements an execution-control runtime for agentic workers.
 
 ## Build / Lint / Test
@@ -57,11 +57,11 @@ bun test --watch test/unit                                        # watch mode
 
 ### Build
 
-Builds a native executable `./agentcore` (gitignored).
+Builds a native executable `./roboppi` (gitignored).
 
 ```bash
 make build      # or: bun run build
-make install    # /usr/local/bin/agentcore
+make install    # /usr/local/bin/roboppi
 make uninstall
 ```
 

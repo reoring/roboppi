@@ -7,8 +7,8 @@ name: smart-reviewer
 version: "1"
 description: "Run code review only when new commits exist"
 
-workspace: "/tmp/agentcore-daemon-reviewer"
-state_dir: "/tmp/agentcore-daemon-reviewer/.daemon-state"
+workspace: "/tmp/roboppi-daemon-reviewer"
+state_dir: "/tmp/roboppi-daemon-reviewer/.daemon-state"
 max_concurrent_workflows: 1
 
 events:

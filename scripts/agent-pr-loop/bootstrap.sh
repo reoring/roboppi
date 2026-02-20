@@ -7,20 +7,8 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
 fi
 
 LOOP_DIR=.roboppi-loop
-LEGACY_DIR=.agentcore-loop
 
 mkdir -p "${LOOP_DIR}"
-
-# Best-effort migration from legacy loop directory.
-# If the legacy dir exists, copy user-provided inputs into the new dir so the
-# updated workflow can run without manual moves.
-if [ -d "${LEGACY_DIR}" ]; then
-  for f in request.md base-branch.txt base-sha.txt branch.txt enable_pr; do
-    if [ ! -f "${LOOP_DIR}/${f}" ] && [ -f "${LEGACY_DIR}/${f}" ]; then
-      cp "${LEGACY_DIR}/${f}" "${LOOP_DIR}/${f}"
-    fi
-  done
-fi
 
 # Clear derived artifacts from prior runs (keep request + branch/base settings).
 rm -f \
@@ -68,9 +56,6 @@ if [ "${BASE_BRANCH}" = "HEAD" ]; then
   exit 1
 fi
 
-if [ -d "${LEGACY_DIR}" ]; then
-  echo "${BASE_BRANCH}" > "${LEGACY_DIR}/base-branch.txt"
-fi
 echo "${BASE_BRANCH}" > "${LOOP_DIR}/base-branch.txt"
 git rev-parse "${BASE_BRANCH}^{commit}" > "${LOOP_DIR}/base-sha.txt" 2>/dev/null || true
 

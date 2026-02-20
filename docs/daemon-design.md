@@ -820,23 +820,23 @@ Template variables available in `evaluate` / `analyze` instructions:
 
 ```bash
 # start daemon
-agentcore daemon start <daemon.yaml> [--verbose]
+roboppi daemon start <daemon.yaml> [--verbose]
 
 # check daemon status (from another terminal)
-agentcore daemon status [--state-dir <dir>]
+roboppi daemon status [--state-dir <dir>]
 
 # manual trigger (debug)
-agentcore daemon trigger <trigger_id> [--state-dir <dir>]
+roboppi daemon trigger <trigger_id> [--state-dir <dir>]
 
 # pause/resume trigger
-agentcore daemon pause <trigger_id>
-agentcore daemon resume <trigger_id>
+roboppi daemon pause <trigger_id>
+roboppi daemon resume <trigger_id>
 
 # show execution history
-agentcore daemon history [--trigger <trigger_id>] [--limit 10]
+roboppi daemon history [--trigger <trigger_id>] [--limit 10]
 
 # stop daemon
-agentcore daemon stop [--state-dir <dir>]
+roboppi daemon stop [--state-dir <dir>]
 ```
 
 ---
@@ -945,7 +945,7 @@ Log tags:
 - [ ] TriggerEngine (filter + debounce + cooldown)
 - [ ] DaemonStateStore (file-based persistence)
 - [ ] Daemon class (event loop + graceful shutdown)
-- [ ] CLI: `agentcore daemon start`
+- [ ] CLI: `roboppi daemon start`
 
 ### Phase 2: Expand event sources
 

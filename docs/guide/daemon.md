@@ -133,9 +133,9 @@ triggers:                           # trigger definitions (event -> workflow)
 If your workflows use `step.agent`, provide an agent catalog to the daemon:
 
 - `agents_file`: a default catalog path for the daemon (relative paths are resolved from `workspace`)
-- `AGENTCORE_AGENTS_FILE`: you can also set this via environment variables (or per-trigger via `triggers.<id>.context.env`) as a colon-separated list of YAML paths
+- `ROBOPPI_AGENTS_FILE`: you can also set this via environment variables (or per-trigger via `triggers.<id>.context.env`) as a colon-separated list of YAML paths
 
-When multiple catalogs are provided, later sources override earlier ones (so a per-trigger `context.env.AGENTCORE_AGENTS_FILE` can override the daemon-wide catalog).
+When multiple catalogs are provided, later sources override earlier ones (so a per-trigger `context.env.ROBOPPI_AGENTS_FILE` can override the daemon-wide catalog).
 
 See also: `docs/guides/agents.md`.
 
@@ -703,8 +703,8 @@ name: simple-cron
 version: "1"
 description: "A simple daemon that runs health checks every 30 seconds"
 
-workspace: "/tmp/agentcore-daemon-simple"
-state_dir: "/tmp/agentcore-daemon-simple/.daemon-state"
+workspace: "/tmp/roboppi-daemon-simple"
+state_dir: "/tmp/roboppi-daemon-simple/.daemon-state"
 
 events:
   tick:
@@ -734,8 +734,8 @@ Fires every 5 minutes via cron. An evaluate gate checks whether there are new co
 ```yaml
 name: smart-reviewer
 version: "1"
-workspace: "/tmp/agentcore-daemon-reviewer"
-state_dir: "/tmp/agentcore-daemon-reviewer/.daemon-state"
+workspace: "/tmp/roboppi-daemon-reviewer"
+state_dir: "/tmp/roboppi-daemon-reviewer/.daemon-state"
 max_concurrent_workflows: 1
 
 events:
@@ -800,8 +800,8 @@ Detect TypeScript file changes and run tests automatically.
 ```yaml
 name: file-watcher
 version: "1"
-workspace: "/tmp/agentcore-daemon-watcher"
-state_dir: "/tmp/agentcore-daemon-watcher/.daemon-state"
+workspace: "/tmp/roboppi-daemon-watcher"
+state_dir: "/tmp/roboppi-daemon-watcher/.daemon-state"
 
 events:
   src-change:
@@ -838,8 +838,8 @@ Use interval, cron, and command event sources together and start different workf
 ```yaml
 name: multi-trigger
 version: "1"
-workspace: "/tmp/agentcore-daemon-multi"
-state_dir: "/tmp/agentcore-daemon-multi/.daemon-state"
+workspace: "/tmp/roboppi-daemon-multi"
+state_dir: "/tmp/roboppi-daemon-multi/.daemon-state"
 max_concurrent_workflows: 2
 
 events:

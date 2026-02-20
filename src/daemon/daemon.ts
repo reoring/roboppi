@@ -171,7 +171,7 @@ export class Daemon {
     const merged = mergeEventSources(this.eventSources);
 
     // 6b. Initialize step runner
-    const verbose = process.env.AGENTCORE_VERBOSE === "1";
+    const verbose = process.env.ROBOPPI_VERBOSE === "1";
     if (this.supervised) {
       this.coreRunner = new CoreIpcStepRunner({
         verbose,
@@ -452,14 +452,10 @@ export class Daemon {
           envBaseBranch: workflowEnv.BASE_BRANCH ?? process.env.BASE_BRANCH,
           envProtectedBranches:
           workflowEnv.ROBOPPI_PROTECTED_BRANCHES ??
-          workflowEnv.AGENTCORE_PROTECTED_BRANCHES ??
-          process.env.ROBOPPI_PROTECTED_BRANCHES ??
-          process.env.AGENTCORE_PROTECTED_BRANCHES,
+          process.env.ROBOPPI_PROTECTED_BRANCHES,
           envAllowProtectedBranch:
           workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH ??
-          workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH ??
-          process.env.ROBOPPI_ALLOW_PROTECTED_BRANCH ??
-          process.env.AGENTCORE_ALLOW_PROTECTED_BRANCH,
+          process.env.ROBOPPI_ALLOW_PROTECTED_BRANCH,
           createBranch: definition.create_branch ?? false,
           expectedWorkBranch: definition.expected_work_branch,
           branchTransitionStep: definition.branch_transition_step,
@@ -467,47 +463,35 @@ export class Daemon {
         });
       this.logBranchContext(safeTriggerId, branchContext);
 
-      workflowEnv.AGENTCORE_CREATE_BRANCH = branchContext.createBranch ? "1" : "0";
-      workflowEnv.ROBOPPI_CREATE_BRANCH = workflowEnv.AGENTCORE_CREATE_BRANCH;
-      workflowEnv.AGENTCORE_PROTECTED_BRANCHES = branchContext.protectedBranches.join(",");
-      workflowEnv.ROBOPPI_PROTECTED_BRANCHES = workflowEnv.AGENTCORE_PROTECTED_BRANCHES;
-      workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH = branchContext.allowProtectedBranch
+      workflowEnv.ROBOPPI_CREATE_BRANCH = branchContext.createBranch ? "1" : "0";
+      workflowEnv.ROBOPPI_PROTECTED_BRANCHES = branchContext.protectedBranches.join(",");
+      workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH = branchContext.allowProtectedBranch
         ? "1"
         : "0";
-      workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH = workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH;
       if (branchContext.effectiveBaseBranch) {
         workflowEnv.BASE_BRANCH = branchContext.effectiveBaseBranch;
-        workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
         workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
       }
       if (branchContext.effectiveBaseBranchSource) {
-        workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH_SOURCE =
-          branchContext.effectiveBaseBranchSource;
         workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH_SOURCE =
           branchContext.effectiveBaseBranchSource;
       }
       if (branchContext.effectiveBaseSha) {
-        workflowEnv.AGENTCORE_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
         workflowEnv.ROBOPPI_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
       }
       if (branchContext.startupBranch) {
-        workflowEnv.AGENTCORE_STARTUP_BRANCH = branchContext.startupBranch;
         workflowEnv.ROBOPPI_STARTUP_BRANCH = branchContext.startupBranch;
       }
       if (branchContext.startupHeadSha) {
-        workflowEnv.AGENTCORE_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
         workflowEnv.ROBOPPI_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
       }
       if (branchContext.startupToplevel) {
-        workflowEnv.AGENTCORE_STARTUP_TOPLEVEL = branchContext.startupToplevel;
         workflowEnv.ROBOPPI_STARTUP_TOPLEVEL = branchContext.startupToplevel;
       }
       if (branchContext.expectedWorkBranch) {
-        workflowEnv.AGENTCORE_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
         workflowEnv.ROBOPPI_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
       }
       if (branchContext.expectedCurrentBranch) {
-        workflowEnv.AGENTCORE_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
         workflowEnv.ROBOPPI_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
       }
       const executorEnv =
@@ -567,11 +551,11 @@ export class Daemon {
     workflowEnv: Record<string, string>,
   ): Promise<AgentCatalog | undefined> {
     const fromProcessEnv = splitPathList(
-      process.env.ROBOPPI_AGENTS_FILE ?? process.env.AGENTCORE_AGENTS_FILE,
+      process.env.ROBOPPI_AGENTS_FILE,
     );
     const fromConfig = this.config.agents_file ? [this.config.agents_file] : [];
     const fromWorkflowEnv = splitPathList(
-      workflowEnv.ROBOPPI_AGENTS_FILE ?? workflowEnv.AGENTCORE_AGENTS_FILE,
+      workflowEnv.ROBOPPI_AGENTS_FILE,
     );
 
     // Precedence: process env (lowest) -> daemon config -> trigger env (highest).

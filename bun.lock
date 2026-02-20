@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "agentcore",
+      "name": "roboppi",
       "dependencies": {
         "yaml": "^2.8.2",
       },

@@ -50,12 +50,12 @@ steps:
 
 Workflow runner:
 
-- 明示: `AGENTCORE_AGENTS_FILE=/a.yaml:/b.yaml`（コロン区切り）と `--agents <path>`（複数回指定可）
+- 明示: `ROBOPPI_AGENTS_FILE=/a.yaml:/b.yaml`（コロン区切り）と `--agents <path>`（複数回指定可）
 - 暗黙: 明示指定がない場合、workflow YAML と同じディレクトリの `agents.yaml` / `agents.yml` を自動探索
 
 Daemon:
 
 - daemon 設定で `agents_file: "./agents.yaml"` を指定可能（相対パスは `workspace` 基準）
-- さらに `AGENTCORE_AGENTS_FILE` を環境変数（または trigger の `context.env`）で指定可能
+- さらに `ROBOPPI_AGENTS_FILE` を環境変数（または trigger の `context.env`）で指定可能
 
 同じ agent id が複数の catalog に定義されている場合、後から読み込んだ定義が上書きされます。
