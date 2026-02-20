@@ -6,73 +6,21 @@
 
 English | [日本語](README.ja.md)
 
-Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for agentic workers.
-
-It does not try to be "the agent". It enforces safety invariants around external worker CLIs (OpenCode / Claude Code / Codex CLI / plain shell), so your automation stops when it should, stays within budgets, and leaves a trail you can audit.
+Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for agentic workers. It does not try to be "the agent" — it enforces safety invariants around external worker CLIs (OpenCode / Claude Code / Codex CLI / plain shell), so your automation stops when it should, stays within budgets, and leaves a trail you can audit.
 
 Note: the primary CLI/binary name is `roboppi`.
 - Env vars/state dirs: use `ROBOPPI_` / `.roboppi-loop/`.
 
-## What Roboppi Can Do (Capabilities)
+## Features at a Glance
 
-Execution control (Core runtime):
-
-- Enforce hard budgets: timeouts, max attempts, concurrency, RPS, optional cost caps
-- End-to-end cancellation: Job -> Permit -> Worker via AbortSignal (best-effort SIGTERM -> SIGKILL)
-- Failure containment: circuit breakers + backpressure responses under overload
-- Process isolation: delegate heavy work to separate worker processes (limit blast radius)
-- Auditability: structured logs + artifacts (stdout/stderr summaries, diffs/patches, executed commands, timings)
-
-Workflow orchestration (YAML):
-
-- Run multi-step DAG workflows (`depends_on`) with optional parallelism (`concurrency`)
-- Pass files between steps with declared `outputs`/`inputs` via a `context/` directory
-- Automatic step retries and failure policy (`retry` / `continue` / `abort`)
-- Loop until complete with `completion_check` + `max_iterations`
-- Optional convergence guard for loops: stall detection + scope/diff budgets (`allowed_paths`, `max_changed_files`)
-
-Automation (Daemon mode):
-
-- Run workflows on interval/cron/fswatch/webhook/command events
-- Optional evaluate/analyze gates (run LLM work only when conditions are met)
-- Supervised execution: Supervisor -> Core -> Worker process tree via IPC (socket-based transport available)
-
-Repo safety (git workspaces):
-
-- Deterministic base branch resolution (records base commit SHA)
-- Branch Lock drift detection (fail-fast before a step runs)
-- Protected-branch guard to avoid direct edits on `main` (override must be explicit)
-
-Extensibility:
-
-- Add worker adapters behind a unified `WorkerAdapter` interface
-- Reusable agent profiles via agent catalogs (`agents.yaml`) referenced by `step.agent`
-
-Scheduling (reference implementation):
-
-- Prioritized job queue (interactive vs batch)
-- Deduplication via idempotency keys (`coalesce` / `latest-wins` / `reject`)
-- Retry policy (exponential backoff + jitter) + DLQ storage
-- Supervisor that launches/monitors the Core process (crash/hang handling)
-
-## Architecture (High Level)
-
-Roboppi is designed as a 3-layer system:
-
-```
-Supervisor / Runner (policy, parent process)
-  -> Core (mechanism, child process)
-      -> Worker processes (external CLIs)
-```
-
-- Core owns safety invariants (permits, budgets, cancellation, cutoffs).
-- Policy (ordering, retries, dedup strategy) stays swappable at the supervisor/runner level.
-- Core and supervisor communicate over JSON Lines IPC.
-
-Design docs:
-
-- `docs/design.md`
-- `docs/guide/architecture.md`
+- **Hard budget enforcement** — timeouts, max attempts, concurrency, RPS, cost caps
+- **End-to-end cancellation** — Job to Permit to Worker via AbortSignal (SIGTERM then SIGKILL)
+- **Failure containment** — circuit breakers and backpressure under overload
+- **Process isolation** — delegate heavy work to separate worker processes, limiting blast radius
+- **YAML workflow orchestration** — multi-step DAGs with parallelism, retries, and loop-until-complete
+- **Daemon mode** — trigger workflows on interval, cron, fswatch, webhook, or command events
+- **Branch safety** — base-branch resolution, drift detection, and protected-branch guards
+- **Extensible worker adapters** — unified interface for OpenCode, Claude Code, Codex CLI, and custom agents
 
 ## Install
 
@@ -208,7 +156,72 @@ Notes:
 - The workflow writes state/artifacts under `.roboppi-loop/` and `context/` inside the target workspace (typically gitignored).
 - PR creation is opt-in via `.roboppi-loop/enable_pr`.
 
-## Workflow YAML At A Glance
+## Architecture
+
+Roboppi is designed as a 3-layer system:
+
+```
+Supervisor / Runner (policy, parent process)
+  -> Core (mechanism, child process)
+      -> Worker processes (external CLIs)
+```
+
+- Core owns safety invariants (permits, budgets, cancellation, cutoffs).
+- Policy (ordering, retries, dedup strategy) stays swappable at the supervisor/runner level.
+- Core and supervisor communicate over JSON Lines IPC.
+
+Design docs:
+
+- `docs/design.md`
+- `docs/guide/architecture.md`
+
+---
+
+## Reference
+
+### Capabilities in Detail
+
+**Execution control (Core runtime):**
+
+- Enforce hard budgets: timeouts, max attempts, concurrency, RPS, optional cost caps
+- End-to-end cancellation: Job -> Permit -> Worker via AbortSignal (best-effort SIGTERM -> SIGKILL)
+- Failure containment: circuit breakers + backpressure responses under overload
+- Process isolation: delegate heavy work to separate worker processes (limit blast radius)
+- Auditability: structured logs + artifacts (stdout/stderr summaries, diffs/patches, executed commands, timings)
+
+**Workflow orchestration (YAML):**
+
+- Run multi-step DAG workflows (`depends_on`) with optional parallelism (`concurrency`)
+- Pass files between steps with declared `outputs`/`inputs` via a `context/` directory
+- Automatic step retries and failure policy (`retry` / `continue` / `abort`)
+- Loop until complete with `completion_check` + `max_iterations`
+- Optional convergence guard for loops: stall detection + scope/diff budgets (`allowed_paths`, `max_changed_files`)
+
+**Automation (Daemon mode):**
+
+- Run workflows on interval/cron/fswatch/webhook/command events
+- Optional evaluate/analyze gates (run LLM work only when conditions are met)
+- Supervised execution: Supervisor -> Core -> Worker process tree via IPC (socket-based transport available)
+
+**Repo safety (git workspaces):**
+
+- Deterministic base branch resolution (records base commit SHA)
+- Branch Lock drift detection (fail-fast before a step runs)
+- Protected-branch guard to avoid direct edits on `main` (override must be explicit)
+
+**Extensibility:**
+
+- Add worker adapters behind a unified `WorkerAdapter` interface
+- Reusable agent profiles via agent catalogs (`agents.yaml`) referenced by `step.agent`
+
+**Scheduling (reference implementation):**
+
+- Prioritized job queue (interactive vs batch)
+- Deduplication via idempotency keys (`coalesce` / `latest-wins` / `reject`)
+- Retry policy (exponential backoff + jitter) + DLQ storage
+- Supervisor that launches/monitors the Core process (crash/hang handling)
+
+### Workflow YAML At A Glance
 
 Minimal example:
 
@@ -237,7 +250,7 @@ For loops:
 
 See `docs/guide/workflow.md` for the full schema.
 
-## Agent Catalogs (Reusable Agent Profiles)
+### Agent Catalogs (Reusable Agent Profiles)
 
 If you repeat the same worker/model/capabilities/base-instructions across steps, define an agent catalog:
 
@@ -267,7 +280,7 @@ Docs:
 - `docs/guides/agents.md`
 - `docs/guides/agents.ja.md`
 
-## Branch Safety (Git Workspaces)
+### Branch Safety (Git Workspaces)
 
 For workflows that operate on git repos, Roboppi provides base-branch resolution, Branch Lock drift detection, and protected-branch guards.
 
@@ -282,7 +295,7 @@ Docs:
 - `docs/guides/branch.md`
 - `docs/guides/branch.ja.md`
 
-## Supervised IPC Transport (For `--supervised`)
+### Supervised IPC Transport (For `--supervised`)
 
 Workflows/daemon run supervised by default. In supervised mode, the runner starts a Core child process and delegates steps over IPC.
 

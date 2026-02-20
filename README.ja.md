@@ -1,74 +1,26 @@
 # Roboppi
 
+<p align="center">
+  <img src="assets/roboppi-hero.png" alt="Roboppi" width="900" />
+</p>
+
 [English](README.md) | 日本語
 
-Roboppi（ろぼっぴ）は、エージェント（worker）の実行を安全に制御するための「実行制御ランタイム」です。
-
-Roboppi 自身が「エージェントとして仕事をする」ことは目的にしません。外部の worker CLI（OpenCode / Claude Code / Codex CLI / シェル）に重い作業（編集/コマンド/テスト）を委譲し、Roboppi は安全の不変条件（止める/制限する/観測する/隔離する）を強制します。
+Roboppi（ろぼっぴ）は、エージェント（worker）の実行を安全に制御するための「実行制御ランタイム」です。Roboppi 自身がエージェントとして仕事をするのではなく、外部の worker CLI（OpenCode / Claude Code / Codex CLI / シェル）に重い作業を委譲し、安全の不変条件（止める・制限する・観測する・隔離する）を強制します。
 
 注意: 主な CLI/バイナリ名は `roboppi` です。
 - 環境変数/状態ディレクトリ: `ROBOPPI_` / `.roboppi-loop/` を使います。
 
-## Roboppiでできること（Capabilities）
+## 特徴
 
-実行制御（Core ランタイム）:
-
-- ハードな予算制約: timeout / max attempts / concurrency / RPS /（任意で）cost cap
-- エンドツーエンドのキャンセル: Job -> Permit -> Worker を AbortSignal で伝播（best-effort で SIGTERM -> SIGKILL）
-- 失敗の封じ込め: circuit breaker + backpressure（過負荷時の reject/defer/degrade）
-- プロセス隔離: heavy work を別プロセスに委譲して blast radius を限定
-- 監査性: 構造化ログ + アーティファクト（stdout/stderr の要約、diff/patch、実行コマンド、時間など）
-
-ワークフロー（YAML オーケストレーション）:
-
-- 複数ステップの DAG 実行（`depends_on`）と並列度制御（`concurrency`）
-- `context/` を使ったファイルベースの成果物受け渡し（`outputs` / `inputs`）
-- 失敗ポリシー（`retry` / `continue` / `abort`）と自動リトライ
-- `completion_check` + `max_iterations` による「完了するまでループ」
-- （任意）ループ収束ガード: 停滞検知 + スコープ/差分予算（`allowed_paths`, `max_changed_files`）
-
-自動化（Daemon モード）:
-
-- interval/cron/fswatch/webhook/command のイベントで workflow を常駐実行
-- evaluate/analyze ゲート（条件成立時だけ LLM/worker を走らせる）
-- supervised 実行: Supervisor -> Core -> Worker のプロセスツリーを IPC で維持（socket transport あり）
-
-リポジトリ安全（git workspace）:
-
-- base branch の決定を固定化し、起動時 SHA を記録（追跡/再現性）
-- Branch Lock: 実行中の repo/branch ドリフトを step 実行前に fail-fast
-- Protected branch guard: `main` などへの直接編集をデフォルトでブロック（明示 override が必要）
-
-拡張性:
-
-- `WorkerAdapter` インタフェースで worker を追加
-- agent catalog（`agents.yaml`）で `step.agent` による再利用プロファイル
-
-スケジューリング（参照実装）:
-
-- 優先度付きジョブキュー（interactive vs batch）
-- idempotency key による重複制御（`coalesce` / `latest-wins` / `reject`）
-- リトライポリシー（指数バックオフ + jitter）と DLQ
-- Core を起動/監視する Supervisor（クラッシュ/ハング対策）
-
-## アーキテクチャ（概要）
-
-Roboppi は 3 層構造として設計されています。
-
-```
-Supervisor / Runner（policy, 親プロセス）
-  -> Core（mechanism, 子プロセス）
-      -> Worker プロセス（外部 CLI）
-```
-
-- Core が安全の不変条件（permits, budgets, cancellation, cutoffs）を保持します。
-- policy（順序、リトライ、重複制御など）は Supervisor/Runner 側に寄せて差し替え可能にします。
-- Core と Supervisor は JSON Lines IPC で通信します。
-
-設計資料:
-
-- `docs/design.md`
-- `docs/guide/architecture.md`
+- ハードな予算制約 -- timeout / max attempts / concurrency / RPS / cost cap
+- エンドツーエンドのキャンセル -- Job -> Permit -> Worker を AbortSignal で伝播
+- 失敗の封じ込め -- circuit breaker + backpressure による過負荷制御
+- プロセス隔離 -- heavy work を別プロセスに委譲して blast radius を限定
+- YAML ワークフロー -- DAG 実行、並列度制御、ループ完了判定、失敗ポリシー
+- Daemon モード -- interval/cron/fswatch/webhook で workflow を常駐実行
+- ブランチ安全 -- base branch 固定、Branch Lock、保護ブランチガード
+- 構造化ログとアーティファクト -- stdout/stderr 要約、diff/patch、実行コマンド、時間
 
 ## インストール
 
@@ -201,7 +153,72 @@ ROBOPPI_ROOT="$ROBOPPI_ROOT" bun run --cwd "$ROBOPPI_ROOT" src/workflow/run.ts \
 - workflow は target workspace 内に `.roboppi-loop/` と `context/` を作ります（通常は gitignore 推奨）。
 - PR 作成は `.roboppi-loop/enable_pr` による opt-in です。
 
-## Workflow YAML の最小例
+## アーキテクチャ（概要）
+
+Roboppi は 3 層構造として設計されています。
+
+```
+Supervisor / Runner（policy, 親プロセス）
+  -> Core（mechanism, 子プロセス）
+      -> Worker プロセス（外部 CLI）
+```
+
+- Core が安全の不変条件（permits, budgets, cancellation, cutoffs）を保持します。
+- policy（順序、リトライ、重複制御など）は Supervisor/Runner 側に寄せて差し替え可能にします。
+- Core と Supervisor は JSON Lines IPC で通信します。
+
+設計資料:
+
+- `docs/design.md`
+- `docs/guide/architecture.md`
+
+---
+
+## リファレンス
+
+### 機能の詳細
+
+**実行制御（Core ランタイム）:**
+
+- ハードな予算制約: timeout / max attempts / concurrency / RPS /（任意で）cost cap
+- エンドツーエンドのキャンセル: Job -> Permit -> Worker を AbortSignal で伝播（best-effort で SIGTERM -> SIGKILL）
+- 失敗の封じ込め: circuit breaker + backpressure（過負荷時の reject/defer/degrade）
+- プロセス隔離: heavy work を別プロセスに委譲して blast radius を限定
+- 監査性: 構造化ログ + アーティファクト（stdout/stderr の要約、diff/patch、実行コマンド、時間など）
+
+**ワークフロー（YAML オーケストレーション）:**
+
+- 複数ステップの DAG 実行（`depends_on`）と並列度制御（`concurrency`）
+- `context/` を使ったファイルベースの成果物受け渡し（`outputs` / `inputs`）
+- 失敗ポリシー（`retry` / `continue` / `abort`）と自動リトライ
+- `completion_check` + `max_iterations` による「完了するまでループ」
+- （任意）ループ収束ガード: 停滞検知 + スコープ/差分予算（`allowed_paths`, `max_changed_files`）
+
+**自動化（Daemon モード）:**
+
+- interval/cron/fswatch/webhook/command のイベントで workflow を常駐実行
+- evaluate/analyze ゲート（条件成立時だけ LLM/worker を走らせる）
+- supervised 実行: Supervisor -> Core -> Worker のプロセスツリーを IPC で維持（socket transport あり）
+
+**リポジトリ安全（git workspace）:**
+
+- base branch の決定を固定化し、起動時 SHA を記録（追跡/再現性）
+- Branch Lock: 実行中の repo/branch ドリフトを step 実行前に fail-fast
+- Protected branch guard: `main` などへの直接編集をデフォルトでブロック（明示 override が必要）
+
+**拡張性:**
+
+- `WorkerAdapter` インタフェースで worker を追加
+- agent catalog（`agents.yaml`）で `step.agent` による再利用プロファイル
+
+**スケジューリング（参照実装）:**
+
+- 優先度付きジョブキュー（interactive vs batch）
+- idempotency key による重複制御（`coalesce` / `latest-wins` / `reject`）
+- リトライポリシー（指数バックオフ + jitter）と DLQ
+- Core を起動/監視する Supervisor（クラッシュ/ハング対策）
+
+### Workflow YAML の最小例
 
 ```yaml
 name: build-test
@@ -228,7 +245,7 @@ steps:
 
 詳細: `docs/guide/workflow.md`
 
-## Agent Catalog（再利用できるエージェント定義）
+### Agent Catalog（再利用できるエージェント定義）
 
 同じ worker/model/capabilities/base-instructions を繰り返す場合、外部 YAML（agent catalog）にまとめられます。
 
@@ -258,7 +275,7 @@ steps:
 - `docs/guides/agents.md`
 - `docs/guides/agents.ja.md`
 
-## ブランチ安全（git workspace）
+### ブランチ安全（git workspace）
 
 git repo に対する workflow 実行向けに、base branch 解決 / Branch Lock / 保護ブランチガードを提供します。
 
@@ -273,7 +290,7 @@ git repo に対する workflow 実行向けに、base branch 解決 / Branch Loc
 - `docs/guides/branch.md`
 - `docs/guides/branch.ja.md`
 
-## Supervised IPC transport（supervised 実行）
+### Supervised IPC transport（supervised 実行）
 
 supervised 実行では runner/daemon が Core 子プロセスを起動し、IPC 経由で step を委譲します。
 
