@@ -106,7 +106,7 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
+    if (process.env.ROBOPPI_IPC_TRACE === "1") {
       try {
         process.stderr.write(
           `[IPC][spawn] impl=node_child_process transport=stdio core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint}\n`,
@@ -207,7 +207,7 @@ export class Supervisor {
 
     await this.cleanupSocketArtifacts();
 
-    const socketDir = await mkdtemp(path.join(os.tmpdir(), "agentcore-ipc-"));
+    const socketDir = await mkdtemp(path.join(os.tmpdir(), "roboppi-ipc-"));
     const socketPath = path.join(socketDir, "core.sock");
     this.ipcSocketDir = socketDir;
     this.ipcSocketPath = socketPath;
@@ -236,7 +236,7 @@ export class Supervisor {
     } catch (err) {
       // Some sandboxed environments disallow Unix domain sockets entirely (listen EPERM/EACCES).
       if (isUnixSocketListenUnsupported(err)) {
-        if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
+        if (process.env.ROBOPPI_IPC_TRACE === "1") {
           try {
             const code = getErrCode(err) ?? "unknown";
             process.stderr.write(
@@ -253,12 +253,12 @@ export class Supervisor {
     }
 
     // Ensure Core selects the Unix socket path mode.
-    delete childEnv.AGENTCORE_IPC_SOCKET_HOST;
-    delete childEnv.AGENTCORE_IPC_SOCKET_PORT;
+    delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
+    delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
     delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
     delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
     childEnv.ROBOPPI_IPC_SOCKET_PATH = socketPath;
-    childEnv.AGENTCORE_IPC_SOCKET_PATH = socketPath;
+    childEnv.ROBOPPI_IPC_SOCKET_PATH = socketPath;
 
     const core = this.resolveCoreCommand();
     const proc = nodeSpawn(core.command, core.args, {
@@ -270,7 +270,7 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
+    if (process.env.ROBOPPI_IPC_TRACE === "1") {
       try {
         process.stderr.write(
           `[IPC][spawn] impl=node_child_process transport=socket core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint} socket=${socketPath}\n`,
@@ -384,12 +384,12 @@ export class Supervisor {
     }
 
     // Ensure Core selects the TCP mode.
-    delete childEnv.AGENTCORE_IPC_SOCKET_PATH;
+    delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
     delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
     childEnv.ROBOPPI_IPC_SOCKET_HOST = addr.address || host;
     childEnv.ROBOPPI_IPC_SOCKET_PORT = String(addr.port);
-    childEnv.AGENTCORE_IPC_SOCKET_HOST = addr.address || host;
-    childEnv.AGENTCORE_IPC_SOCKET_PORT = String(addr.port);
+    childEnv.ROBOPPI_IPC_SOCKET_HOST = addr.address || host;
+    childEnv.ROBOPPI_IPC_SOCKET_PORT = String(addr.port);
 
     const core = this.resolveCoreCommand();
     const proc = nodeSpawn(core.command, core.args, {
@@ -401,7 +401,7 @@ export class Supervisor {
       throw new Error("Failed to spawn Core process: missing stdio handles");
     }
 
-    if ((process.env.ROBOPPI_IPC_TRACE ?? process.env.AGENTCORE_IPC_TRACE) === "1") {
+    if (process.env.ROBOPPI_IPC_TRACE === "1") {
       try {
         process.stderr.write(
           `[IPC][spawn] impl=node_child_process transport=tcp core pid=${proc.pid} cmd=${core.command} args=${core.args.join(" ") || "(none)"} entry=${this.config.coreEntryPoint} addr=${addr.address}:${addr.port}\n`,
@@ -665,7 +665,6 @@ function resolveSupervisedIpcTransport(config: SupervisorConfig): "stdio" | "soc
   const raw = (
     config.ipcTransport ??
     process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT ??
-    process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT ??
     "stdio"
   ).toLowerCase();
 

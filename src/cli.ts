@@ -1,17 +1,13 @@
 #!/usr/bin/env bun
 /**
- * AgentCore CLI — execution control runtime for AI agents.
+ * Roboppi CLI — execution control runtime for AI agents.
  *
-  * Modes:
-  *   roboppi [options]                       Core IPC server (stdin/stdout JSON Lines)
-  *   roboppi run --worker <kind> ...         One-shot worker task execution
-  *   roboppi workflow <workflow.yaml> ...    Workflow runner
-  *   roboppi daemon <daemon.yaml> ...        Daemon mode
- *
- * Compatibility alias:
- *   agentcore (same CLI)
+ * Modes:
+ *   roboppi [options]                       Core IPC server (stdin/stdout JSON Lines)
+ *   roboppi run --worker <kind> ...         One-shot worker task execution
+ *   roboppi workflow <workflow.yaml> ...    Workflow runner
+ *   roboppi daemon <daemon.yaml> ...        Daemon mode
  */
-import { applyEnvPrefixAliases } from "./core/env-aliases.js";
 import type { AgentCoreConfig } from "./core/agentcore.js";
 import type { LogLevel } from "./core/observability.js";
 import { startCoreRuntime } from "./core/core-runtime.js";
@@ -27,8 +23,6 @@ import type { WorkerAdapter } from "./worker/worker-adapter.js";
 import { generateId } from "./types/common.js";
 import { WorkerKind, WorkerCapability, OutputMode, WorkerStatus, JobType, PriorityClass } from "./types/index.js";
 import type { WorkerTask, Job } from "./types/index.js";
-
-applyEnvPrefixAliases();
 
 // ── Argument parsing ──────────────────────────────────────────────
 

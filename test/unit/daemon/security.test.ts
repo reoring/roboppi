@@ -64,7 +64,7 @@ describe("Shell injection prevention", () => {
     const result = await gate.shouldRun(
       {
         worker: "CUSTOM",
-        instructions: 'test "$AGENTCORE_TRIGGER_ID" = "my-trigger"',
+        instructions: 'test "$ROBOPPI_TRIGGER_ID" = "my-trigger"',
         capabilities: ["RUN_COMMANDS"],
       },
       makeEvent("test"),

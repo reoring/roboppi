@@ -14,7 +14,6 @@ import {
   extractWorkerText,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
-  COMPLETION_CHECK_ID_ENV_ROBOPPI,
 } from "./completion-decision.js";
 import { resolveTaskLike, buildWorkerTask } from "./resolve-worker-task.js";
 
@@ -94,7 +93,6 @@ export class MultiWorkerStepRunner implements StepRunner {
       ? {
         ...(env ?? {}),
         [COMPLETION_CHECK_ID_ENV]: checkId,
-        [COMPLETION_CHECK_ID_ENV_ROBOPPI]: checkId,
       }
       : env;
     const resolved = resolveTaskLike(check, workspaceDir, checkEnv);
@@ -115,7 +113,6 @@ export class MultiWorkerStepRunner implements StepRunner {
       check,
       workspaceDir,
       checkStartedAt,
-      result,
       checkId,
     );
     if (this.verbose) {
@@ -304,7 +301,7 @@ function createScopedAbort(parent: AbortSignal, deadlineAt: number): { signal: A
 }
 
 function renderCommandForLogs(cmd: string[], task: WorkerTask): string {
-  const showPrompts = process.env.AGENTCORE_SHOW_WORKER_PROMPTS === "1";
+  const showPrompts = process.env.ROBOPPI_SHOW_WORKER_PROMPTS === "1";
   const instr = task.instructions;
 
   const renderedArgs = cmd.map((arg, i) => {

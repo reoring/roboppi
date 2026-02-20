@@ -392,6 +392,7 @@ steps:
     capabilities: [READ]
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check"
       capabilities: [READ]
 `;
@@ -410,6 +411,7 @@ steps:
     capabilities: [READ]
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check"
       capabilities: [READ]
     max_iterations: 1
@@ -444,6 +446,7 @@ steps:
     capabilities: [READ]
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check"
       capabilities: [READ]
     max_iterations: 5

@@ -2,12 +2,8 @@
 set -euo pipefail
 
 LOOP_DIR=.roboppi-loop
-LEGACY_DIR=.agentcore-loop
 
 TODO="${LOOP_DIR}/todo.md"
-if [ ! -f "${TODO}" ] && [ -f "${LEGACY_DIR}/todo.md" ]; then
-  TODO="${LEGACY_DIR}/todo.md"
-fi
 test -s "${TODO}" || { echo "CHECK: missing todo"; exit 1; }
 
 COUNT=$(grep -c '^- \[ \] ' "${TODO}" || true)

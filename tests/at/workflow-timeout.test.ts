@@ -130,6 +130,7 @@ steps:
     on_iterations_exhausted: abort
     completion_check:
       worker: CODEX_CLI
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check A"
       capabilities: [READ]
 `;

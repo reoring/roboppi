@@ -1,6 +1,6 @@
-# AgentCore Quickstart
+# Roboppi Quickstart
 
-AgentCore is an execution-control runtime for AI agent systems. It provides safe execution control via Permits, failure cut-off via Circuit Breakers, and delegation of actual work to external Workers.
+Roboppi is an execution-control runtime for AI agent systems. It provides safe execution control via Permits, failure cut-off via Circuit Breakers, and delegation of actual work to external Workers.
 
 ## Prerequisites
 
@@ -19,22 +19,22 @@ Optional (if you plan to use them as workers):
 ## Install
 
 ```bash
-git clone <repository-url> agentcore
-cd agentcore
+git clone <repository-url> roboppi
+cd roboppi
 bun install
 ```
 
 ## Build
 
 ```bash
-make            # build a single binary -> ./roboppi (+ ./agentcore alias)
+make            # build a single binary -> ./roboppi
 ```
 
 Sanity check:
 
 ```bash
-./agentcore --version
-./agentcore --help
+./roboppi --version
+./roboppi --help
 ```
 
 Other make targets:
@@ -48,23 +48,23 @@ make install    # install to /usr/local/bin
 
 ---
 
-## Usage 1: One-shot execution with `agentcore run`
+## Usage 1: One-shot execution with `roboppi run`
 
 Use the `run` subcommand to delegate a task to a Worker using only CLI flags.
 
 ```bash
 # Generate files with OpenCode
-./agentcore run --worker opencode --workspace /tmp/demo "Create hello.ts"
+./roboppi run --worker opencode --workspace /tmp/demo "Create hello.ts"
 
 # Fix tests with Claude Code
-./agentcore run --worker claude-code --workspace ./my-project \
+./roboppi run --worker claude-code --workspace ./my-project \
   --capabilities EDIT,RUN_TESTS "Fix the failing tests"
 
 # Refactor with Codex CLI
-./agentcore run --worker codex --workspace ./src "Refactor this function"
+./roboppi run --worker codex --workspace ./src "Refactor this function"
 
 # You can also set timeouts and budgets
-./agentcore run --worker opencode --workspace /tmp/demo \
+./roboppi run --worker opencode --workspace /tmp/demo \
   --timeout 60000 --concurrency 5 "Write a README for this repo"
 ```
 
@@ -77,20 +77,20 @@ Use the `run` subcommand to delegate a task to a Worker using only CLI flags.
 | `--capabilities <csv>` | `READ,EDIT,RUN_TESTS,RUN_COMMANDS` | `EDIT` |
 | `--timeout <ms>` | task timeout | `120000` |
 
-Internally, AgentCore checks PermitGate -> CircuitBreaker -> ExecutionBudget before delegating to the worker.
+Internally, Roboppi checks PermitGate -> CircuitBreaker -> ExecutionBudget before delegating to the worker.
 
 ---
 
 ## Usage 2: IPC server mode
 
-If you run `agentcore` with no subcommand, it starts in IPC server mode. A Scheduler or custom driver can talk to it over JSON Lines.
+If you run `roboppi` with no subcommand, it starts in IPC server mode. A Scheduler or custom driver can talk to it over JSON Lines.
 
 ```bash
 # Start with defaults
-./agentcore
+./roboppi
 
 # Start with custom settings
-./agentcore --concurrency 20 --rps 100 --log-level debug
+./roboppi --concurrency 20 --rps 100 --log-level debug
 ```
 
 Shared options (also available in `run` mode):
@@ -111,7 +111,7 @@ Shared options (also available in `run` mode):
 ### Example: submit a job via JSON Lines
 
 ```bash
-echo '{"type":"submit_job","requestId":"req-1","job":{"jobId":"job-001","type":"LLM","priority":{"value":1,"class":"INTERACTIVE"},"payload":{"prompt":"hello"},"limits":{"timeoutMs":5000,"maxAttempts":3},"context":{"traceId":"t-1","correlationId":"c-1"}}}' | ./agentcore 2>/dev/null
+echo '{"type":"submit_job","requestId":"req-1","job":{"jobId":"job-001","type":"LLM","priority":{"value":1,"class":"INTERACTIVE"},"payload":{"prompt":"hello"},"limits":{"timeoutMs":5000,"maxAttempts":3},"context":{"traceId":"t-1","correlationId":"c-1"}}}' | ./roboppi 2>/dev/null
 ```
 
 Output (returned on stdout as JSON Lines):
@@ -330,7 +330,7 @@ OpenCode generates files and the result returns `SUCCEEDED`.
 
 ## Usage 5: Start with a Scheduler (full configuration)
 
-The Scheduler launches and supervises AgentCore as a child process. This includes a job queue, dedup control, retries, and a DLQ.
+The Scheduler launches and supervises Roboppi Core as a child process. This includes a job queue, dedup control, retries, and a DLQ.
 
 ```typescript
 import { Scheduler } from "./src/scheduler/index.js";
@@ -342,7 +342,7 @@ const scheduler = new Scheduler({
   retry: { baseDelayMs: 1000, maxDelayMs: 30000, maxAttempts: 3 },
 });
 
-// Start AgentCore as a child process
+// Start Roboppi Core as a child process
 await scheduler.start();
 
 // Submit a job
@@ -401,7 +401,7 @@ roboppi workflow my-workflow.yaml --verbose
 # (dev) bun run src/workflow/run.ts my-workflow.yaml --verbose
 ```
 
-For each step, AgentCore requests a Permit, delegates to the worker, and collects results. If a step fails, it aborts depending on policy.
+For each step, Roboppi Core requests a Permit, delegates to the worker, and collects results. If a step fails, it aborts depending on policy.
 
 ### Reuse worker settings with agent catalogs
 
@@ -481,7 +481,7 @@ See the [Daemon guide](./daemon.md) for details.
 | Scheduler (parent process)                    |
 | JobQueue / InFlightRegistry / RetryPolicy     |
 |  +-----------------------------------------+  |
-|  | AgentCore (child process)               |  |
+|  | Roboppi Core (child process)            |  |
 |  | PermitGate / CircuitBreaker             |  |
 |  | Watchdog / EscalationManager            |  |
 |  |  +-----------------------------------+  |  |

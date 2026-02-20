@@ -1,5 +1,5 @@
 /**
- * E2E demo: agentcore run subcommand.
+ * E2E demo: roboppi run subcommand.
  *
  * Demonstrates the built binary executing a one-shot worker task
  * via CLI arguments — no driver script or IPC needed.
@@ -7,24 +7,24 @@
 
 export {};
 
-const WORKSPACE = "/tmp/agentcore-binary-demo";
+const WORKSPACE = "/tmp/roboppi-binary-demo";
 const log = (msg: string) => console.log(`[demo] ${msg}`);
 
-log("=== AgentCore Binary E2E Demo ===\n");
+log("=== Roboppi Binary E2E Demo ===\n");
 
 // Clean workspace
 await Bun.$`rm -rf ${WORKSPACE} && mkdir -p ${WORKSPACE}`.quiet();
 log(`Workspace: ${WORKSPACE}`);
 
-// Run agentcore with the "run" subcommand
+// Run roboppi with the "run" subcommand
 const instructions =
   "Create countdown.ts. It should accept a number N via CLI args, count down from N, then print Liftoff!. Example: bun run countdown.ts 5 -> 5,4,3,2,1,Liftoff!";
 
-log(`\nRunning: ./agentcore run --worker opencode --workspace ${WORKSPACE} "${instructions.slice(0, 60)}..."\n`);
+log(`\nRunning: ./roboppi run --worker opencode --workspace ${WORKSPACE} "${instructions.slice(0, 60)}..."\n`);
 
 const startTime = Date.now();
 const proc = Bun.spawn(
-  ["./agentcore", "run", "--worker", "opencode", "--workspace", WORKSPACE, instructions],
+  ["./roboppi", "run", "--worker", "opencode", "--workspace", WORKSPACE, instructions],
   { stdout: "pipe", stderr: "inherit" },
 );
 

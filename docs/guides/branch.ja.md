@@ -168,13 +168,13 @@ main, master, release/*
 保護ブランチリストの上書き:
 
 - CLI: `--protected-branches <csv>`
-- env: `AGENTCORE_PROTECTED_BRANCHES=<csv>`
+- env: `ROBOPPI_PROTECTED_BRANCHES=<csv>`
 - 優先順位: CLI > env > default
 
 ガードの明示無効化（危険）:
 
 - CLI: `--allow-protected-branch`
-- env: `AGENTCORE_ALLOW_PROTECTED_BRANCH=1`
+- env: `ROBOPPI_ALLOW_PROTECTED_BRANCH=1`
 
 override 有効時は warning を出し、workflow メタデータにも記録します。
 
@@ -187,23 +187,23 @@ workflow 実行時、runner は各 step に以下の env を渡します（`src/
 base / startup:
 
 - `BASE_BRANCH`（`effective_base_branch` に設定）
-- `AGENTCORE_EFFECTIVE_BASE_BRANCH`
-- `AGENTCORE_EFFECTIVE_BASE_BRANCH_SOURCE`（`cli|env|current`）
-- `AGENTCORE_EFFECTIVE_BASE_SHA`
-- `AGENTCORE_STARTUP_BRANCH`
-- `AGENTCORE_STARTUP_HEAD_SHA`
-- `AGENTCORE_STARTUP_TOPLEVEL`
+-- `ROBOPPI_EFFECTIVE_BASE_BRANCH`
+-- `ROBOPPI_EFFECTIVE_BASE_BRANCH_SOURCE`（`cli|env|current`）
+-- `ROBOPPI_EFFECTIVE_BASE_SHA`
+-- `ROBOPPI_STARTUP_BRANCH`
+-- `ROBOPPI_STARTUP_HEAD_SHA`
+-- `ROBOPPI_STARTUP_TOPLEVEL`
 
 Branch Lock の期待値:
 
-- `AGENTCORE_CREATE_BRANCH`（`1` または `0`）
-- `AGENTCORE_EXPECTED_WORK_BRANCH`
-- `AGENTCORE_EXPECTED_CURRENT_BRANCH`
+-- `ROBOPPI_CREATE_BRANCH`（`1` または `0`）
+-- `ROBOPPI_EXPECTED_WORK_BRANCH`
+-- `ROBOPPI_EXPECTED_CURRENT_BRANCH`
 
 保護ブランチガード:
 
-- `AGENTCORE_PROTECTED_BRANCHES`（CSV）
-- `AGENTCORE_ALLOW_PROTECTED_BRANCH`（`1` または `0`）
+-- `ROBOPPI_PROTECTED_BRANCHES`（CSV）
+-- `ROBOPPI_ALLOW_PROTECTED_BRANCH`（`1` または `0`）
 
 ---
 
@@ -276,8 +276,8 @@ roboppi workflow examples/agent-pr-loop.yaml --workspace /path/to/repo \
 重い処理や環境依存の処理は、`CUSTOM` script 側で sentinel file（有無フラグ）を見て実行可否を切り替える運用ができます。
 
 例（Appthrust Platform workflow）:
-- `.agentcore-loop/enable_live_validation`: 存在する場合のみ live cluster validation step を実行
-- `.agentcore-loop/live-validation.args`: validation wrapper に追加で渡す引数
+-- `.roboppi-loop/enable_live_validation`: 存在する場合のみ live cluster validation step を実行
+-- `.roboppi-loop/live-validation.args`: validation wrapper に追加で渡す引数
 
 挙動:
 - ファイルなし -> script は `0` で終了し、step は skip/pass 扱い

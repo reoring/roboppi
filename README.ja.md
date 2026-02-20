@@ -7,8 +7,7 @@ Roboppi（ろぼっぴ）は、エージェント（worker）の実行を安全�
 Roboppi 自身が「エージェントとして仕事をする」ことは目的にしません。外部の worker CLI（OpenCode / Claude Code / Codex CLI / シェル）に重い作業（編集/コマンド/テスト）を委譲し、Roboppi は安全の不変条件（止める/制限する/観測する/隔離する）を強制します。
 
 注意: 主な CLI/バイナリ名は `roboppi` です。
-- 互換: `agentcore` はレガシー alias として残しています。
-- 環境変数/状態ディレクトリ: `ROBOPPI_` / `.roboppi-loop/` を推奨（レガシーの `AGENTCORE_` / `.agentcore-loop/` も引き続き利用可能）。
+- 環境変数/状態ディレクトリ: `ROBOPPI_` / `.roboppi-loop/` を使います。
 
 ## Roboppiでできること（Capabilities）
 
@@ -184,7 +183,7 @@ ROBOPPI_ROOT="$ROBOPPI_ROOT" bun run --cwd "$ROBOPPI_ROOT" src/workflow/run.ts \
 
 注意:
 
-- workflow は target workspace 内に `.roboppi-loop/` と `context/` を作ります（通常は gitignore 推奨。レガシーの `.agentcore-loop/` も引き続き利用可能）。
+- workflow は target workspace 内に `.roboppi-loop/` と `context/` を作ります（通常は gitignore 推奨）。
 - PR 作成は `.roboppi-loop/enable_pr` による opt-in です。
 
 ## Workflow YAML の最小例
@@ -264,9 +263,9 @@ git repo に対する workflow 実行向けに、base branch 解決 / Branch Loc
 supervised 実行では runner/daemon が Core 子プロセスを起動し、IPC 経由で step を委譲します。
 
 - 既定: 対話実行は stdio、非対話実行は socket transport が既定
-- transport 切替: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`
-- IPC デバッグ: `AGENTCORE_IPC_TRACE=1`
-- request timeout 調整: `AGENTCORE_IPC_REQUEST_TIMEOUT=2m`（または `AGENTCORE_IPC_REQUEST_TIMEOUT_MS=120000`）
+- transport 切替: `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp`
+- IPC デバッグ: `ROBOPPI_IPC_TRACE=1`
+- request timeout 調整: `ROBOPPI_IPC_REQUEST_TIMEOUT=2m`（または `ROBOPPI_IPC_REQUEST_TIMEOUT_MS=120000`）
 
 supervised 実行を無効化（direct 実行）:
 

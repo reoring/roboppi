@@ -18,7 +18,7 @@ if command -v rg >/dev/null 2>&1; then
   HAS_RG=1
 fi
 
-VERIFY_DIR=${1:-"$(mktemp -d /tmp/agentcore-branch-verify-XXXXXX)"}
+VERIFY_DIR=${1:-"$(mktemp -d /tmp/roboppi-branch-verify-XXXXXX)"}
 mkdir -p "${VERIFY_DIR}"
 LOG_DIR="${VERIFY_DIR}/logs"
 mkdir -p "${LOG_DIR}"

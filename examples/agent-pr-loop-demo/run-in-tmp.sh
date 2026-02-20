@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROBOPPI_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 
-if [[ "${ROBOPPI_IPC_TRACE:-${AGENTCORE_IPC_TRACE:-}}" == "1" ]]; then
+if [[ "${ROBOPPI_IPC_TRACE:-}" == "1" ]]; then
   echo "[demo] ROBOPPI_ROOT=${ROBOPPI_ROOT}" >&2
   if command -v git >/dev/null 2>&1; then
     SHA=$(git -C "${ROBOPPI_ROOT}" rev-parse --short HEAD 2>/dev/null || true)
@@ -70,7 +70,6 @@ if [[ ! -f "${TARGET}/.gitignore" ]]; then
   cat > "${TARGET}/.gitignore" <<'EOF'
 # workflow state
 .roboppi-loop/
-.agentcore-loop/
 context/
 .daemon-context/
 
@@ -113,8 +112,8 @@ echo "Verifying generated repo..."
 
 if [[ -f "${TARGET}/.roboppi-loop/review.verdict" ]]; then
   V=$(cat "${TARGET}/.roboppi-loop/review.verdict" 2>/dev/null | tr -d '\r\n\t ')
-  if [[ "${V}" != "PASS" && "${V}" != *'"decision":"complete"'* ]]; then
-    echo "Error: expected review.verdict=PASS or decision=complete, got: ${V:-missing}" >&2
+  if [[ "${V}" != *'"decision":"complete"'* ]]; then
+    echo "Error: expected review.verdict decision=complete, got: ${V:-missing}" >&2
     exit 1
   fi
 fi

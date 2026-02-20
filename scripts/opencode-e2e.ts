@@ -174,7 +174,7 @@ log(`Permit GRANTED: ${permitResult.permitId}\n`);
 const task: WorkerTask = {
   workerTaskId: generateId(),
   workerKind: WorkerKind.OPENCODE,
-  workspaceRef: "/tmp/agentcore-opencode-test",
+  workspaceRef: "/tmp/roboppi-opencode-test",
   instructions: "Create a simple TypeScript project with: 1) hello.ts that exports a greet(name: string) function returning a greeting string, 2) main.ts that imports greet from hello.ts and calls it with 'AgentCore', logging the result, 3) README.md explaining the project. No external dependencies.",
   capabilities: [WorkerCapability.EDIT, WorkerCapability.RUN_COMMANDS],
   outputMode: "BATCH" as any,
@@ -200,13 +200,13 @@ log(`  Wall time: ${elapsed}s`);
 permitGate.completePermit(permitResult.permitId);
 
 // Show what was created
-log(`\n=== Files created in /tmp/agentcore-opencode-test ===`);
-const ls = Bun.spawn(["find", "/tmp/agentcore-opencode-test", "-type", "f"], { stdout: "pipe" });
+log(`\n=== Files created in /tmp/roboppi-opencode-test ===`);
+const ls = Bun.spawn(["find", "/tmp/roboppi-opencode-test", "-type", "f"], { stdout: "pipe" });
 const files = (await new Response(ls.stdout).text()).trim();
 log(files || "(none)");
 
 for (const filepath of files.split("\n").filter(Boolean)) {
-  const name = filepath.replace("/tmp/agentcore-opencode-test/", "");
+  const name = filepath.replace("/tmp/roboppi-opencode-test/", "");
   if (name.startsWith(".")) continue;
   log(`\n--- ${name} ---`);
   const content = await Bun.file(filepath).text();

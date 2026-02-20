@@ -140,7 +140,7 @@ function resolveTaskLikeWithAgent(
   const agentId = normalizeAgentId(obj["agent"], `${fieldPrefix}.agent`);
   if (!agents) {
     throw new WorkflowParseError(
-      `${fieldPrefix}.agent is set to "${agentId}", but no agent catalog was provided (use --agents or set AGENTCORE_AGENTS_FILE)`,
+      `${fieldPrefix}.agent is set to "${agentId}", but no agent catalog was provided (use --agents or set ROBOPPI_AGENTS_FILE)`,
     );
   }
 
@@ -204,7 +204,13 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
+
+  // For non-shell completion checks, a machine-readable decision file is required.
+  // CUSTOM checks use exit-code semantics and do not need decision_file.
   validateOptionalString(obj["decision_file"], `steps.${stepId}.completion_check.decision_file`);
+  if (obj["worker"] !== "CUSTOM") {
+    assertString(obj["decision_file"], `steps.${stepId}.completion_check.decision_file`);
+  }
   return obj as unknown as CompletionCheckDef;
 }
 

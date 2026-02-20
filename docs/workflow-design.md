@@ -173,7 +173,7 @@ interface CompletionCheckDef {
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
   timeout?: DurationString;
-  decision_file?: string; // optional; supports JSON {"decision":"complete"/"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]} and legacy PASS/FAIL
+  decision_file?: string; // required for non-CUSTOM completion checks; JSON {"decision":"complete"/"incomplete","check_id":"...","reasons":[...],"fingerprints":[...]}
 }
 
 interface InputRef {
@@ -231,7 +231,7 @@ steps:
 
 ### Loading rules
 
-- Explicit: load catalogs from `AGENTCORE_AGENTS_FILE` (colon-separated list) and `--agents <path>` (repeatable). Catalogs are merged in order; later definitions override earlier ones.
+- Explicit: load catalogs from `ROBOPPI_AGENTS_FILE` (colon-separated list) and `--agents <path>` (repeatable). Catalogs are merged in order; later definitions override earlier ones.
 - Implicit: if no explicit catalogs are provided, the runner looks for `agents.yaml` / `agents.yml` next to the workflow YAML.
 
 ## 3. Examples

@@ -11,7 +11,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDaemonConfig } from "./parser.js";
 import { Daemon } from "./daemon.js";
-import { applyEnvPrefixAliases } from "../core/env-aliases.js";
 
 function isNonInteractive(): boolean {
   // Treat either stream being a TTY as interactive.
@@ -27,7 +26,7 @@ function resolveCoreEntryPointForSupervised(coreEntryPointOverride: string | und
   const fromCli = coreEntryPointOverride?.trim();
   if (fromCli) return fromCli;
 
-  const fromEnv = (process.env.ROBOPPI_CORE_ENTRYPOINT ?? process.env.AGENTCORE_CORE_ENTRYPOINT)?.trim();
+  const fromEnv = process.env.ROBOPPI_CORE_ENTRYPOINT?.trim();
   if (fromEnv) return fromEnv;
 
   // Compiled binary: spawn this executable as the Core process.
@@ -41,8 +40,6 @@ function resolveCoreEntryPointForSupervised(coreEntryPointOverride: string | und
 }
 
 export async function runDaemonCli(argv: string[]): Promise<void> {
-  applyEnvPrefixAliases();
-
   const args = argv;
   let yamlPath = "";
   let verbose = false;
@@ -93,20 +90,14 @@ Options:
 
   if (verbose) {
     process.env.ROBOPPI_VERBOSE = "1";
-    process.env.AGENTCORE_VERBOSE = "1";
   }
 
   // Default supervised IPC transport.
   // Mirror workflow runner behavior: prefer socket transport in non-interactive mode.
-  // (Override via ROBOPPI_SUPERVISED_IPC_TRANSPORT or AGENTCORE_SUPERVISED_IPC_TRANSPORT.)
-  if (
-    supervised &&
-    process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT === undefined &&
-    process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT === undefined
-  ) {
+  // (Override via ROBOPPI_SUPERVISED_IPC_TRANSPORT.)
+  if (supervised && process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT === undefined) {
     const val = isNonInteractive() ? "socket" : "stdio";
     process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = val;
-    process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT = val;
   }
 
   if (!yamlPath) {

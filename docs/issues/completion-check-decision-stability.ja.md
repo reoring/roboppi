@@ -13,7 +13,7 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 実運用で確認された症状:
 
 - Worker 出力に `INCOMPLETE` が存在するのに parse failure になる
-- `.agentcore-loop/review.verdict` に `FAIL` が書かれていても判定に使われないケースがある
+- `.roboppi-loop/review.verdict` に `FAIL` が書かれていても判定に使われないケースがある
 - その結果、`max_iterations` 到達前にワークフローが即 `FAILED` になる
 
 この問題は workflow 側プロンプト調整では再発し得るため、AgentCore/Supervisor 側の判定実装を根本修正する。
@@ -57,8 +57,8 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 ## 実装メモ（2026-02-14）
 
 - `src/workflow/completion-decision.ts`
-  - `decision_file` を JSON / legacy テキストで解決する共通関数 `resolveCompletionDecision` を追加
-  - `AGENTCORE_COMPLETION_CHECK_ID` と照合して `check_id` 安全性を追加
+  - `decision_file` を JSON / 互換テキストで解決する共通関数 `resolveCompletionDecision` を追加
+  - `ROBOPPI_COMPLETION_CHECK_ID` と照合して `check_id` 安全性を追加
   - `PASS/FAIL`/`COMPLETE/INCOMPLETE` と JSON `{"decision":"...","check_id":"..."}` を受け入れる
 - `src/workflow/core-ipc-step-runner.ts` と `src/workflow/multi-worker-step-runner.ts`
   - `decision_file` 判定を共通化
@@ -85,7 +85,7 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 優先順位を明示して一本化する。
 
 1. `decision_file`（structured JSON）
-2. `decision_file`（legacy text）
+2. `decision_file`（互換テキスト）
 3. worker 出力 marker（互換フォールバック）
 
 補足:
@@ -113,7 +113,7 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 
 判定ログに最低限以下を出す。
 
-- `decision_source`（file-json / file-legacy / marker / none）
+- `decision_source`（file-json / file-text / marker / none）
 - `check_id` の一致有無
 - parse failure 理由（"missing decision", "invalid json", など）
 
@@ -138,7 +138,7 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 5. テスト
 - 単体テスト:
   - structured file 判定（complete/incomplete）
-  - legacy file 判定（PASS/FAIL）
+  - 互換テキスト判定（PASS/FAIL）
   - marker fallback
   - stale file（check_id 不一致）
   - invalid json
@@ -167,11 +167,11 @@ Completion check failed: could not parse completion decision (expected COMPLETE/
 1. parse failure を `INCOMPLETE` にするとループが長引く
 - 緩和: `max_iterations` と parse failure 閾値ログを明示
 
-2. legacy/structured 混在で移行時の混乱
+2. 互換/structured 混在で移行時の混乱
 - 緩和: file-first の優先順位を固定し、ログに `decision_source` を出す
 
 3. 既存 workflow との互換破壊
-- 緩和: legacy text 判定のサポートを維持
+- 緩和: 互換テキスト判定（PASS/FAIL 等）のサポートを維持
 
 ## 進め方（短期）
 

@@ -164,7 +164,7 @@ export async function resolveBranchRuntimeContext(
     throw new Error(
       `blocked: expected_work_branch "${expectedWorkBranch}" is protected ` +
         `(protected_branches=${protectedResolved.protectedBranches.join(",")}). ` +
-        `Use --allow-protected-branch or AGENTCORE_ALLOW_PROTECTED_BRANCH=1 to override.`,
+        `Use --allow-protected-branch or ROBOPPI_ALLOW_PROTECTED_BRANCH=1 to override.`,
     );
   }
 

@@ -24,7 +24,7 @@ steps:
     description: "Validate inputs/tools and initialize loop state"
     worker: CUSTOM
     instructions: |
-      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/bootstrap.sh"
+      bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/bootstrap.sh"
     capabilities: [READ, EDIT, RUN_COMMANDS]
     timeout: "2m"
 
@@ -33,7 +33,7 @@ steps:
     worker: CUSTOM
     depends_on: [bootstrap]
     instructions: |
-      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/branch.sh"
+      bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/branch.sh"
     capabilities: [READ, RUN_COMMANDS]
     timeout: "1m"
 
@@ -103,7 +103,7 @@ steps:
     completion_check:
       worker: CUSTOM
       instructions: |
-        bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/todo-check.sh"
+        bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/todo-check.sh"
       capabilities: [READ, RUN_COMMANDS]
       timeout: "30s"
 
@@ -170,7 +170,7 @@ steps:
           - Clear .roboppi-loop/fix.md if it exists (truncate to empty) so stale FAIL instructions cannot leak into future runs.
 
         Before reviewing, generate these review inputs (workspace is a git repo):
-        - bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/review-inputs.sh"
+        - bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/review-inputs.sh"
 
         You must read at least:
         - .roboppi-loop/request.md
@@ -187,8 +187,8 @@ steps:
 
         Output rules:
         - Write .roboppi-loop/review.verdict as a single-line JSON object:
-          - PASS => {"decision":"complete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
-          - FAIL => {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+          - complete => {"decision":"complete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+          - incomplete => {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
         - When FAIL, also include:
           - "reasons": ["..."]        (human-readable, short)
           - "fingerprints": ["..."]   (stable IDs; used by the Convergence Controller)
@@ -196,8 +196,7 @@ steps:
           - Stable across iterations for the *same* underlying issue.
           - Prefer file/line/test identifiers (e.g. "test:pkg/foo TestBar", "lint:src/x.ts:42", "scope:charts/...").
           - Keep each item short.
-        - Fallback: if you cannot emit JSON, write legacy text "PASS" or "FAIL" only (no extra words).
-        - If verdict is PASS, clear .roboppi-loop/fix.md if it exists (truncate to empty).
+        - If verdict is complete, clear .roboppi-loop/fix.md if it exists (truncate to empty).
       capabilities: [READ, EDIT, RUN_COMMANDS]
       timeout: "15m"
 
@@ -219,7 +218,7 @@ steps:
     worker: CUSTOM
     depends_on: [implement]
     instructions: |
-      bash "${ROBOPPI_ROOT:-${AGENTCORE_ROOT:-.}}/scripts/agent-pr-loop/create-pr.sh"
+      bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/create-pr.sh"
     capabilities: [READ, EDIT, RUN_COMMANDS]
     timeout: "10m"
     outputs:

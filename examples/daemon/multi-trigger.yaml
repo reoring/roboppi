@@ -6,8 +6,8 @@ name: multi-trigger
 version: "1"
 description: "Combine multiple event sources and triggers"
 
-workspace: "/tmp/agentcore-daemon-multi"
-state_dir: "/tmp/agentcore-daemon-multi/.daemon-state"
+workspace: "/tmp/roboppi-daemon-multi"
+state_dir: "/tmp/roboppi-daemon-multi/.daemon-state"
 max_concurrent_workflows: 2
 
 events:

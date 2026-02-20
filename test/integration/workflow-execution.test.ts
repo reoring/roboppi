@@ -301,6 +301,7 @@ steps:
     on_failure: retry
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "Check if all todos are done"
       capabilities: [READ]
       timeout: "2m"

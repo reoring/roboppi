@@ -165,13 +165,13 @@ This is intentionally strict because `create_branch: false` implies the workflow
 Override the protected list:
 
 - CLI: `--protected-branches <csv>`
-- env: `AGENTCORE_PROTECTED_BRANCHES=<csv>`
+- env: `ROBOPPI_PROTECTED_BRANCHES=<csv>`
 - priority: CLI > env > default
 
 Disable the guard explicitly (dangerous):
 
 - CLI: `--allow-protected-branch`
-- env: `AGENTCORE_ALLOW_PROTECTED_BRANCH=1`
+- env: `ROBOPPI_ALLOW_PROTECTED_BRANCH=1`
 
 When override is enabled, the runner logs a warning and records the override in workflow metadata.
 
@@ -184,23 +184,23 @@ When the workflow is executed, Roboppi passes these values to each step as envir
 Base / startup:
 
 - `BASE_BRANCH` (set to `effective_base_branch`)
-- `AGENTCORE_EFFECTIVE_BASE_BRANCH`
-- `AGENTCORE_EFFECTIVE_BASE_BRANCH_SOURCE` (`cli|env|current`)
-- `AGENTCORE_EFFECTIVE_BASE_SHA`
-- `AGENTCORE_STARTUP_BRANCH`
-- `AGENTCORE_STARTUP_HEAD_SHA`
-- `AGENTCORE_STARTUP_TOPLEVEL`
+-- `ROBOPPI_EFFECTIVE_BASE_BRANCH`
+-- `ROBOPPI_EFFECTIVE_BASE_BRANCH_SOURCE` (`cli|env|current`)
+-- `ROBOPPI_EFFECTIVE_BASE_SHA`
+-- `ROBOPPI_STARTUP_BRANCH`
+-- `ROBOPPI_STARTUP_HEAD_SHA`
+-- `ROBOPPI_STARTUP_TOPLEVEL`
 
 Branch lock expectations:
 
-- `AGENTCORE_CREATE_BRANCH` (`1` or `0`)
-- `AGENTCORE_EXPECTED_WORK_BRANCH`
-- `AGENTCORE_EXPECTED_CURRENT_BRANCH`
+-- `ROBOPPI_CREATE_BRANCH` (`1` or `0`)
+-- `ROBOPPI_EXPECTED_WORK_BRANCH`
+-- `ROBOPPI_EXPECTED_CURRENT_BRANCH`
 
 Protected branch guard:
 
-- `AGENTCORE_PROTECTED_BRANCHES` (CSV)
-- `AGENTCORE_ALLOW_PROTECTED_BRANCH` (`1` or `0`)
+-- `ROBOPPI_PROTECTED_BRANCHES` (CSV)
+-- `ROBOPPI_ALLOW_PROTECTED_BRANCH` (`1` or `0`)
 
 ---
 
@@ -272,8 +272,8 @@ roboppi workflow examples/agent-pr-loop.yaml --workspace /path/to/repo \
 Some teams gate expensive or environment-dependent steps behind sentinel files checked by `CUSTOM` scripts.
 
 Example (Appthrust Platform workflow):
-- `.agentcore-loop/enable_live_validation`: if present, run the live-cluster validation step.
-- `.agentcore-loop/live-validation.args`: optional extra args passed to the validation wrapper.
+-- `.roboppi-loop/enable_live_validation`: if present, run the live-cluster validation step.
+-- `.roboppi-loop/live-validation.args`: optional extra args passed to the validation wrapper.
 
 Behavior:
 - sentinel file absent -> script exits `0` and the step is treated as skipped/pass.

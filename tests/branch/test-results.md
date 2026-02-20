@@ -9,9 +9,9 @@
 - 実行コマンド:
   - `bash tests/branch/run-branch-verification.sh`
 - 検証ディレクトリ:
-  - `/tmp/agentcore-branch-verify-rT3LQh`
+- `/tmp/roboppi-branch-verify-rT3LQh`
 - ログディレクトリ:
-  - `/tmp/agentcore-branch-verify-rT3LQh/logs`
+- `/tmp/roboppi-branch-verify-rT3LQh/logs`
 
 ## 2. 結果サマリ
 

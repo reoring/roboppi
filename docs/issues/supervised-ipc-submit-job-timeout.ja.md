@@ -22,40 +22,40 @@ IPC トレースで見えた主な症状:
 
 つまり壊れているのは Runner -> Core の stdin 経路（Core 側でメッセージが見えない）です。
 
-対処: socket ベースの supervised IPC transport（`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`）を使い、stdio パイプを完全に迂回します。
+対処: socket ベースの supervised IPC transport（`ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket`）を使い、stdio パイプを完全に迂回します。
 
 もし環境側で Unix ドメインソケット作成が禁止されている（例: `listen` が `EPERM` / `EACCES` で失敗する）場合は、TCP ループバックを使います:
 
-- `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`
+- `ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp`
 
 ## 再現
 
 典型的な再現手順（stdio を強制。影響を受ける環境では失敗する可能性あり）:
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
 Socket transport（成功を想定）:
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
 TCP transport（Unix socket がブロックされている環境向け）:
 
 ```bash
-AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
-  AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
+ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp \
+  ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 \
   bash examples/agent-pr-loop-demo/run-in-tmp.sh
 ```
 
 注記: `src/workflow/run.ts` では非対話の `--supervised` 実行時に
-`AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket` がデフォルトになっています（`stdio|socket|tcp` で上書き可）。
+`ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket` がデフォルトになっています（`stdio|socket|tcp` で上書き可）。
 
 補足:
 
@@ -75,7 +75,7 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 - デフォルトの IPC リクエストタイムアウトが 30 秒（`DEFAULT_REQUEST_TIMEOUT_MS = 30_000`）であることを確認。
 - IPC リクエストタイムアウトを設定可能にし、supervised runner の既定値を `2m` に引き上げ:
   - CLI: `--ipc-request-timeout <DurationString>`
-  - 環境変数: `AGENTCORE_IPC_REQUEST_TIMEOUT` / `AGENTCORE_IPC_REQUEST_TIMEOUT_MS`
+  - 環境変数: `ROBOPPI_IPC_REQUEST_TIMEOUT` / `ROBOPPI_IPC_REQUEST_TIMEOUT_MS`
 
 3) ステップタイムアウトとの関係
 
@@ -89,10 +89,10 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 
 5) IPC トレース機能
 
-- `src/ipc/json-lines-transport.ts` に `AGENTCORE_IPC_TRACE=1` のサポートを追加:
+- `src/ipc/json-lines-transport.ts` に `ROBOPPI_IPC_TRACE=1` のサポートを追加:
   - `tx` / `rx` を `pid` / `type` / `requestId` / `jobId` と共に出力。
 - デモトレース補助を追加:
-  - `examples/agent-pr-loop-demo/run-in-tmp.sh` が `AGENTCORE_ROOT` と git SHA を表示。
+  - `examples/agent-pr-loop-demo/run-in-tmp.sh` が `ROBOPPI_ROOT` と git SHA を表示。
 
 6) トランスポートレベルのエラー
 
@@ -112,11 +112,11 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 
 8) socket ベースの supervised IPC transport
 
-- supervised IPC に socket transport を追加し、stdio パイプを回避: `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket`。
+- supervised IPC に socket transport を追加し、stdio パイプを回避: `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket`。
   - 既定は Unix ドメインソケット。Unix socket が許可されない場合は TCP ループバックへフォールバック。
-  - 明示的に TCP を使う場合は `AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp`。
-- `src/workflow/run.ts` は非対話の `--supervised` 実行で既定値を `socket` に設定（`AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp` で上書き可）。
-- Core は Supervisor がセットする `AGENTCORE_IPC_SOCKET_PATH`（Unix）または `AGENTCORE_IPC_SOCKET_HOST` + `AGENTCORE_IPC_SOCKET_PORT`（TCP）へ接続します。
+  - 明示的に TCP を使う場合は `ROBOPPI_SUPERVISED_IPC_TRANSPORT=tcp`。
+- `src/workflow/run.ts` は非対話の `--supervised` 実行で既定値を `socket` に設定（`ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp` で上書き可）。
+- Core は Supervisor がセットする `ROBOPPI_IPC_SOCKET_PATH`（Unix）または `ROBOPPI_IPC_SOCKET_HOST` + `ROBOPPI_IPC_SOCKET_PORT`（TCP）へ接続します。
 
 ## 関連作業（Agent PR Loop デモ）
 
@@ -124,16 +124,16 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 
 - `examples/agent-pr-loop.yaml`: review 結果に応じて `implement`（Claude Code）をループするよう変更し、`completion_check` を使用。
 - `completion_check` の判断を `decision_file` によるファイルベース判定へ対応し、stdout マーカー依存を排除。
-- `scripts/agent-pr-loop/review-inputs.sh`: `.agentcore-loop/review.untracked.diff` を生成し、レビューに未追跡差分を含める。
+- `scripts/agent-pr-loop/review-inputs.sh`: `.roboppi-loop/review.untracked.diff` を生成し、レビューに未追跡差分を含める。
 - `examples/agent-pr-loop-demo/request.md`: 具体的な境界ケースを追加して品質基準を引き上げ。
 - `examples/agent-pr-loop-demo/run-in-tmp.sh`: ワークフロー完了後の検証を追加（ブラックボックス確認）。
 
 ## 現在の状況 / 次のステップ
 
 - 根本原因: supervised stdio パイプで、特定の非対話環境で Runner -> Core 方向のメッセージが落ちて `submit_job` の ACK タイムアウトにつながる。
-- 実装済み対策: supervised IPC を `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket` に変更。非対話 `--supervised` 実行では `src/workflow/run.ts` により既定で socket になります。
+- 実装済み対策: supervised IPC を `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket` に変更。非対話 `--supervised` 実行では `src/workflow/run.ts` により既定で socket になります。
 - 旧挙動が必要な場合、または元の問題を再現したい場合は次を指定:
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio`
 
 ## 2026-02-14 フォローアップ
 
@@ -151,7 +151,7 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 
 ### stdio transport の残タスク
 
-- 再度再現コマンドを `AGENTCORE_IPC_TRACE=1` で実行。
+- 再度再現コマンドを `ROBOPPI_IPC_TRACE=1` で実行。
 - トレースに以下が含まれることを確認:
   - `tx submit_job`（Runner）
   - `rx submit_job`（Core）
@@ -162,15 +162,15 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 ### 2026-02-14 (stdio) 再実行結果
 
 - 再現コマンド（stdio 強制）:
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio AGENTCORE_IPC_TRACE=1 AGENTCORE_IPC_REQUEST_TIMEOUT=20s bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=45s VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio ROBOPPI_IPC_TRACE=1 ROBOPPI_IPC_REQUEST_TIMEOUT=20s bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
 - 両方のコマンドで、いずれも以下を確認:
   - Runner `tx submit_job`
   - Core 起動ログ（`AgentCore starting`, `AgentCore started, awaiting IPC messages`）
   - Core 側の `[IPC][rx]` / `ack` は **未観測**
   - 20〜45 秒でタイムアウトし、ワークフロー失敗
 - 追加の分離検証:
-  - `AGENTCORE_IPC_TRACE=1 bun /home/reoring/roboppi/src/index.ts` をシェルパイプ経由（`printf ... | bun src/index.ts`）で実行すると `Core [IPC][rx] submit_job` と `ack` を確認。
+  - `ROBOPPI_IPC_TRACE=1 bun /home/reoring/roboppi/src/index.ts` をシェルパイプ経由（`printf ... | bun src/index.ts`）で実行すると `Core [IPC][rx] submit_job` と `ack` を確認。
   - Bun runtime + `node:child_process` で子 bun プロセスへ書き込む supervisor 経路では、最小化した writer スクリプトでも Core の `[IPC][rx]` は得られない。
 - stdio に関する最新仮説:
   - 本環境では Bun runtime のプロセス生成 + pipe transport が子 bun プロセスの stdin をトランスポート層で破棄する可能性。
@@ -179,9 +179,9 @@ AGENTCORE_SUPERVISED_IPC_TRANSPORT=tcp \
 ### 2026-02-14 (socket) 再実行結果
 
 - socket transport での問題解消を end-to-end で確認:
-  - `AGENTCORE_SUPERVISED_IPC_TRANSPORT=socket AGENTCORE_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
+  - `ROBOPPI_SUPERVISED_IPC_TRANSPORT=socket ROBOPPI_IPC_REQUEST_TIMEOUT=2m VERBOSE=0 bash examples/agent-pr-loop-demo/run-in-tmp.sh`
     -> ワークフロー `SUCCEEDED`、デモの事後チェック完了
-  - `AGENTCORE_IPC_TRACE=1 bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
+  - `ROBOPPI_IPC_TRACE=1 bun run src/workflow/run.ts examples/hello-world.yaml --supervised`
     -> Core `[IPC][rx] submit_job` と `ack` を確認、ワークフロー `SUCCEEDED`
 - 全テスト通過: `bun test`（949 件）
 - 結論: 非対話 supervised 実行では socket transport を利用。stdio はフォールバック / デバッグ用。

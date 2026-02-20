@@ -206,6 +206,7 @@ steps:
     on_failure: retry
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: |
         Check todo.md.
         If any - [ ] remains, mark as incomplete.
@@ -388,6 +389,7 @@ steps:
     capabilities: [READ]
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check"
       capabilities: [READ]
 `;
@@ -406,6 +408,7 @@ steps:
     capabilities: [READ]
     completion_check:
       worker: CLAUDE_CODE
+      decision_file: ".roboppi-loop/decision.json"
       instructions: "check"
       capabilities: [READ]
     max_iterations: 1

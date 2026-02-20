@@ -20,7 +20,6 @@ import { MultiWorkerStepRunner } from "./multi-worker-step-runner.js";
 import { CoreIpcStepRunner } from "./core-ipc-step-runner.js";
 import { WorkflowStatus, StepStatus } from "./types.js";
 import { parseDuration } from "./duration.js";
-import { applyEnvPrefixAliases } from "../core/env-aliases.js";
 import {
   resolveBranchRuntimeContext,
   type BranchRuntimeContext,
@@ -35,7 +34,7 @@ function resolveCoreEntryPointForSupervised(coreEntryPointOverride: string | und
   const fromCli = coreEntryPointOverride?.trim();
   if (fromCli) return fromCli;
 
-  const fromEnv = (process.env.ROBOPPI_CORE_ENTRYPOINT ?? process.env.AGENTCORE_CORE_ENTRYPOINT)?.trim();
+  const fromEnv = process.env.ROBOPPI_CORE_ENTRYPOINT?.trim();
   if (fromEnv) return fromEnv;
 
   // Compiled binary: spawn this executable as the Core process.
@@ -55,8 +54,8 @@ function resolveIpcRequestTimeoutMs(supervisedMode: boolean, ipcRequestTimeout: 
   if (!supervisedMode) return 0;
 
   const fromCli = ipcRequestTimeout;
-  const fromEnv = process.env.AGENTCORE_IPC_REQUEST_TIMEOUT;
-  const fromEnvMs = process.env.AGENTCORE_IPC_REQUEST_TIMEOUT_MS;
+  const fromEnv = process.env.ROBOPPI_IPC_REQUEST_TIMEOUT;
+  const fromEnvMs = process.env.ROBOPPI_IPC_REQUEST_TIMEOUT_MS;
 
   if (fromCli !== undefined) {
     return parseDurationOrThrow(fromCli, "IPC request timeout");
@@ -97,7 +96,7 @@ async function loadAgentCatalogForWorkflow(
   verboseMode: boolean,
   agentsFiles: string[],
 ): Promise<AgentCatalog | undefined> {
-  const fromEnv = splitPathList(process.env.AGENTCORE_AGENTS_FILE);
+  const fromEnv = splitPathList(process.env.ROBOPPI_AGENTS_FILE);
   const fromCli = agentsFiles;
 
   // If any explicit path is provided, only load those (env first, then CLI overrides).
@@ -155,7 +154,7 @@ function parseEnvBool(value: string | undefined): boolean | undefined {
 
 function resolveKeepaliveEnabled(keepalive: boolean | undefined): boolean {
   if (keepalive !== undefined) return keepalive;
-  const env = parseEnvBool(process.env.AGENTCORE_KEEPALIVE);
+  const env = parseEnvBool(process.env.ROBOPPI_KEEPALIVE);
   if (env !== undefined) return env;
   return isNonInteractive();
 }
@@ -163,7 +162,7 @@ function resolveKeepaliveEnabled(keepalive: boolean | undefined): boolean {
 function resolveKeepaliveIntervalMs(keepaliveInterval: string | undefined): number {
   const raw =
     keepaliveInterval ??
-    process.env.AGENTCORE_KEEPALIVE_INTERVAL ??
+    process.env.ROBOPPI_KEEPALIVE_INTERVAL ??
     "10s";
   try {
     return parseDuration(raw);
@@ -226,8 +225,6 @@ function printBranchContext(context: BranchRuntimeContext): void {
 }
 
 export async function runWorkflowCli(argv: string[]): Promise<void> {
-  applyEnvPrefixAliases();
-
   const args = argv;
   let yamlPath = "";
   let workspaceDir = "";
@@ -301,7 +298,7 @@ Options:
   --base-branch <name>      Explicit base branch (overrides BASE_BRANCH env)
   --protected-branches <csv>  Protected work branches (default: main,master,release/*)
   --allow-protected-branch  Allow execution on protected branch (dangerous)
-  --agents <path>           Agent catalog YAML (repeatable; merged with AGENTCORE_AGENTS_FILE; CLI wins on conflicts)
+  --agents <path>           Agent catalog YAML (repeatable; merged with ROBOPPI_AGENTS_FILE; CLI wins on conflicts)
   --core <path|cmd>          Core entrypoint for supervised mode (default: auto)
   --help, -h              Show help`);
       process.exit(0);
@@ -311,15 +308,15 @@ Options:
   }
 
   if (verbose) {
-    process.env.AGENTCORE_VERBOSE = "1";
+    process.env.ROBOPPI_VERBOSE = "1";
   }
 
   // Keepalive flags should propagate to any supervised child processes (Core).
   if (keepalive !== undefined) {
-    process.env.AGENTCORE_KEEPALIVE = keepalive ? "1" : "0";
+    process.env.ROBOPPI_KEEPALIVE = keepalive ? "1" : "0";
   }
   if (keepaliveInterval !== undefined && keepaliveInterval !== "") {
-    process.env.AGENTCORE_KEEPALIVE_INTERVAL = keepaliveInterval;
+    process.env.ROBOPPI_KEEPALIVE_INTERVAL = keepaliveInterval;
   }
 
   if (!yamlPath) {
@@ -354,7 +351,7 @@ Options:
     // 3. Setup workspace
     const ws = workspaceDir
       ? path.resolve(workspaceDir)
-      : await mkdtemp(path.join(tmpdir(), "agentcore-wf-"));
+      : await mkdtemp(path.join(tmpdir(), "roboppi-wf-"));
 
     // Context directory can be overridden by workflow YAML (context_dir).
     // Resolve relative paths from the workspace root.
@@ -368,9 +365,9 @@ Options:
       cliBaseBranch,
       envBaseBranch: process.env.BASE_BRANCH,
       cliProtectedBranches,
-      envProtectedBranches: process.env.AGENTCORE_PROTECTED_BRANCHES,
+      envProtectedBranches: process.env.ROBOPPI_PROTECTED_BRANCHES,
       cliAllowProtectedBranch,
-      envAllowProtectedBranch: process.env.AGENTCORE_ALLOW_PROTECTED_BRANCH,
+      envAllowProtectedBranch: process.env.ROBOPPI_ALLOW_PROTECTED_BRANCH,
       createBranch: definition.create_branch ?? false,
       expectedWorkBranch: definition.expected_work_branch,
       branchTransitionStep: definition.branch_transition_step,
@@ -383,9 +380,9 @@ Options:
     //
     // Some non-interactive runners exhibit broken stdio pipes between parent/child
     // processes. Use the socket transport by default in non-interactive mode.
-    // (Override via AGENTCORE_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp.)
-    if (supervised && process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT === undefined) {
-      process.env.AGENTCORE_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
+    // (Override via ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp.)
+    if (supervised && process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT === undefined) {
+      process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
     }
 
     // 4. Execute
@@ -424,38 +421,38 @@ Options:
     const ctx = new ContextManager(contextDir);
     const workflowEnv: Record<string, string> = {};
     if (verbose) {
-      workflowEnv.AGENTCORE_VERBOSE = "1";
+      workflowEnv.ROBOPPI_VERBOSE = "1";
     }
-    workflowEnv.AGENTCORE_CREATE_BRANCH = branchContext.createBranch ? "1" : "0";
-    workflowEnv.AGENTCORE_PROTECTED_BRANCHES = branchContext.protectedBranches.join(",");
-    workflowEnv.AGENTCORE_ALLOW_PROTECTED_BRANCH = branchContext.allowProtectedBranch
+    workflowEnv.ROBOPPI_CREATE_BRANCH = branchContext.createBranch ? "1" : "0";
+    workflowEnv.ROBOPPI_PROTECTED_BRANCHES = branchContext.protectedBranches.join(",");
+    workflowEnv.ROBOPPI_ALLOW_PROTECTED_BRANCH = branchContext.allowProtectedBranch
       ? "1"
       : "0";
     if (branchContext.effectiveBaseBranch) {
       workflowEnv.BASE_BRANCH = branchContext.effectiveBaseBranch;
-      workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
+      workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH = branchContext.effectiveBaseBranch;
     }
     if (branchContext.effectiveBaseBranchSource) {
-      workflowEnv.AGENTCORE_EFFECTIVE_BASE_BRANCH_SOURCE =
+      workflowEnv.ROBOPPI_EFFECTIVE_BASE_BRANCH_SOURCE =
         branchContext.effectiveBaseBranchSource;
     }
     if (branchContext.effectiveBaseSha) {
-      workflowEnv.AGENTCORE_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
+      workflowEnv.ROBOPPI_EFFECTIVE_BASE_SHA = branchContext.effectiveBaseSha;
     }
     if (branchContext.startupBranch) {
-      workflowEnv.AGENTCORE_STARTUP_BRANCH = branchContext.startupBranch;
+      workflowEnv.ROBOPPI_STARTUP_BRANCH = branchContext.startupBranch;
     }
     if (branchContext.startupHeadSha) {
-      workflowEnv.AGENTCORE_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
+      workflowEnv.ROBOPPI_STARTUP_HEAD_SHA = branchContext.startupHeadSha;
     }
     if (branchContext.startupToplevel) {
-      workflowEnv.AGENTCORE_STARTUP_TOPLEVEL = branchContext.startupToplevel;
+      workflowEnv.ROBOPPI_STARTUP_TOPLEVEL = branchContext.startupToplevel;
     }
     if (branchContext.expectedWorkBranch) {
-      workflowEnv.AGENTCORE_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
+      workflowEnv.ROBOPPI_EXPECTED_WORK_BRANCH = branchContext.expectedWorkBranch;
     }
     if (branchContext.expectedCurrentBranch) {
-      workflowEnv.AGENTCORE_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
+      workflowEnv.ROBOPPI_EXPECTED_CURRENT_BRANCH = branchContext.expectedCurrentBranch;
     }
     const executorEnv =
       Object.keys(workflowEnv).length > 0 ? workflowEnv : undefined;
