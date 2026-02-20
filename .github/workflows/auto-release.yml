@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: auto-release-${{ github.ref }}
@@ -38,18 +39,31 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag (if missing)
+        id: tagger
         shell: bash
         env:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
+          CREATED=0
           if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "refs/tags/${TAG}$"; then
             echo "Tag already exists: ${TAG}"
-            exit 0
+          else
+            GIT_AUTHOR_NAME="github-actions[bot]" \
+            GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+            GIT_COMMITTER_NAME="github-actions[bot]" \
+            GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+            CREATED=1
           fi
 
-          GIT_AUTHOR_NAME="github-actions[bot]" \
-          GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
-          GIT_COMMITTER_NAME="github-actions[bot]" \
-          GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
+          echo "created=${CREATED}" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        if: steps.tagger.outputs.created == '1'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          gh workflow run release --field tag="$TAG"
