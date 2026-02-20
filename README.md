@@ -1,5 +1,9 @@
 # Roboppi
 
+<p align="center">
+  <img src="assets/roboppi-hero.png" alt="Roboppi" width="900" />
+</p>
+
 English | [日本語](README.ja.md)
 
 Roboppi (ろぼっぴ, pronounced "roh-boh-pee") is an execution-control runtime for agentic workers.
