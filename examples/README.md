@@ -41,6 +41,7 @@ timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 - `examples/failure-recovery.yaml`: failure handling / retry patterns
 - `examples/todo-loop.yaml`: simple iterative loop pattern
 - `examples/agent-pr-loop.yaml`: larger multi-step agent loop (see demo under `examples/agent-pr-loop-demo/`)
+- `examples/appthrust-dashboard/workflow.yaml`: production workflow for a team project (design -> todo -> implement -> validate)
 
 ## Daemon examples
 
