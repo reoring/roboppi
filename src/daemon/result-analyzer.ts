@@ -55,7 +55,9 @@ export class ResultAnalyzer {
     // Pass template variables as environment variables to prevent shell injection.
     const varsEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(vars)) {
-      varsEnv[`AGENTCORE_${key.toUpperCase()}`] = value;
+      const upper = key.toUpperCase();
+      varsEnv[`AGENTCORE_${upper}`] = value;
+      varsEnv[`ROBOPPI_${upper}`] = value;
     }
     const env: Record<string, string> = { ...process.env as Record<string, string>, ...varsEnv };
 

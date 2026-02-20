@@ -2,15 +2,19 @@
 /**
  * AgentCore CLI — execution control runtime for AI agents.
  *
- * Modes:
- *   agentcore [options]                     IPC server (stdin/stdout JSON Lines)
- *   agentcore run --worker <kind> ...       One-shot task execution
+  * Modes:
+  *   roboppi [options]                       Core IPC server (stdin/stdout JSON Lines)
+  *   roboppi run --worker <kind> ...         One-shot worker task execution
+  *   roboppi workflow <workflow.yaml> ...    Workflow runner
+  *   roboppi daemon <daemon.yaml> ...        Daemon mode
+ *
+ * Compatibility alias:
+ *   agentcore (same CLI)
  */
-import { JsonLinesTransport } from "./ipc/json-lines-transport.js";
-import { IpcProtocol } from "./ipc/protocol.js";
-import { AgentCore } from "./core/agentcore.js";
+import { applyEnvPrefixAliases } from "./core/env-aliases.js";
 import type { AgentCoreConfig } from "./core/agentcore.js";
 import type { LogLevel } from "./core/observability.js";
+import { startCoreRuntime } from "./core/core-runtime.js";
 import { ExecutionBudget } from "./core/execution-budget.js";
 import { BackpressureController } from "./core/backpressure.js";
 import { CircuitBreakerRegistry } from "./core/circuit-breaker.js";
@@ -19,11 +23,12 @@ import { ProcessManager } from "./worker/process-manager.js";
 import { OpenCodeAdapter } from "./worker/adapters/opencode-adapter.js";
 import { ClaudeCodeAdapter } from "./worker/adapters/claude-code-adapter.js";
 import { CodexCliAdapter } from "./worker/adapters/codex-cli-adapter.js";
-import { CustomShellAdapter } from "./worker/adapters/custom-shell-adapter.js";
 import type { WorkerAdapter } from "./worker/worker-adapter.js";
 import { generateId } from "./types/common.js";
 import { WorkerKind, WorkerCapability, OutputMode, WorkerStatus, JobType, PriorityClass } from "./types/index.js";
 import type { WorkerTask, Job } from "./types/index.js";
+
+applyEnvPrefixAliases();
 
 // ── Argument parsing ──────────────────────────────────────────────
 
@@ -54,11 +59,14 @@ interface RunOptions {
 type CliMode = { mode: "server"; opts: SharedOptions } | { mode: "run"; opts: SharedOptions; run: RunOptions };
 
 const HELP_TEXT = `
-agentcore — AI agent execution control runtime
+roboppi — execution-control runtime for agentic workers
 
 USAGE
-  agentcore [options]                          Start IPC server mode
-  agentcore run [options] <instructions...>    Run a one-shot worker task
+  roboppi [options]                          Start Core IPC server mode
+  roboppi run [options] <instructions...>    Run a one-shot worker task
+  roboppi workflow <workflow.yaml> [options] Run a workflow YAML
+  roboppi daemon <daemon.yaml> [options]     Run daemon mode (resident workflows)
+  roboppi agent [options] <instructions...>  Alias for 'roboppi run'
 
 IPC SERVER MODE
   Reads JSON Lines from stdin, writes responses to stdout. Logs go to stderr.
@@ -91,18 +99,24 @@ SHARED OPTIONS
 
 EXAMPLES
   # IPC server mode
-  echo '{"type":"submit_job",...}' | agentcore
+  echo '{"type":"submit_job",...}' | roboppi
 
   # One-shot: have OpenCode create files
-  agentcore run --worker opencode --workspace /tmp/demo "Create hello.ts"
+  roboppi run --worker opencode --workspace /tmp/demo "Create hello.ts"
 
   # One-shot: have Claude Code fix tests
-  agentcore run --worker claude-code --workspace ./my-project \\
+  roboppi run --worker claude-code --workspace ./my-project \\
     --capabilities EDIT,RUN_TESTS "Fix the failing tests"
 
   # One-shot with budget options
-  agentcore run --worker opencode --workspace /tmp/demo \\
+  roboppi run --worker opencode --workspace /tmp/demo \\
     --timeout 60000 --concurrency 5 "Write a README"
+
+  # Run a workflow
+  roboppi workflow examples/hello-world.yaml --verbose
+
+  # Run daemon mode
+  roboppi daemon examples/daemon/simple-cron.yaml --verbose
 `.trim();
 
 const VERSION = "0.1.0";
@@ -190,9 +204,9 @@ function parseCliArgs(argv: string[]): CliMode {
         shared.logLevel = level as LogLevel;
         continue;
       }
-      if (arg.startsWith("-")) die(`unknown option "${arg}"\nRun 'agentcore run --help' for usage.`);
-      positional.push(arg);
-    }
+       if (arg.startsWith("-")) die(`unknown option "${arg}"\nRun 'roboppi run --help' for usage.`);
+       positional.push(arg);
+     }
 
     run.instructions = positional.join(" ");
     return { mode: "run", opts: shared, run };
@@ -232,7 +246,7 @@ function parseCliArgs(argv: string[]): CliMode {
         break;
       }
       default:
-        die(`unknown option "${arg}"\nRun 'agentcore --help' for usage.`);
+        die(`unknown option "${arg}"\nRun 'roboppi --help' for usage.`);
     }
   }
   return { mode: "server", opts: shared };
@@ -290,9 +304,9 @@ async function executeRun(opts: SharedOptions, run: RunOptions): Promise<void> {
   const logger = createLogger("run");
 
   // Validate required args
-  if (!run.worker) die("--worker is required.\nUsage: agentcore run --worker <kind> --workspace <path> <instructions>");
-  if (!run.workspace) die("--workspace is required.\nUsage: agentcore run --worker <kind> --workspace <path> <instructions>");
-  if (!run.instructions) die("instructions are required.\nUsage: agentcore run --worker <kind> --workspace <path> \"your instructions\"");
+  if (!run.worker) die("--worker is required.\nUsage: roboppi run --worker <kind> --workspace <path> <instructions>");
+  if (!run.workspace) die("--workspace is required.\nUsage: roboppi run --worker <kind> --workspace <path> <instructions>");
+  if (!run.instructions) die("instructions are required.\nUsage: roboppi run --worker <kind> --workspace <path> \"your instructions\"");
 
   const workerKind = VALID_WORKERS[run.worker];
   if (!workerKind) die(`unknown worker "${run.worker}". Must be one of: ${Object.keys(VALID_WORKERS).join(", ")}`);
@@ -435,84 +449,54 @@ async function executeRun(opts: SharedOptions, run: RunOptions): Promise<void> {
 // ── Server mode ───────────────────────────────────────────────────
 
 function startServer(opts: SharedOptions): void {
-  const logger = createLogger("cli");
   const config = buildConfig(opts);
-
-  // Mark this process as the Core runtime for logging/diagnostics.
-  if (!process.env.AGENTCORE_COMPONENT) process.env.AGENTCORE_COMPONENT = "core";
-
-  const stdin = Bun.stdin.stream() as ReadableStream<Uint8Array>;
-  const stdout = new WritableStream<Uint8Array>({
-    write(chunk) { process.stdout.write(chunk); },
+  startCoreRuntime({
+    config,
+    loggerComponent: "cli",
   });
-
-  const transport = new JsonLinesTransport(stdin, stdout);
-  const protocol = new IpcProtocol(transport);
-  const core = new AgentCore(protocol, config);
-
-  // Register built-in worker adapters so WORKER_TASK delegation works.
-  {
-    const pm = new ProcessManager();
-    core.getWorkerGateway().registerAdapter(WorkerKind.OPENCODE, new OpenCodeAdapter(pm));
-    core.getWorkerGateway().registerAdapter(WorkerKind.CLAUDE_CODE, new ClaudeCodeAdapter({}, pm));
-    core.getWorkerGateway().registerAdapter(WorkerKind.CODEX_CLI, new CodexCliAdapter(pm));
-    core.getWorkerGateway().registerAdapter(WorkerKind.CUSTOM, new CustomShellAdapter(pm));
-  }
-
-  let shuttingDown = false;
-
-  async function shutdown(reason: string): Promise<void> {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info(`Shutting down: ${reason}`);
-    try {
-      await core.shutdown();
-    } catch (err) {
-      logger.error("Error during shutdown", err);
-    }
-    process.exit(0);
-  }
-
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
-
-  process.on("uncaughtException", (err) => {
-    logger.error("Uncaught exception", { name: err.name, message: err.message, stack: err.stack });
-    shutdown("uncaughtException").catch(() => process.exit(1));
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    logger.error("Unhandled rejection", reason);
-    shutdown("unhandledRejection").catch(() => process.exit(1));
-  });
-
-  logger.info("AgentCore starting", {
-    config: {
-      concurrency: config.budget?.maxConcurrency ?? 10,
-      rps: config.budget?.maxRps ?? 50,
-      logLevel: config.logLevel ?? "info",
-    },
-  });
-  core.start();
-  logger.info("AgentCore started, awaiting IPC messages on stdin");
 }
 
 // ── Main ──────────────────────────────────────────────────────────
 
-const parsed = parseCliArgs(process.argv.slice(2));
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
 
-if (parsed.opts.help) {
-  console.log(HELP_TEXT);
-  process.exit(0);
+  if (argv[0] === "workflow") {
+    const { runWorkflowCli } = await import("./workflow/run.js");
+    await runWorkflowCli(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "daemon") {
+    const { runDaemonCli } = await import("./daemon/cli.js");
+    await runDaemonCli(argv.slice(1));
+    return;
+  }
+
+  // Alias: `roboppi agent ...` == `roboppi run ...`
+  const parsed = argv[0] === "agent"
+    ? parseCliArgs(["run", ...argv.slice(1)])
+    : parseCliArgs(argv);
+
+  if (parsed.opts.help) {
+    console.log(HELP_TEXT);
+    process.exit(0);
+  }
+
+  if (parsed.opts.version) {
+    console.log(`roboppi ${VERSION}`);
+    process.exit(0);
+  }
+
+  if (parsed.mode === "run") {
+    await executeRun(parsed.opts, parsed.run);
+  } else {
+    startServer(parsed.opts);
+  }
 }
 
-if (parsed.opts.version) {
-  console.log(`agentcore ${VERSION}`);
-  process.exit(0);
-}
-
-if (parsed.mode === "run") {
-  executeRun(parsed.opts, parsed.run);
-} else {
-  startServer(parsed.opts);
-}
+main().catch((err: unknown) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`Error: ${msg}\n`);
+  process.exit(1);
+});

@@ -6,6 +6,7 @@ import {
   type CheckResult,
 } from "../../../src/workflow/executor.js";
 import { ContextManager } from "../../../src/workflow/context-manager.js";
+import type { BranchRuntimeContext } from "../../../src/workflow/branch-context.js";
 import type {
   WorkflowDefinition,
   StepDefinition,
@@ -138,6 +139,34 @@ async function runCmd(
   return { code, stdout, stderr };
 }
 
+async function runCmdOrThrow(cwd: string, command: string[]): Promise<string> {
+  const out = await runCmd(cwd, command);
+  if (out.code !== 0) {
+    throw new Error(
+      `${command.join(" ")} failed: ${out.stderr.trim() || out.stdout.trim() || out.code}`,
+    );
+  }
+  return out.stdout;
+}
+
+async function initGitRepo(cwd: string): Promise<{
+  toplevel: string;
+  branch: string;
+  headSha: string;
+}> {
+  await runCmdOrThrow(cwd, ["git", "init", "-b", "main"]);
+  await runCmdOrThrow(cwd, ["git", "config", "user.name", "Test User"]);
+  await runCmdOrThrow(cwd, ["git", "config", "user.email", "test@example.com"]);
+  await writeFile(path.join(cwd, "README.md"), "# test\n");
+  await runCmdOrThrow(cwd, ["git", "add", "README.md"]);
+  await runCmdOrThrow(cwd, ["git", "commit", "-m", "init"]);
+
+  const toplevel = (await runCmdOrThrow(cwd, ["git", "rev-parse", "--show-toplevel"])).trim();
+  const branch = (await runCmdOrThrow(cwd, ["git", "rev-parse", "--abbrev-ref", "HEAD"])).trim();
+  const headSha = (await runCmdOrThrow(cwd, ["git", "rev-parse", "HEAD"])).trim();
+  return { toplevel, branch, headSha };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -252,6 +281,105 @@ describe("WorkflowExecutor", () => {
         expect(result.steps["A"]!.iteration).toBe(3);
         expect(runCount).toBe(3);
         expect(runner.checkCalls.length).toBe(3);
+      });
+    });
+
+    it("derives completion_check timeout from step timeout / 4 when unspecified", async () => {
+      await withTempDir(async (dir) => {
+        let capturedCheckTimeout: string | undefined;
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async (_stepId, check) => {
+            capturedCheckTimeout = check.timeout;
+            return { complete: true, failed: false };
+          },
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            timeout: "20m", // 20 min = 1_200_000 ms → check default = 300_000 ms
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+              // no timeout specified
+            },
+            max_iterations: 2,
+          }),
+        });
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        await executor.execute();
+
+        // 20 min / 4 = 5 min = 300_000 ms
+        expect(capturedCheckTimeout).toBe("300000ms");
+      });
+    });
+
+    it("preserves explicit completion_check timeout", async () => {
+      await withTempDir(async (dir) => {
+        let capturedCheckTimeout: string | undefined;
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async (_stepId, check) => {
+            capturedCheckTimeout = check.timeout;
+            return { complete: true, failed: false };
+          },
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            timeout: "20m",
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+              timeout: "2m", // explicit
+            },
+            max_iterations: 2,
+          }),
+        });
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        await executor.execute();
+
+        expect(capturedCheckTimeout).toBe("2m");
+      });
+    });
+
+    it("falls back to workflow timeout / 4 when step has no timeout", async () => {
+      await withTempDir(async (dir) => {
+        let capturedCheckTimeout: string | undefined;
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async (_stepId, check) => {
+            capturedCheckTimeout = check.timeout;
+            return { complete: true, failed: false };
+          },
+        );
+
+        const wf = makeWorkflow(
+          {
+            A: makeStep({
+              // no step timeout → falls back to workflow timeout (10m)
+              completion_check: {
+                worker: "CLAUDE_CODE",
+                instructions: "check",
+                capabilities: ["READ"],
+              },
+              max_iterations: 2,
+            }),
+          },
+          { timeout: "10m" }, // 600_000 ms → check = 150_000 ms
+        );
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        await executor.execute();
+
+        expect(capturedCheckTimeout).toBe("150000ms");
       });
     });
 
@@ -976,6 +1104,116 @@ describe("WorkflowExecutor", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Branch lock
+  // -----------------------------------------------------------------------
+  describe("branch lock", () => {
+    it("fails fast when branch drifts before a step starts", async () => {
+      await withTempDir(async (dir) => {
+        const git = await initGitRepo(dir);
+        await runCmdOrThrow(dir, ["git", "branch", "feature/drift"]);
+
+        const runner = new MockStepRunner(async (stepId) => {
+          if (stepId === "A") {
+            await runCmdOrThrow(dir, ["git", "checkout", "feature/drift"]);
+          }
+          return { status: "SUCCEEDED" };
+        });
+
+        const wf = makeWorkflow({
+          A: makeStep(),
+          B: makeStep({ depends_on: ["A"] }),
+        });
+
+        const branchContext: BranchRuntimeContext = {
+          enabled: true,
+          createBranch: false,
+          expectedWorkBranch: git.branch,
+          expectedCurrentBranch: git.branch,
+          startupToplevel: git.toplevel,
+          startupBranch: git.branch,
+          startupHeadSha: git.headSha,
+          effectiveBaseBranch: git.branch,
+          effectiveBaseBranchSource: "current",
+          effectiveBaseSha: git.headSha,
+          protectedBranches: ["main", "master", "release/*"],
+          protectedBranchesSource: "default",
+          allowProtectedBranch: true,
+          warnings: [],
+        };
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined,
+          undefined,
+          branchContext,
+        );
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.FAILED);
+        expect(result.steps["A"]!.status).toBe(StepStatus.SUCCEEDED);
+        expect(result.steps["B"]!.status).toBe(StepStatus.FAILED);
+        expect(result.steps["B"]!.error).toContain("Branch drift detected");
+      });
+    });
+
+    it("updates expected branch after transition step when create_branch=true", async () => {
+      await withTempDir(async (dir) => {
+        const git = await initGitRepo(dir);
+
+        const runner = new MockStepRunner(async (stepId) => {
+          if (stepId === "branch") {
+            await runCmdOrThrow(dir, ["git", "checkout", "-b", "feature/work"]);
+          }
+          return { status: "SUCCEEDED" };
+        });
+
+        const wf = makeWorkflow({
+          branch: makeStep(),
+          work: makeStep({ depends_on: ["branch"] }),
+        });
+
+        const branchContext: BranchRuntimeContext = {
+          enabled: true,
+          createBranch: true,
+          expectedWorkBranch: git.branch,
+          expectedCurrentBranch: git.branch,
+          branchTransitionStep: "branch",
+          startupToplevel: git.toplevel,
+          startupBranch: git.branch,
+          startupHeadSha: git.headSha,
+          effectiveBaseBranch: git.branch,
+          effectiveBaseBranchSource: "current",
+          effectiveBaseSha: git.headSha,
+          protectedBranches: ["main", "master", "release/*"],
+          protectedBranchesSource: "default",
+          allowProtectedBranch: false,
+          warnings: [],
+        };
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined,
+          undefined,
+          branchContext,
+        );
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+        expect(result.steps["branch"]!.status).toBe(StepStatus.SUCCEEDED);
+        expect(result.steps["work"]!.status).toBe(StepStatus.SUCCEEDED);
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // WorkflowState shape
   // -----------------------------------------------------------------------
   describe("WorkflowState shape", () => {
@@ -995,6 +1233,48 @@ describe("WorkflowExecutor", () => {
         expect(result.completedAt!).toBeGreaterThanOrEqual(result.startedAt);
         expect(result.steps["A"]!.startedAt).toBeGreaterThan(0);
         expect(result.steps["A"]!.completedAt).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Step metadata persistence (_meta.json + _resolved.json)
+  // -----------------------------------------------------------------------
+  describe("step metadata files", () => {
+    it("writes both _meta.json and _resolved.json for each step", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow({
+          A: makeStep({ timeout: "5m", max_steps: 10 }),
+        });
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        await executor.execute();
+
+        // _meta.json should exist and contain step execution metadata
+        const meta = JSON.parse(
+          await readFile(path.join(ctxDir, "A", "_meta.json"), "utf-8"),
+        ) as Record<string, unknown>;
+        expect(meta["stepId"]).toBe("A");
+        expect(meta["status"]).toBe("SUCCEEDED");
+        expect(typeof meta["startedAt"]).toBe("number");
+        expect(meta["workerKind"]).toBe("CODEX_CLI");
+        expect(meta).not.toHaveProperty("resolved");
+
+        // _resolved.json should exist and include resolved parameters
+        const resolved = JSON.parse(
+          await readFile(path.join(ctxDir, "A", "_resolved.json"), "utf-8"),
+        ) as Record<string, unknown>;
+        expect(resolved["stepId"]).toBe("A");
+        expect(resolved["status"]).toBe("SUCCEEDED");
+
+        const r = resolved["resolved"] as Record<string, unknown>;
+        expect(r).toBeDefined();
+        expect(r["timeoutMs"]).toBe(300_000);
+        expect(r["workerKind"]).toBe("CODEX_CLI");
+        expect(r["workspaceRef"]).toBe(dir);
+        expect(r["maxSteps"]).toBe(10);
       });
     });
   });

@@ -15,7 +15,10 @@ import { WorkflowStatus, StepStatus } from "./types.js";
 import { validateDag } from "./dag-validator.js";
 import { parseDuration } from "./duration.js";
 import type { ContextManager } from "./context-manager.js";
+import { resolveTaskLike } from "./resolve-worker-task.js";
 import type { CompletionDecisionSource } from "./completion-decision.js";
+import type { BranchRuntimeContext } from "./branch-context.js";
+import { toBranchWorkflowMeta } from "./branch-context.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -156,6 +159,7 @@ export class WorkflowExecutor {
     private readonly workspaceDir: string,
     private readonly env?: Record<string, string>,
     private readonly abortSignal?: AbortSignal,
+    private readonly branchContext?: BranchRuntimeContext,
   ) {
     this.stepDefs = definition.steps;
     this.concurrency =
@@ -179,7 +183,12 @@ export class WorkflowExecutor {
     // 2. Initialize step states and context
     const workflowId = crypto.randomUUID();
     const startedAt = Date.now();
-    await this.contextManager.initWorkflow(workflowId, this.definition.name, startedAt);
+    await this.contextManager.initWorkflow(
+      workflowId,
+      this.definition.name,
+      startedAt,
+      this.buildWorkflowMetaExtras(),
+    );
     for (const [stepId, stepDef] of Object.entries(this.stepDefs)) {
       const maxIter = stepDef.max_iterations ?? 1;
       this.steps[stepId] = {
@@ -240,6 +249,11 @@ export class WorkflowExecutor {
         startedAt,
         status: workflowStatus,
         completedAt,
+        resolved: {
+          timeoutMs: this.workflowTimeoutMs,
+          concurrency: this.concurrency,
+        },
+        ...this.buildWorkflowMetaExtras(),
       });
     }
 
@@ -402,6 +416,7 @@ export class WorkflowExecutor {
     const state = this.steps[stepId]!;
     let retryCount = 0;
     const maxRetries = stepDef.max_retries ?? 0;
+    let lastStepResult: StepRunResult | undefined;
 
     try {
       // Main loop: handles both completion_check iterations and retries
@@ -409,6 +424,15 @@ export class WorkflowExecutor {
       while (true) {
         // If workflow was aborted (timeout), bail out — status already set by handleWorkflowTimeout
         if (this.workflowAbortController!.signal.aborted) return;
+
+        try {
+          await this.assertBranchLock(stepId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.markStepFailed(stepId, msg);
+          this.skipDependents(stepId);
+          return;
+        }
 
         // Resolve inputs before running the step
         if (stepDef.inputs && stepDef.inputs.length > 0) {
@@ -430,6 +454,7 @@ export class WorkflowExecutor {
             stepAbort,
             this.env,
           );
+          lastStepResult = result;
         } catch (_err) {
           if (this.workflowAbortController!.signal.aborted) return;
           this.markStepFailed(stepId, "Worker execution threw an error");
@@ -479,6 +504,15 @@ export class WorkflowExecutor {
           return;
         }
 
+        try {
+          await this.maybeUpdateExpectedBranchAfterTransition(stepId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.markStepFailed(stepId, msg);
+          this.skipDependents(stepId);
+          return;
+        }
+
         const collectOutputsIfDefined = async () => {
           if (stepDef.outputs && stepDef.outputs.length > 0) {
             await this.contextManager.collectOutputs(stepId, stepDef.outputs, this.workspaceDir);
@@ -500,9 +534,10 @@ export class WorkflowExecutor {
         const checkAbort = this.createStepAbort();
         let checkResult: CheckResult;
         try {
+          const effectiveCheck = this.resolveCheckTimeout(stepDef, stepDef.completion_check);
           checkResult = await this.stepRunner.runCheck(
             stepId,
-            stepDef.completion_check,
+            effectiveCheck,
             this.workspaceDir,
             checkAbort,
             this.env,
@@ -621,7 +656,57 @@ export class WorkflowExecutor {
       }
     } finally {
       this.runningCount--;
+      await this.writeStepResolvedMeta(stepId, state, stepDef, retryCount, lastStepResult);
       this.notify();
+    }
+  }
+
+  private async writeStepResolvedMeta(
+    stepId: string,
+    state: StepState,
+    stepDef: StepDefinition,
+    retryCount: number,
+    lastResult?: StepRunResult,
+  ): Promise<void> {
+    try {
+      const artifacts = (lastResult?.artifacts ?? []).map((a) => ({
+        name: a.ref ?? "",
+        path: a.ref ?? "",
+        type: a.type,
+      }));
+      const baseMeta = {
+        stepId,
+        status: state.status,
+        startedAt: state.startedAt ?? 0,
+        completedAt: state.completedAt,
+        wallTimeMs: (state.completedAt ?? Date.now()) - (state.startedAt ?? 0),
+        attempts: retryCount + 1,
+        iterations: state.iteration,
+        maxIterations: state.maxIterations,
+        workerKind: stepDef.worker,
+        artifacts,
+        ...(lastResult?.cost ? { workerResult: { cost: lastResult.cost } } : {}),
+      };
+
+      // _meta.json: step execution metadata (status, timing, artifacts)
+      await this.contextManager.writeStepMeta(stepId, baseMeta);
+
+      // _resolved.json: resolved execution parameters for observability
+      const resolved = resolveTaskLike(stepDef, this.workspaceDir);
+      await this.contextManager.writeStepResolved(stepId, {
+        ...baseMeta,
+        resolved: {
+          timeoutMs: resolved.timeoutMs,
+          workspaceRef: resolved.workspaceRef,
+          workerKind: resolved.workerKind,
+          model: resolved.model,
+          capabilities: resolved.capabilities.map(String),
+          ...(resolved.maxSteps !== undefined ? { maxSteps: resolved.maxSteps } : {}),
+          ...(resolved.maxCommandTimeMs !== undefined ? { maxCommandTimeMs: resolved.maxCommandTimeMs } : {}),
+        },
+      });
+    } catch {
+      // Best-effort: don't fail the workflow if metadata writing fails
     }
   }
 
@@ -936,6 +1021,7 @@ export class WorkflowExecutor {
     const ignoredPatterns = [
       "context/**",
       ".agentcore-loop/**",
+      ".roboppi-loop/**",
       ".git/**",
       ...(cfg.ignored_paths ?? []),
     ];
@@ -1121,9 +1207,116 @@ export class WorkflowExecutor {
   // Helpers
   // -----------------------------------------------------------------------
 
+  private buildWorkflowMetaExtras(): Record<string, unknown> {
+    if (!this.branchContext) return {};
+    return toBranchWorkflowMeta(this.branchContext);
+  }
+
+  private async assertBranchLock(stepId: string): Promise<void> {
+    const context = this.branchContext;
+    if (!context || !context.enabled) return;
+
+    if (!context.startupToplevel) return;
+    const toplevel = await runCommand(this.workspaceDir, [
+      "git",
+      "rev-parse",
+      "--show-toplevel",
+    ]);
+    if (toplevel.code !== 0) {
+      const detail = toplevel.stderr.trim() || toplevel.stdout.trim() || `exit=${toplevel.code}`;
+      throw new Error(
+        `Branch lock failed before step "${stepId}": cannot resolve current repo toplevel (${detail}).`,
+      );
+    }
+    const currentToplevel = toplevel.stdout.trim();
+    if (currentToplevel !== context.startupToplevel) {
+      throw new Error(
+        `Branch drift detected before step "${stepId}": repo toplevel mismatch ` +
+          `(expected "${context.startupToplevel}", actual "${currentToplevel}"). ` +
+          `Recovery: run from "${context.startupToplevel}" and retry.`,
+      );
+    }
+
+    const expectedBranch =
+      context.expectedCurrentBranch ??
+      context.expectedWorkBranch ??
+      context.startupBranch;
+    if (!expectedBranch) return;
+
+    const branch = await runCommand(this.workspaceDir, [
+      "git",
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD",
+    ]);
+    if (branch.code !== 0) {
+      const detail = branch.stderr.trim() || branch.stdout.trim() || `exit=${branch.code}`;
+      throw new Error(
+        `Branch lock failed before step "${stepId}": cannot resolve current branch (${detail}).`,
+      );
+    }
+    const currentBranch = branch.stdout.trim();
+    if (currentBranch !== expectedBranch) {
+      throw new Error(
+        `Branch drift detected before step "${stepId}": expected branch "${expectedBranch}" ` +
+          `but found "${currentBranch}". Recovery: git checkout "${expectedBranch}" and retry.`,
+      );
+    }
+  }
+
+  private async maybeUpdateExpectedBranchAfterTransition(stepId: string): Promise<void> {
+    const context = this.branchContext;
+    if (!context || !context.enabled) return;
+    if (!context.createBranch) return;
+    if (!context.branchTransitionStep) return;
+    if (stepId !== context.branchTransitionStep) return;
+
+    const branch = await runCommand(this.workspaceDir, [
+      "git",
+      "rev-parse",
+      "--abbrev-ref",
+      "HEAD",
+    ]);
+    if (branch.code !== 0) {
+      const detail = branch.stderr.trim() || branch.stdout.trim() || `exit=${branch.code}`;
+      throw new Error(
+        `Branch transition failed after step "${stepId}": cannot resolve current branch (${detail}).`,
+      );
+    }
+    const next = branch.stdout.trim();
+    if (!next || next === "HEAD") {
+      throw new Error(
+        `Branch transition failed after step "${stepId}": expected a named branch but got "${next || "<empty>"}".`,
+      );
+    }
+
+    context.expectedWorkBranch = next;
+    context.expectedCurrentBranch = next;
+  }
+
   private createStepAbort(): AbortSignal {
     // Link to workflow-level abort
     return this.workflowAbortController!.signal;
+  }
+
+  /**
+   * If the completion_check has no explicit timeout, derive a default
+   * from the parent step's timeout (step timeout / 4).  This prevents
+   * a check from silently inheriting the 24 h fallback.
+   */
+  private resolveCheckTimeout(
+    stepDef: StepDefinition,
+    check: CompletionCheckDef,
+  ): CompletionCheckDef {
+    if (check.timeout) return check;
+
+    const stepTimeoutMs = stepDef.timeout
+      ? parseDuration(stepDef.timeout)
+      : this.workflowTimeoutMs;
+    const checkTimeoutMs = Math.max(1000, Math.floor(stepTimeoutMs / 4));
+
+    // Express as a plain ms duration string so resolveTaskLike can parse it.
+    return { ...check, timeout: `${checkTimeoutMs}ms` };
   }
 }
 

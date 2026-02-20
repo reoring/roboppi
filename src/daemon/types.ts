@@ -10,6 +10,8 @@ export interface DaemonConfig {
   version: "1";
   description?: string;
   workspace: string;
+  /** Optional agent catalog YAML used to resolve workflow step.agent references. */
+  agents_file?: string;
   log_dir?: string;
   max_concurrent_workflows?: number;
   state_dir?: string;

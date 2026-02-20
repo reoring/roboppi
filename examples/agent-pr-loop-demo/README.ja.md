@@ -40,7 +40,7 @@ TARGET=/tmp/roboppi-prloop-bun-linalg \
 - `src/`（ライブラリ + `src/cli.ts`）
 - `test/`（ユニットテスト）
 - `package.json`, `tsconfig.json`, `bun.lock`
-- `.agentcore-loop/`（ループの design/todo/review の成果物）
+- `.roboppi-loop/`（ループの design/todo/review の成果物）
 
 ## 検証
 
@@ -58,7 +58,7 @@ bun run src/cli.ts project --basis '[[1,1,0],[0,1,1]]' --b '[3,1,2]'
 最後の `create_pr` ステップは、次のマーカーファイルを作成しない限り意図的に無効になっています:
 
 ```bash
-touch .agentcore-loop/enable_pr
+touch .roboppi-loop/enable_pr
 ```
 
 その後、ワークフローを再実行してください。PR 作成には、`origin` リモートの設定と `gh` が必要です。

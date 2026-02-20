@@ -1,13 +1,12 @@
-import path from "node:path";
-
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
-import { parseDuration } from "./duration.js";
 import {
   extractWorkerText,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
+  COMPLETION_CHECK_ID_ENV_ROBOPPI,
 } from "./completion-decision.js";
+import { resolveTaskLike, type ResolvedWorkerTaskDef } from "./resolve-worker-task.js";
 
 import { Supervisor } from "../scheduler/supervisor.js";
 import type { IpcProtocol } from "../ipc/protocol.js";
@@ -21,10 +20,9 @@ import type {
   WorkerResult,
   PermitRejection,
   UUID,
+  WorkerTaskJobPayload,
 } from "../types/index.js";
 import {
-  WorkerKind,
-  WorkerCapability,
   OutputMode,
   WorkerStatus,
   JobType,
@@ -33,40 +31,6 @@ import {
   generateId,
   ErrorClass,
 } from "../types/index.js";
-
-type StepWorker = StepDefinition["worker"];
-
-type WorkerTaskDef = {
-  workspace?: string;
-  instructions: string;
-  capabilities: StepDefinition["capabilities"];
-  timeout?: StepDefinition["timeout"];
-  max_steps?: StepDefinition["max_steps"];
-  max_command_time?: StepDefinition["max_command_time"];
-  model?: StepDefinition["model"];
-};
-
-type ResolvedWorkerTaskDef = WorkerTaskDef & {
-  workspaceRef: string;
-  env?: Record<string, string>;
-  timeoutMs: number;
-  maxCommandTimeMs?: number;
-};
-
-const DEFAULT_STEP_TIMEOUT_MS = 24 * 60 * 60 * 1000;
-
-function toWorkerKind(worker: StepWorker): WorkerKind {
-  switch (worker) {
-    case "CUSTOM":
-      return WorkerKind.CUSTOM;
-    case "OPENCODE":
-      return WorkerKind.OPENCODE;
-    case "CLAUDE_CODE":
-      return WorkerKind.CLAUDE_CODE;
-    case "CODEX_CLI":
-      return WorkerKind.CODEX_CLI;
-  }
-}
 
 function isPermitGranted(
   msg: PermitGrantedMessage | PermitRejectedMessage,
@@ -92,7 +56,6 @@ export class CoreIpcStepRunner implements StepRunner {
 
   private ipc: IpcProtocol | null = null;
   private readonly waiters = new Map<UUID, { resolve: (m: JobCompletedMessage) => void }>();
-  private readonly buffered = new Map<UUID, JobCompletedMessage>();
 
   constructor(options: CoreIpcStepRunnerOptions = {}) {
     this.verbose = options.verbose ?? false;
@@ -120,7 +83,6 @@ export class CoreIpcStepRunner implements StepRunner {
     }
     this.ipc = null;
     this.waiters.clear();
-    this.buffered.clear();
   }
 
   async runStep(
@@ -130,10 +92,9 @@ export class CoreIpcStepRunner implements StepRunner {
     abortSignal: AbortSignal,
     env?: Record<string, string>,
   ): Promise<StepRunResult> {
-    const workerKind = toWorkerKind(step.worker);
-    const task = this.buildWorkerTaskDef(step, workspaceDir, env);
+    const task = resolveTaskLike(step, workspaceDir, env);
 
-    const result = await this.runWorkerTask(stepId, workerKind, task, abortSignal);
+    const result = await this.runWorkerTask(stepId, task, abortSignal);
 
     if (result.status === WorkerStatus.SUCCEEDED) {
       return {
@@ -166,18 +127,15 @@ export class CoreIpcStepRunner implements StepRunner {
   ): Promise<CheckResult> {
     const checkStartedAt = Date.now();
     const checkId = generateId();
-    const workerKind = toWorkerKind(check.worker);
-    const task = this.buildWorkerTaskDef(
-      check,
-      workspaceDir,
-      check.decision_file
-        ? {
-            ...(env ?? {}),
-            [COMPLETION_CHECK_ID_ENV]: checkId,
-          }
-        : env,
-    );
-    const result = await this.runWorkerTask(stepId, workerKind, task, abortSignal);
+    const checkEnv = check.decision_file
+      ? {
+        ...(env ?? {}),
+        [COMPLETION_CHECK_ID_ENV]: checkId,
+        [COMPLETION_CHECK_ID_ENV_ROBOPPI]: checkId,
+      }
+      : env;
+    const task = resolveTaskLike(check, workspaceDir, checkEnv);
+    const result = await this.runWorkerTask(stepId, task, abortSignal);
 
     if (check.worker === "CUSTOM") {
       // Shell completion check semantics:
@@ -250,27 +208,6 @@ export class CoreIpcStepRunner implements StepRunner {
     };
   }
 
-  private buildWorkerTaskDef(
-    def: WorkerTaskDef,
-    workspaceDir: string,
-    env?: Record<string, string>,
-  ): ResolvedWorkerTaskDef {
-    const workspaceRef = def.workspace
-      ? path.resolve(workspaceDir, def.workspace)
-      : workspaceDir;
-
-    const timeoutMs = def.timeout ? parseDuration(def.timeout) : DEFAULT_STEP_TIMEOUT_MS;
-    const maxCommandTimeMs = def.max_command_time ? parseDuration(def.max_command_time) : undefined;
-
-    return {
-      ...def,
-      workspaceRef,
-      env,
-      timeoutMs,
-      ...(maxCommandTimeMs !== undefined ? { maxCommandTimeMs } : {}),
-    };
-  }
-
   private async ensureIpc(): Promise<IpcProtocol> {
     if (this.ipc) return this.ipc;
     const ipc = await this.supervisor.spawnCore();
@@ -288,16 +225,17 @@ export class CoreIpcStepRunner implements StepRunner {
       waiter.resolve(msg);
       return;
     }
-    this.buffered.set(msg.jobId, msg);
+    // No waiter means the caller already returned (abort / timeout).
+    // Drop the message — the waiter cleanup in runWorkerTask's finally
+    // block guarantees no legitimate waiter is missing.
+    if (this.verbose) {
+      process.stderr.write(
+        `[ipc] dropped late job_completed: jobId=${msg.jobId} outcome=${msg.outcome}\n`,
+      );
+    }
   }
 
   private waitForJobCompleted(jobId: UUID): Promise<JobCompletedMessage> {
-    const buffered = this.buffered.get(jobId);
-    if (buffered) {
-      this.buffered.delete(jobId);
-      return Promise.resolve(buffered);
-    }
-
     return new Promise<JobCompletedMessage>((resolve) => {
       this.waiters.set(jobId, { resolve });
     });
@@ -305,7 +243,6 @@ export class CoreIpcStepRunner implements StepRunner {
 
   private async runWorkerTask(
     stepId: string,
-    workerKind: WorkerKind,
     task: ResolvedWorkerTaskDef,
     parentAbort: AbortSignal,
   ): Promise<WorkerResult> {
@@ -315,7 +252,7 @@ export class CoreIpcStepRunner implements StepRunner {
     // Step timeout should apply to the worker execution budget, not to Core startup.
     // We'll compute the real deadline after submit_job is acknowledged.
     const placeholderDeadlineAt = Date.now() + task.timeoutMs;
-    const job = this.buildWorkerJob(workerKind, { ...task, deadlineAt: placeholderDeadlineAt });
+    const job = this.buildWorkerJob({ ...task, deadlineAt: placeholderDeadlineAt });
     const completionPromise = this.waitForJobCompleted(job.jobId);
 
     const cancelReason = `step:${stepId} aborted`;
@@ -346,7 +283,8 @@ export class CoreIpcStepRunner implements StepRunner {
       const deadlineAt = Date.now() + task.timeoutMs;
       // Update job payload budget to reflect the post-ack execution deadline.
       // (Other budget fields are preserved from the placeholder job.)
-      (job.payload as any).budget.deadlineAt = deadlineAt;
+      const payload = job.payload as { budget: { deadlineAt: number } };
+      payload.budget.deadlineAt = deadlineAt;
 
       await this.requestPermitUntilGranted(ipc, job, deadlineAt, parentAbort);
 
@@ -431,25 +369,27 @@ export class CoreIpcStepRunner implements StepRunner {
         execScoped.signal.removeEventListener("abort", onExecAbort);
       }
       execScoped?.cleanup();
+      // Clean up waiter to prevent Map leak when we return without
+      // receiving a job_completed (e.g. abort, timeout, IPC error).
+      this.waiters.delete(job.jobId);
     }
   }
 
   private buildWorkerJob(
-    workerKind: WorkerKind,
     task: ResolvedWorkerTaskDef & { deadlineAt: number },
   ): Job {
     const jobId = generateId();
-    const payload = {
+    const payload: WorkerTaskJobPayload = {
       workerTaskId: generateId(),
-      workerKind,
+      workerKind: task.workerKind,
       workspaceRef: task.workspaceRef,
       instructions: task.instructions,
       ...(task.model ? { model: task.model } : {}),
-      capabilities: task.capabilities.map((c) => WorkerCapability[c]),
+      capabilities: task.capabilities,
       outputMode: OutputMode.BATCH,
       budget: {
         deadlineAt: task.deadlineAt,
-        ...(task.max_steps !== undefined ? { maxSteps: task.max_steps } : {}),
+        ...(task.maxSteps !== undefined ? { maxSteps: task.maxSteps } : {}),
         ...(task.maxCommandTimeMs !== undefined ? { maxCommandTimeMs: task.maxCommandTimeMs } : {}),
       },
       ...(task.env ? { env: task.env } : {}),
@@ -502,6 +442,15 @@ export class CoreIpcStepRunner implements StepRunner {
 
     while (true) {
       if (signal.aborted) throw new StepAbortedError();
+
+      // Bail out if the step deadline has already been exceeded while
+      // waiting for a permit.  Without this check the loop would
+      // continue indefinitely when permits are slow to arrive.
+      if (Date.now() >= deadlineAt) {
+        throw new Error(
+          `Step deadline exceeded while waiting for permit (jobId=${job.jobId})`,
+        );
+      }
 
       // Keep Core-side permit deadline aligned with the step deadline.
       job.limits.timeoutMs = Math.max(1, deadlineAt - Date.now());

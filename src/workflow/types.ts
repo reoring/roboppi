@@ -7,11 +7,19 @@ export interface WorkflowDefinition {
   timeout: DurationString;
   concurrency?: number;
   context_dir?: string;
+  /** Whether the workflow is expected to create/switch to a work branch. */
+  create_branch?: boolean;
+  /** Optional step id where the expected work branch transition occurs. */
+  branch_transition_step?: string;
+  /** Optional explicit expected work branch at startup. */
+  expected_work_branch?: string;
   steps: Record<string, StepDefinition>;
 }
 
 export interface StepDefinition {
   description?: string;
+  /** Optional agent profile id (resolved from an agent catalog). */
+  agent?: string;
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
@@ -84,6 +92,8 @@ export interface ConvergenceDef {
 }
 
 export interface CompletionCheckDef {
+  /** Optional agent profile id (resolved from an agent catalog). */
+  agent?: string;
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;

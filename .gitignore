@@ -3,6 +3,7 @@ dist
 *.tsbuildinfo
 .DS_Store
 /agentcore
+/roboppi
 
 # Local AgentCore workflow state
 .agentcore-loop/

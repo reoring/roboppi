@@ -40,7 +40,7 @@ In the generated workspace:
 - `src/` (library + `src/cli.ts`)
 - `test/` (unit tests)
 - `package.json`, `tsconfig.json`, `bun.lock`
-- `.agentcore-loop/` (design/todo/review artifacts for the loop)
+- `.roboppi-loop/` (design/todo/review artifacts for the loop)
 
 ## Verify
 
@@ -58,7 +58,7 @@ bun run src/cli.ts project --basis '[[1,1,0],[0,1,1]]' --b '[3,1,2]'
 The final `create_pr` step is intentionally disabled unless you create the marker file:
 
 ```bash
-touch .agentcore-loop/enable_pr
+touch .roboppi-loop/enable_pr
 ```
 
 Then rerun the workflow. Note that PR creation requires a configured `origin` remote and `gh`.

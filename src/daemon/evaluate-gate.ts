@@ -80,10 +80,13 @@ export class EvaluateGate {
     }
 
     // Pass template variables as environment variables to prevent shell injection.
-    // The shell command can reference them as $AGENTCORE_EVENT, $AGENTCORE_TRIGGER_ID, etc.
+    // The shell command can reference them as $ROBOPPI_EVENT/$AGENTCORE_EVENT,
+    // $ROBOPPI_TRIGGER_ID/$AGENTCORE_TRIGGER_ID, etc.
     const env: Record<string, string> = { ...process.env as Record<string, string> };
     for (const [key, value] of Object.entries(vars)) {
-      env[`AGENTCORE_${key.toUpperCase()}`] = value;
+      const upper = key.toUpperCase();
+      env[`AGENTCORE_${upper}`] = value;
+      env[`ROBOPPI_${upper}`] = value;
     }
 
     try {
@@ -163,7 +166,9 @@ export class EvaluateGate {
   ): Promise<boolean> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(vars)) {
-      env[`AGENTCORE_${key.toUpperCase()}`] = value;
+      const upper = key.toUpperCase();
+      env[`AGENTCORE_${upper}`] = value;
+      env[`ROBOPPI_${upper}`] = value;
     }
 
     const step: StepDefinition = {

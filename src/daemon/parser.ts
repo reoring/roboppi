@@ -383,6 +383,10 @@ export function parseDaemonConfig(yamlContent: string): DaemonConfig {
 
   assertString(doc["workspace"], "workspace");
 
+  if (doc["agents_file"] !== undefined) {
+    assertString(doc["agents_file"], "agents_file");
+  }
+
   // events
   assertObject(doc["events"], "events");
   const eventsObj = doc["events"] as Record<string, unknown>;
@@ -415,6 +419,7 @@ export function parseDaemonConfig(yamlContent: string): DaemonConfig {
     version: "1",
     description: typeof doc["description"] === "string" ? doc["description"] : undefined,
     workspace: doc["workspace"] as string,
+    agents_file: typeof doc["agents_file"] === "string" ? doc["agents_file"] : undefined,
     log_dir: typeof doc["log_dir"] === "string" ? doc["log_dir"] : undefined,
     max_concurrent_workflows:
       typeof doc["max_concurrent_workflows"] === "number"

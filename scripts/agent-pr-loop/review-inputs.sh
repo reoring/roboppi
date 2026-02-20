@@ -4,15 +4,25 @@ set -euo pipefail
 # Generate deterministic review inputs for the agent PR loop.
 #
 # Outputs:
-#   .agentcore-loop/review.base_ref       - resolved base ref used for diffs
-#   .agentcore-loop/review.diff           - git diff against base ref (tracked changes)
-#   .agentcore-loop/review.status         - git status --porcelain
-#   .agentcore-loop/review.untracked      - list of untracked (non-ignored) files
-#   .agentcore-loop/review.untracked.diff - diffs for untracked files (as /dev/null -> file)
+#   .roboppi-loop/review.base_ref       - resolved base ref used for diffs
+#   .roboppi-loop/review.diff           - git diff against base ref (tracked changes)
+#   .roboppi-loop/review.status         - git status --porcelain
+#   .roboppi-loop/review.untracked      - list of untracked (non-ignored) files
+#   .roboppi-loop/review.untracked.diff - diffs for untracked files (as /dev/null -> file)
 
-mkdir -p .agentcore-loop
+LOOP_DIR=.roboppi-loop
+LEGACY_DIR=.agentcore-loop
 
-BASE_BRANCH=$(cat .agentcore-loop/base-branch.txt 2>/dev/null || echo main)
+mkdir -p "${LOOP_DIR}"
+
+if [ ! -f "${LOOP_DIR}/base-branch.txt" ] && [ -f "${LEGACY_DIR}/base-branch.txt" ]; then
+  cp "${LEGACY_DIR}/base-branch.txt" "${LOOP_DIR}/base-branch.txt"
+fi
+
+BASE_BRANCH=$(
+  cat "${LOOP_DIR}/base-branch.txt" 2>/dev/null \
+    || echo "${BASE_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)}"
+)
 
 git fetch origin "${BASE_BRANCH}" >/dev/null 2>&1 || true
 if git show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
@@ -23,18 +33,18 @@ else
   BASE_REF="HEAD"
 fi
 
-echo "${BASE_REF}" > .agentcore-loop/review.base_ref
+echo "${BASE_REF}" > "${LOOP_DIR}/review.base_ref"
 
-git diff --no-color "${BASE_REF}" > .agentcore-loop/review.diff || true
-git status --porcelain=v1 > .agentcore-loop/review.status || true
-git ls-files --others --exclude-standard > .agentcore-loop/review.untracked || true
+git diff --no-color "${BASE_REF}" > "${LOOP_DIR}/review.diff" || true
+git status --porcelain=v1 > "${LOOP_DIR}/review.status" || true
+git ls-files --others --exclude-standard > "${LOOP_DIR}/review.untracked" || true
 
 # For large repos, keep untracked diffs bounded.
-MAX_FILES=${AGENTCORE_REVIEW_UNTRACKED_MAX_FILES:-200}
-MAX_FILE_BYTES=${AGENTCORE_REVIEW_UNTRACKED_MAX_FILE_BYTES:-200000}
-MAX_TOTAL_BYTES=${AGENTCORE_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-2000000}
+MAX_FILES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_FILES:-200}}
+MAX_FILE_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_FILE_BYTES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_FILE_BYTES:-200000}}
+MAX_TOTAL_BYTES=${ROBOPPI_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-${AGENTCORE_REVIEW_UNTRACKED_MAX_TOTAL_BYTES:-2000000}}
 
-out=.agentcore-loop/review.untracked.diff
+out="${LOOP_DIR}/review.untracked.diff"
 : > "${out}"
 
 count=0
@@ -69,4 +79,4 @@ while IFS= read -r f; do
   # git diff exits 1 when differences exist; ignore that.
   git diff --no-color --no-index -- /dev/null "${f}" >> "${out}" || true
   printf '\n' >> "${out}"
-done < .agentcore-loop/review.untracked
+done < "${LOOP_DIR}/review.untracked"

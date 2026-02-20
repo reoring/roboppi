@@ -66,7 +66,8 @@ triggers:
 Start:
 
 ```bash
-bun run src/daemon/cli.ts my-daemon.yaml --verbose
+roboppi daemon my-daemon.yaml --verbose
+# (dev) bun run src/daemon/cli.ts my-daemon.yaml --verbose
 ```
 
 Output:
@@ -95,6 +96,7 @@ version: "1"                        # schema version (currently fixed to "1")
 description?: string                # optional description
 
 workspace: string                   # working directory (shared by all triggers)
+agents_file?: string                # optional agent catalog YAML for step.agent resolution
 log_dir?: string                    # log output directory (default: ./logs)
 state_dir?: string                  # state directory (default: <workspace>/.daemon-state)
 max_concurrent_workflows?: number   # max concurrent workflows (default: 5)
@@ -119,11 +121,23 @@ triggers:                           # trigger definitions (event -> workflow)
 | `version` | yes | fixed to `"1"` |
 | `description` | no | description |
 | `workspace` | yes | working directory for workflow execution |
+| `agents_file` | no | agent catalog YAML used to resolve workflow `step.agent` |
 | `log_dir` | no | log output directory |
 | `state_dir` | no | where execution state is persisted |
 | `max_concurrent_workflows` | no | max workflows running concurrently (default: 5) |
 | `events` | yes | event sources (at least one) |
 | `triggers` | yes | triggers (at least one) |
+
+### Agent catalogs for workflows
+
+If your workflows use `step.agent`, provide an agent catalog to the daemon:
+
+- `agents_file`: a default catalog path for the daemon (relative paths are resolved from `workspace`)
+- `AGENTCORE_AGENTS_FILE`: you can also set this via environment variables (or per-trigger via `triggers.<id>.context.env`) as a colon-separated list of YAML paths
+
+When multiple catalogs are provided, later sources override earlier ones (so a per-trigger `context.env.AGENTCORE_AGENTS_FILE` can override the daemon-wide catalog).
+
+See also: `docs/guides/agents.md`.
 
 ---
 
@@ -635,14 +649,17 @@ History is stored as `<completedAt>.json` files. Each includes event info, workf
 ### Start a daemon
 
 ```bash
-bun run src/daemon/cli.ts <daemon.yaml> [options]
+roboppi daemon <daemon.yaml> [options]
+# (dev) bun run src/daemon/cli.ts <daemon.yaml> [options]
 ```
 
 | Option | Description |
 |-----------|------|
 | `--workspace`, `-w` | override `workspace` via CLI |
 | `--verbose`, `-v` | enable verbose logging |
-| `--supervised` | run workflows via Core IPC (Supervisor -> Core -> Worker) |
+| `--supervised` | supervised mode (default): run workflows via Core IPC (Supervisor -> Core -> Worker) |
+| `--direct` | direct mode: spawn worker processes directly (no Core IPC) |
+| `--no-supervised` | alias for `--direct` |
 | `--help`, `-h` | show help |
 
 Notes:
@@ -653,8 +670,10 @@ Notes:
 Examples:
 
 ```bash
-bun run src/daemon/cli.ts my-daemon.yaml
-bun run src/daemon/cli.ts my-daemon.yaml --verbose
+roboppi daemon my-daemon.yaml
+roboppi daemon my-daemon.yaml --verbose
+# (dev) bun run src/daemon/cli.ts my-daemon.yaml
+# (dev) bun run src/daemon/cli.ts my-daemon.yaml --verbose
 ```
 
 ### Stop
@@ -702,7 +721,8 @@ triggers:
 Run:
 
 ```bash
-bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
+roboppi daemon examples/daemon/simple-cron.yaml --verbose
+# (dev) bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
 ```
 
 The health-check workflow (`workflows/health-check.yaml`) is a 1-step workflow that checks disk usage, memory, and load average.

@@ -27,7 +27,7 @@ bun install
 ## Build
 
 ```bash
-make            # build a single binary -> ./agentcore
+make            # build a single binary -> ./roboppi (+ ./agentcore alias)
 ```
 
 Sanity check:
@@ -374,27 +374,61 @@ Define multiple steps in YAML and run them in order.
 ```yaml
 # my-workflow.yaml
 name: refactor-and-test
+version: "1"
+timeout: "30m"
+
 steps:
-  - name: refactor
-    worker: opencode
+  refactor:
+    worker: OPENCODE
     workspace: ./src
     instructions: "Refactor this function"
-    capabilities: [EDIT]
+    capabilities: [READ, EDIT]
+    timeout: "10m"
 
-  - name: test
-    worker: opencode
-    workspace: ./src
-    instructions: "Run the test suite and report the results"
-    capabilities: [RUN_TESTS]
+  test:
+    worker: CUSTOM
+    depends_on: [refactor]
+    instructions: |
+      bun test
+    capabilities: [READ, RUN_TESTS]
+    timeout: "10m"
 ```
 
 Run:
 
 ```bash
-./agentcore workflow run my-workflow.yaml
+roboppi workflow my-workflow.yaml --verbose
+# (dev) bun run src/workflow/run.ts my-workflow.yaml --verbose
 ```
 
 For each step, AgentCore requests a Permit, delegates to the worker, and collects results. If a step fails, it aborts depending on policy.
+
+### Reuse worker settings with agent catalogs
+
+If you repeat the same worker + model + base instructions across steps, define an agent catalog and reference it via `agent:`.
+
+```yaml
+# agents.yaml
+version: "1"
+agents:
+  research:
+    worker: OPENCODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      You are a research agent.
+      Only read files. Do not edit.
+```
+
+```yaml
+# in your workflow
+steps:
+  investigate:
+    agent: research
+    instructions: "Investigate the codebase and write notes"
+```
+
+The workflow runner auto-loads `agents.yaml` next to the workflow YAML, or you can pass `--agents <path>`.
 
 See the [Workflow guide](./workflow.md) for details.
 
@@ -406,27 +440,32 @@ In daemon mode, you can automatically run workflows triggered by events (cron, f
 
 ```yaml
 # daemon.yaml
-workflows:
-  auto-test:
-    trigger:
-      type: fs_watch
-      paths: ["./src/**/*.ts"]
-    steps:
-      - name: run-tests
-        worker: opencode
-        workspace: ./
-        instructions: "Run tests related to changed files"
-        capabilities: [RUN_TESTS]
+name: my-daemon
+version: "1"
 
-state_dir: ./.agentcore-state
+workspace: "/tmp/my-daemon"
+state_dir: "/tmp/my-daemon/.daemon-state"
+
+# Optional: default agent catalog used by workflows (for step.agent)
+agents_file: "./agents.yaml"
+
+events:
+  tick:
+    type: interval
+    every: "30s"
+
+triggers:
+  auto-test:
+    on: tick
+    workflow: "./workflows/test.yaml"
+    on_workflow_failure: ignore
 ```
 
 Start:
 
 ```bash
-./agentcore daemon daemon.yaml
-# or
-bun run src/daemon/cli.ts daemon.yaml --verbose
+roboppi daemon daemon.yaml --verbose
+# (dev) bun run src/daemon/cli.ts daemon.yaml --verbose
 ```
 
 When file changes are detected, workflows run automatically. You can also use cron schedules, webhooks, and manual commands as triggers.

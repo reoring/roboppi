@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { parseWorkflow, WorkflowParseError } from "../../../src/workflow/parser.js";
+import { parseAgentCatalog } from "../../../src/workflow/agent-catalog.js";
 
 const MINIMAL_WORKFLOW = `
 name: test-workflow
@@ -33,6 +34,9 @@ description: "A full workflow"
 timeout: "1h"
 concurrency: 3
 context_dir: "./my-context"
+create_branch: true
+branch_transition_step: "s1"
+expected_work_branch: "feature/demo"
 steps:
   s1:
     worker: CLAUDE_CODE
@@ -43,6 +47,9 @@ steps:
       expect(wf.description).toBe("A full workflow");
       expect(wf.concurrency).toBe(3);
       expect(wf.context_dir).toBe("./my-context");
+      expect(wf.create_branch).toBe(true);
+      expect(wf.branch_transition_step).toBe("s1");
+      expect(wf.expected_work_branch).toBe("feature/demo");
     });
 
     it("parses step with all optional fields", () => {
@@ -126,7 +133,7 @@ steps:
       instructions: "Check completeness"
       capabilities: [READ]
       timeout: "2m"
-      decision_file: ".agentcore-loop/review.verdict"
+      decision_file: ".roboppi-loop/review.verdict"
     max_iterations: 5
     on_iterations_exhausted: continue
 `;
@@ -137,7 +144,7 @@ steps:
       expect(step.completion_check!.instructions).toBe("Check completeness");
       expect(step.completion_check!.capabilities).toEqual(["READ"]);
       expect(step.completion_check!.timeout).toBe("2m");
-      expect(step.completion_check!.decision_file).toBe(".agentcore-loop/review.verdict");
+      expect(step.completion_check!.decision_file).toBe(".roboppi-loop/review.verdict");
       expect(step.max_iterations).toBe(5);
       expect(step.on_iterations_exhausted).toBe("continue");
     });
@@ -173,6 +180,65 @@ steps:
 `;
       const wf = parseWorkflow(yaml);
       expect(wf.steps["s"]!.capabilities).toEqual(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
+    });
+
+    it("resolves step.agent from an agent catalog", () => {
+      const agents = parseAgentCatalog(`
+version: "1"
+agents:
+  research:
+    worker: OPENCODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      You are a research agent.
+`);
+
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    agent: research
+    instructions: "Find relevant docs"
+`;
+
+      const wf = parseWorkflow(yaml, { agents });
+      expect(wf.steps["s"]!.worker).toBe("OPENCODE");
+      expect(wf.steps["s"]!.model).toBe("openai/gpt-5.2");
+      expect(wf.steps["s"]!.capabilities).toEqual(["READ"]);
+      expect(wf.steps["s"]!.instructions).toBe("You are a research agent.\n\nFind relevant docs");
+    });
+
+    it("resolves completion_check.agent from an agent catalog", () => {
+      const agents = parseAgentCatalog(`
+version: "1"
+agents:
+  checker:
+    worker: CUSTOM
+    capabilities: [READ]
+`);
+
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    worker: CUSTOM
+    instructions: "echo ok"
+    capabilities: [READ]
+    completion_check:
+      agent: checker
+      instructions: "exit 0"
+      decision_file: ".roboppi-loop/decision.txt"
+    max_iterations: 2
+`;
+
+      const wf = parseWorkflow(yaml, { agents });
+      expect(wf.steps["s"]!.completion_check!.worker).toBe("CUSTOM");
+      expect(wf.steps["s"]!.completion_check!.capabilities).toEqual(["READ"]);
     });
   });
 
@@ -232,6 +298,21 @@ version: "1"
 timeout: "5m"
 `;
       expect(() => parseWorkflow(yaml)).toThrow(/"steps" must be an object/);
+    });
+
+    it("rejects unknown branch_transition_step", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+branch_transition_step: "missing"
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(/branch_transition_step/);
     });
 
     it("rejects empty steps", () => {
@@ -388,6 +469,19 @@ steps:
     max_iterations: 3
 `;
       expect(() => parseWorkflow(yaml)).toThrow(/must be one of/);
+    });
+
+    it("rejects step.agent when no agent catalog is provided", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    agent: research
+    instructions: "x"
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(/no agent catalog/);
     });
   });
 });
