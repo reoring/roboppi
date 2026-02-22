@@ -422,7 +422,7 @@ describe("WorkflowExecutor", () => {
         const instructionsByIter: string[] = [];
         const runner = new MockStepRunner(
           async (_stepId, step) => {
-            instructionsByIter.push(step.instructions);
+            instructionsByIter.push(step.instructions ?? "");
             return { status: "SUCCEEDED" };
           },
           async () => ({

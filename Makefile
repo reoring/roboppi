@@ -26,8 +26,8 @@ all: build ## Build the binary (default)
 build: ## Build a single binary (roboppi)
 	$(BUN) $(BUN_FLAGS) build $(BUN_BUILD_FLAGS) --compile $(SRC) --outfile $(BIN)
 
-test: ## Run all tests
-	$(BUN) $(BUN_FLAGS) test
+test: ## Run all tests (repo scope)
+	$(BUN) $(BUN_FLAGS) test test/unit test/integration tests/at
 
 tests: test ## Alias for `make test`
 

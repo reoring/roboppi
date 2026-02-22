@@ -32,7 +32,7 @@ import type { WorkerTask, WorkerResult } from "../types/index.js";
 import type { ExecEventSink } from "../tui/exec-event.js";
 import { NoopExecEventSink } from "../tui/noop-sink.js";
 
-type LlmWorker = Exclude<StepDefinition["worker"], "CUSTOM">;
+type LlmWorker = Exclude<NonNullable<StepDefinition["worker"]>, "CUSTOM">;
 
 export class MultiWorkerStepRunner implements StepRunner {
   private readonly shell: ShellStepRunner;
@@ -66,7 +66,7 @@ export class MultiWorkerStepRunner implements StepRunner {
       return this.shell.runStep(stepId, step, workspaceDir, abortSignal, env);
     }
 
-    const adapter = this.adapters[step.worker];
+    const adapter = step.worker ? this.adapters[step.worker as LlmWorker] : undefined;
     if (!adapter) {
       return { status: "FAILED", errorClass: ErrorClass.NON_RETRYABLE };
     }

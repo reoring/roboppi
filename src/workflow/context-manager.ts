@@ -11,9 +11,18 @@ export interface StepMeta {
   attempts: number;
   iterations?: number;
   maxIterations?: number;
-  workerKind: string;
+  workerKind?: string;
   artifacts: Array<{ name: string; path: string; type?: string }>;
   workerResult?: unknown;
+  subworkflow?: {
+    path: string;
+    name: string;
+    workflowId: string;
+    status: string;
+    contextDir: string;
+    startedAt: number;
+    completedAt?: number;
+  };
 }
 
 /**
@@ -31,9 +40,15 @@ export interface StepResolvedMeta {
   attempts: number;
   iterations?: number;
   maxIterations?: number;
-  workerKind: string;
+  workerKind?: string;
   artifacts: Array<{ name: string; path: string; type?: string }>;
   workerResult?: unknown;
+  subworkflowCall?: {
+    requestedPath: string;
+    definitionPath?: string;
+    effectiveTimeoutMs?: number;
+    maxNestingDepth?: number;
+  };
   resolved: {
     timeoutMs?: number;
     workspaceRef?: string;
@@ -46,7 +61,12 @@ export interface StepResolvedMeta {
 }
 
 function validatePathSegment(name: string): void {
-  if (name.includes("..") || name.includes(path.sep) || name.includes("/")) {
+  if (
+    name.includes("..") ||
+    name.includes(path.sep) ||
+    name.includes("/") ||
+    name.includes("\\")
+  ) {
     throw new Error(`Invalid path segment: ${name}`);
   }
 }
@@ -66,7 +86,7 @@ function ensureWithinBase(basePath: string, targetPath: string): string {
 }
 
 export class ContextManager {
-  constructor(private readonly contextDir: string) {}
+  constructor(public readonly contextDir: string) {}
 
   async initWorkflow(
     workflowId: string,

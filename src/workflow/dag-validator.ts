@@ -1,4 +1,5 @@
 import type { WorkflowDefinition } from "./types.js";
+import { isSubworkflowStep } from "./types.js";
 
 export interface ValidationError {
   stepId?: string;
@@ -75,6 +76,22 @@ export function validateDag(workflow: WorkflowDefinition): ValidationError[] {
           field: "completion_check",
           message: `Step "${stepId}" has completion_check but max_iterations is ${maxIter ?? "undefined"} (must be >= 2)`,
         });
+      }
+    }
+
+    // Subworkflow: exports `as` name uniqueness
+    if (isSubworkflowStep(step) && step.exports) {
+      const seen = new Set<string>();
+      for (const exp of step.exports) {
+        const name = exp.as ?? exp.artifact;
+        if (seen.has(name)) {
+          errors.push({
+            stepId,
+            field: "exports",
+            message: `Step "${stepId}" has duplicate export name "${name}"`,
+          });
+        }
+        seen.add(name);
       }
     }
   }

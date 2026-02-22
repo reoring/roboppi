@@ -1,6 +1,6 @@
 import { ErrorClass } from "../types/common.js";
 import type { Artifact, Observation, WorkerCost } from "../types/worker-result.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, cp, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type {
@@ -10,17 +10,21 @@ import type {
   WorkflowState,
   StepState,
   ConvergenceDef,
+  ExportRef,
 } from "./types.js";
-import { WorkflowStatus, StepStatus } from "./types.js";
+import { WorkflowStatus, StepStatus, isSubworkflowStep } from "./types.js";
 import { validateDag } from "./dag-validator.js";
 import { parseDuration } from "./duration.js";
-import type { ContextManager } from "./context-manager.js";
+import { ContextManager } from "./context-manager.js";
 import { resolveTaskLike } from "./resolve-worker-task.js";
 import type { CompletionDecisionSource } from "./completion-decision.js";
 import type { BranchRuntimeContext } from "./branch-context.js";
 import { toBranchWorkflowMeta } from "./branch-context.js";
 import type { ExecEventSink } from "../tui/exec-event.js";
 import { NoopExecEventSink } from "../tui/noop-sink.js";
+import { loadChildWorkflow } from "./workflow-loader.js";
+import { assertNoRecursion, resolveMaxNestingDepth, SubworkflowRecursionError, SubworkflowDepthError } from "./recursion-guard.js";
+import type { AgentCatalog } from "./agent-catalog.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -133,6 +137,17 @@ function sleep(ms: number): Promise<void> {
 // WorkflowExecutor
 // ---------------------------------------------------------------------------
 
+export interface WorkflowExecutorOptions {
+  /** Absolute path of this workflow YAML (for subworkflow path resolution). */
+  definitionPath?: string;
+  /** Call stack of workflow file paths for recursion detection. */
+  workflowCallStack?: string[];
+  /** Agent catalog for loading child workflows. */
+  agentCatalog?: AgentCatalog;
+  /** Maximum subworkflow nesting depth. */
+  maxNestingDepth?: number;
+}
+
 export class WorkflowExecutor {
   private readonly steps: Record<string, StepState> = {};
   private readonly stepDefs: Record<string, StepDefinition>;
@@ -141,6 +156,7 @@ export class WorkflowExecutor {
   private runningCount = 0;
   private workflowAbortController: AbortController | null = null;
   private abortReason: "timeout" | "external" | null = null;
+  private workflowStartedAt: number | null = null;
 
   // Internal: latest convergence signals per step (not persisted in StepState).
   private readonly convergenceSignals: Record<string, {
@@ -154,6 +170,12 @@ export class WorkflowExecutor {
   private notifyResolve: (() => void) | null = null;
   private pendingNotification = false;
 
+  // Subworkflow options
+  private readonly definitionPath?: string;
+  private readonly workflowCallStack: string[];
+  private readonly agentCatalog?: AgentCatalog;
+  private readonly maxNestingDepth: number;
+
   constructor(
     private readonly definition: WorkflowDefinition,
     private readonly contextManager: ContextManager,
@@ -164,11 +186,16 @@ export class WorkflowExecutor {
     private readonly branchContext?: BranchRuntimeContext,
     private readonly supervised: boolean = false,
     private readonly sink: ExecEventSink = new NoopExecEventSink(),
+    options?: WorkflowExecutorOptions,
   ) {
     this.stepDefs = definition.steps;
     this.concurrency =
       definition.concurrency != null ? definition.concurrency : Infinity;
     this.workflowTimeoutMs = parseDuration(definition.timeout);
+    this.definitionPath = options?.definitionPath;
+    this.workflowCallStack = options?.workflowCallStack ?? (this.definitionPath ? [this.definitionPath] : []);
+    this.agentCatalog = options?.agentCatalog;
+    this.maxNestingDepth = resolveMaxNestingDepth(options?.maxNestingDepth);
   }
 
   // -----------------------------------------------------------------------
@@ -187,6 +214,7 @@ export class WorkflowExecutor {
     // 2. Initialize step states and context
     const workflowId = crypto.randomUUID();
     const startedAt = Date.now();
+    this.workflowStartedAt = startedAt;
     await this.contextManager.initWorkflow(
       workflowId,
       this.definition.name,
@@ -471,6 +499,12 @@ export class WorkflowExecutor {
 
   private async runStepLifecycle(stepId: string): Promise<void> {
     const stepDef = this.stepDefs[stepId]!;
+
+    // Subworkflow step: delegate to dedicated handler
+    if (isSubworkflowStep(stepDef)) {
+      return this.runSubworkflowStepLifecycle(stepId, stepDef);
+    }
+
     const state = this.steps[stepId]!;
     let retryCount = 0;
     const maxRetries = stepDef.max_retries ?? 0;
@@ -487,7 +521,7 @@ export class WorkflowExecutor {
           await this.assertBranchLock(stepId);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this.markStepFailed(stepId, msg);
+          this.markStepFailed(stepId, msg, ErrorClass.FATAL);
           this.skipDependents(stepId);
           return;
         }
@@ -523,7 +557,7 @@ export class WorkflowExecutor {
           lastStepResult = result;
         } catch (_err) {
           if (this.workflowAbortController!.signal.aborted) return;
-          this.markStepFailed(stepId, "Worker execution threw an error");
+          this.markStepFailed(stepId, "Worker execution threw an error", ErrorClass.FATAL);
           this.handleFailurePolicy(stepId, ErrorClass.FATAL);
           return;
         }
@@ -534,7 +568,7 @@ export class WorkflowExecutor {
         if (result.status === "FAILED") {
           // Check if FATAL — always abort regardless of on_failure
           if (result.errorClass === ErrorClass.FATAL) {
-            this.markStepFailed(stepId, "FATAL error");
+            this.markStepFailed(stepId, "FATAL error", ErrorClass.FATAL);
             this.handleFailurePolicy(stepId, ErrorClass.FATAL);
             return;
           }
@@ -562,6 +596,7 @@ export class WorkflowExecutor {
           this.markStepFailed(
             stepId,
             `Step failed (errorClass: ${result.errorClass ?? "unknown"})${preview ? `: ${preview}` : ""}`,
+            result.errorClass,
           );
 
           if (onFailure === "abort" || onFailure === "retry") {
@@ -574,7 +609,7 @@ export class WorkflowExecutor {
           await this.maybeUpdateExpectedBranchAfterTransition(stepId);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this.markStepFailed(stepId, msg);
+          this.markStepFailed(stepId, msg, ErrorClass.FATAL);
           this.skipDependents(stepId);
           return;
         }
@@ -640,7 +675,7 @@ export class WorkflowExecutor {
           const msg = err instanceof Error ? err.message : String(err);
 
           await collectOutputsIfDefined();
-          this.markStepFailed(stepId, `Completion check threw an error: ${msg}`);
+          this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
           this.handleFailurePolicy(stepId, ErrorClass.FATAL);
           return;
         }
@@ -777,6 +812,330 @@ export class WorkflowExecutor {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Subworkflow step lifecycle
+  // -----------------------------------------------------------------------
+
+  private async runSubworkflowStepLifecycle(
+    stepId: string,
+    stepDef: StepDefinition & { workflow: string },
+  ): Promise<void> {
+    const state = this.steps[stepId]!;
+    let retryCount = 0;
+    const maxRetries = stepDef.max_retries ?? 0;
+
+    let lastChildDefinitionPath: string | undefined;
+    let lastEffectiveTimeoutMs: number | undefined;
+    let lastSubworkflowMeta: {
+      path: string;
+      name: string;
+      workflowId: string;
+      status: string;
+      contextDir: string;
+      startedAt: number;
+      completedAt?: number;
+    } | undefined;
+
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (this.workflowAbortController!.signal.aborted) return;
+
+        try {
+          await this.assertBranchLock(stepId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.markStepFailed(stepId, msg, ErrorClass.FATAL);
+          this.skipDependents(stepId);
+          return;
+        }
+
+        // Resolve inputs before running
+        if (stepDef.inputs && stepDef.inputs.length > 0) {
+          await this.contextManager.resolveInputs(stepId, stepDef.inputs, this.workspaceDir);
+        }
+
+        state.status = StepStatus.RUNNING;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+          startedAt: state.startedAt,
+        });
+        this.notify();
+
+        let childResult: WorkflowState;
+        let childContextDir: string;
+        const runId = crypto.randomUUID();
+
+        try {
+          // 1. Load child workflow (inherits parent's resolved agent catalog;
+          //    see loadChildWorkflow JSDoc for catalog inheritance design).
+          const childLoaded = await loadChildWorkflow(
+            stepDef.workflow,
+            this.definitionPath,
+            this.workspaceDir,
+            this.agentCatalog,
+          );
+
+          lastChildDefinitionPath = childLoaded.definitionPath;
+
+          assertNoRecursion(
+            childLoaded.definitionPath,
+            this.workflowCallStack,
+            { maxDepth: this.maxNestingDepth },
+          );
+
+          // 2. Child context directory
+          childContextDir = path.join(
+            this.contextManager.contextDir,
+            "_subworkflows",
+            stepId,
+            runId,
+          );
+          await mkdir(childContextDir, { recursive: true });
+
+          // 3. Compute effective timeout: min(childTimeout, stepTimeout, remainingParent)
+          const childTimeoutMs = parseDuration(childLoaded.definition.timeout);
+          const stepTimeoutMs = stepDef.timeout
+            ? parseDuration(stepDef.timeout)
+            : Infinity;
+          const elapsedWorkflowMs = this.workflowStartedAt
+            ? Date.now() - this.workflowStartedAt
+            : 0;
+          const remainingParentMs = Math.max(0, this.workflowTimeoutMs - elapsedWorkflowMs);
+          const effectiveTimeoutMs = Math.max(
+            1,
+            Math.min(childTimeoutMs, stepTimeoutMs, remainingParentMs),
+          );
+          lastEffectiveTimeoutMs = effectiveTimeoutMs;
+
+          // Override child definition timeout
+          const childDef: WorkflowDefinition = {
+            ...childLoaded.definition,
+            timeout: `${effectiveTimeoutMs}ms`,
+          };
+
+          // 4. Create child executor
+          const childCtx = new ContextManager(childContextDir);
+          const childCallStack = [...this.workflowCallStack, childLoaded.definitionPath];
+
+          const childExecutor = new WorkflowExecutor(
+            childDef,
+            childCtx,
+            this.stepRunner,
+            this.workspaceDir,
+            this.env,
+            this.workflowAbortController!.signal,
+            this.branchContext
+              ? { ...this.branchContext, branchTransitionStep: undefined }
+              : undefined,
+            this.supervised,
+            new NoopExecEventSink(), // MVP: no child events in parent sink
+            {
+              definitionPath: childLoaded.definitionPath,
+              workflowCallStack: childCallStack,
+              agentCatalog: childLoaded.agentCatalog,
+              maxNestingDepth: this.maxNestingDepth,
+            },
+          );
+
+          // 5. Execute child workflow
+          childResult = await childExecutor.execute();
+        } catch (err) {
+          if (this.workflowAbortController!.signal.aborted) return;
+
+          const msg = err instanceof Error ? err.message : String(err);
+          const errorClass = (err instanceof SubworkflowRecursionError || err instanceof SubworkflowDepthError)
+            ? ErrorClass.FATAL
+            : ErrorClass.NON_RETRYABLE;
+          const onFailure = stepDef.on_failure ?? "abort";
+
+          if (errorClass !== ErrorClass.FATAL && onFailure === "retry" && retryCount < maxRetries) {
+            retryCount++;
+            const baseDelay = 100;
+            const exponentialDelay = baseDelay * Math.pow(2, retryCount - 1);
+            const delay = Math.min(exponentialDelay, 5000);
+            await sleep(delay);
+            if (this.workflowAbortController!.signal.aborted) return;
+            continue;
+          }
+
+          this.markStepFailed(stepId, msg, errorClass);
+          this.handleFailurePolicy(stepId, errorClass);
+          return;
+        }
+
+        if (this.workflowAbortController!.signal.aborted) return;
+
+        lastSubworkflowMeta = {
+          path: stepDef.workflow,
+          name: childResult.name,
+          workflowId: childResult.workflowId,
+          status: childResult.status,
+          contextDir: childContextDir,
+          startedAt: childResult.startedAt,
+          completedAt: childResult.completedAt,
+        };
+
+        // 6. Copy exports (best-effort, even on failure)
+        if (stepDef.exports && stepDef.exports.length > 0) {
+          await this.copyExports(stepId, stepDef.exports, childContextDir);
+        }
+
+        // 8. Map child status to parent step status
+        if (childResult.status === WorkflowStatus.SUCCEEDED) {
+          try {
+            await this.maybeUpdateExpectedBranchAfterTransition(stepId);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.markStepFailed(stepId, msg, ErrorClass.FATAL);
+            this.skipDependents(stepId);
+            return;
+          }
+
+          state.status = StepStatus.SUCCEEDED;
+          state.completedAt = Date.now();
+          this.sink.emit({
+            type: "step_state",
+            stepId,
+            status: state.status,
+            iteration: state.iteration,
+            maxIterations: state.maxIterations,
+            completedAt: state.completedAt,
+          });
+          return;
+        }
+
+        if (childResult.status === WorkflowStatus.CANCELLED) {
+          state.status = StepStatus.CANCELLED;
+          state.completedAt = Date.now();
+          this.sink.emit({
+            type: "step_state",
+            stepId,
+            status: state.status,
+            iteration: state.iteration,
+            maxIterations: state.maxIterations,
+            completedAt: state.completedAt,
+          });
+          return;
+        }
+
+        // FAILED or TIMED_OUT
+        // Check for FATAL propagation: if any child step had FATAL error
+        const childHasFatal = Object.values(childResult.steps).some(
+          (s) => s.errorClass === ErrorClass.FATAL,
+        );
+
+        const onFailure = stepDef.on_failure ?? "abort";
+
+        if (childHasFatal) {
+          this.markStepFailed(stepId, `Child workflow "${childResult.name}" failed (FATAL)`, ErrorClass.FATAL);
+          this.handleFailurePolicy(stepId, ErrorClass.FATAL);
+          return;
+        }
+
+        // Retry if policy allows
+        if (onFailure === "retry" && retryCount < maxRetries) {
+          retryCount++;
+          const baseDelay = 100;
+          const exponentialDelay = baseDelay * Math.pow(2, retryCount - 1);
+          const delay = Math.min(exponentialDelay, 5000);
+          await sleep(delay);
+          if (this.workflowAbortController!.signal.aborted) return;
+          continue;
+        }
+
+        // No more retries
+        const statusLabel = childResult.status === WorkflowStatus.TIMED_OUT
+          ? "timed out"
+          : "failed";
+        this.markStepFailed(
+          stepId,
+          `Child workflow "${childResult.name}" ${statusLabel}`,
+          ErrorClass.NON_RETRYABLE,
+        );
+        this.handleFailurePolicy(stepId, ErrorClass.NON_RETRYABLE);
+        return;
+      }
+    } finally {
+      this.runningCount--;
+
+      if (this.workflowAbortController?.signal.aborted && state.status === StepStatus.RUNNING) {
+        state.status = StepStatus.CANCELLED;
+        state.completedAt = state.completedAt ?? Date.now();
+      }
+
+      try {
+        const baseMeta = {
+          stepId,
+          status: state.status,
+          startedAt: state.startedAt ?? 0,
+          completedAt: state.completedAt,
+          wallTimeMs: (state.completedAt ?? Date.now()) - (state.startedAt ?? 0),
+          attempts: retryCount + 1,
+          iterations: state.iteration,
+          maxIterations: state.maxIterations,
+          workerKind: stepDef.worker,
+          artifacts: [],
+        };
+
+        await this.contextManager.writeStepMeta(stepId, {
+          ...baseMeta,
+          ...(lastSubworkflowMeta ? { subworkflow: lastSubworkflowMeta } : {}),
+        });
+        await this.contextManager.writeStepResolved(stepId, {
+          ...baseMeta,
+          subworkflowCall: {
+            requestedPath: stepDef.workflow,
+            ...(lastChildDefinitionPath ? { definitionPath: lastChildDefinitionPath } : {}),
+            ...(lastEffectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: lastEffectiveTimeoutMs } : {}),
+            maxNestingDepth: this.maxNestingDepth,
+          },
+          resolved: {
+            ...(lastEffectiveTimeoutMs !== undefined ? { timeoutMs: lastEffectiveTimeoutMs } : {}),
+          },
+        });
+      } catch {
+        // best-effort
+      }
+
+      this.notify();
+    }
+  }
+
+  private async copyExports(
+    parentStepId: string,
+    exports: ExportRef[],
+    childContextDir: string,
+  ): Promise<void> {
+    const childBase = path.resolve(childContextDir);
+    for (const exp of exports) {
+      const srcDir = path.resolve(childContextDir, exp.from, exp.artifact);
+      if (srcDir !== childBase && !srcDir.startsWith(childBase + path.sep)) {
+        continue;
+      }
+      const destName = exp.as ?? exp.artifact;
+      let destDir: string;
+      try {
+        destDir = this.contextManager.getArtifactPath(parentStepId, destName);
+      } catch {
+        continue;
+      }
+
+      try {
+        const srcStat = await stat(srcDir).catch(() => null);
+        if (!srcStat) continue; // best-effort: skip missing artifacts
+        await mkdir(path.dirname(destDir), { recursive: true });
+        await cp(srcDir, destDir, { recursive: true });
+      } catch {
+        // best-effort: don't fail the step if export copy fails
+      }
+    }
+  }
+
   private async writeStepResolvedMeta(
     stepId: string,
     state: StepState,
@@ -891,7 +1250,7 @@ export class WorkflowExecutor {
 
     return {
       ...stepDef,
-      instructions: stepDef.instructions.trimEnd() + "\n\n" + append.trim() + "\n",
+      instructions: (stepDef.instructions ?? "").trimEnd() + "\n\n" + append.trim() + "\n",
     };
   }
 
@@ -1219,11 +1578,12 @@ export class WorkflowExecutor {
   // Failure handling
   // -----------------------------------------------------------------------
 
-  private markStepFailed(stepId: string, error: string): void {
+  private markStepFailed(stepId: string, error: string, errorClass?: ErrorClass): void {
     const state = this.steps[stepId]!;
     state.status = StepStatus.FAILED;
     state.completedAt = Date.now();
     state.error = error;
+    state.errorClass = errorClass;
     this.sink.emit({
       type: "step_state",
       stepId,

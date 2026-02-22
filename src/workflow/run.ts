@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseWorkflow } from "./parser.js";
-import { parseAgentCatalog, type AgentCatalog } from "./agent-catalog.js";
+import { loadAgentCatalog } from "./workflow-loader.js";
 import { validateDag } from "./dag-validator.js";
 import { ContextManager } from "./context-manager.js";
 import { WorkflowExecutor } from "./executor.js";
@@ -93,53 +93,6 @@ function splitPathList(raw: string | undefined): string[] {
     .split(":")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-async function loadAgentCatalogForWorkflow(
-  workflowYamlPath: string,
-  verboseMode: boolean,
-  agentsFiles: string[],
-): Promise<AgentCatalog | undefined> {
-  const fromEnv = splitPathList(process.env.ROBOPPI_AGENTS_FILE);
-  const fromCli = agentsFiles;
-
-  // If any explicit path is provided, only load those (env first, then CLI overrides).
-  const explicit = [...fromEnv, ...fromCli];
-
-  const candidates: string[] = [];
-  if (explicit.length > 0) {
-    candidates.push(...explicit.map((p) => path.resolve(p)));
-  } else {
-    const dir = path.dirname(workflowYamlPath);
-    candidates.push(path.join(dir, "agents.yaml"));
-    candidates.push(path.join(dir, "agents.yml"));
-  }
-
-  let catalog: AgentCatalog | undefined;
-  for (const p of candidates) {
-    try {
-      const content = await readFile(p, "utf-8");
-      const parsed = parseAgentCatalog(content);
-      catalog = { ...(catalog ?? {}), ...parsed };
-      if (verboseMode) {
-        process.stderr.write(`[workflow] loaded agent catalog: ${p} (agents=${Object.keys(parsed).length})\n`);
-      }
-    } catch (err: unknown) {
-      const code = (err as any)?.code;
-
-      // In implicit mode, missing default files are ignored.
-      if (explicit.length === 0 && code === "ENOENT") {
-        continue;
-      }
-
-      if (code === "ENOENT") {
-        throw new Error(`Agent catalog not found: ${p}`);
-      }
-      throw err;
-    }
-  }
-
-  return catalog;
 }
 
 function isNonInteractive(): boolean {
@@ -357,7 +310,10 @@ Options:
     console.log(`\x1b[1mWorkflow:\x1b[0m ${resolvedPath}`);
 
     const yamlContent = await readFile(resolvedPath, "utf-8");
-    const agentCatalog = await loadAgentCatalogForWorkflow(resolvedPath, verbose, agentsFiles);
+    const agentCatalog = await loadAgentCatalog(resolvedPath, {
+      explicitAgentsPaths: agentsFiles,
+      envAgentsPaths: splitPathList(process.env.ROBOPPI_AGENTS_FILE),
+    });
     const definition = parseWorkflow(yamlContent, { agents: agentCatalog });
 
     console.log(`\x1b[1mName:\x1b[0m     ${definition.name}`);
@@ -528,6 +484,11 @@ Options:
       branchContext,
       supervised,
       sink,
+      {
+        definitionPath: resolvedPath,
+        workflowCallStack: [resolvedPath],
+        agentCatalog,
+      },
     );
 
     const startTime = Date.now();

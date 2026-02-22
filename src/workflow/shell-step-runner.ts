@@ -21,7 +21,7 @@ export class ShellStepRunner implements StepRunner {
   ): Promise<StepRunResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m Running...\n`);
-      const script = step.instructions.trim();
+      const script = (step.instructions ?? "").trim();
       const previewMax = 2000;
       const preview = script.length > previewMax
         ? script.slice(0, previewMax) + "\n[truncated]"
@@ -33,7 +33,7 @@ export class ShellStepRunner implements StepRunner {
       }
     }
 
-    const result = await this.execShell(step.instructions, workspaceDir, abortSignal, env);
+    const result = await this.execShell(step.instructions ?? "", workspaceDir, abortSignal, env);
 
     if (this.verbose && result.stdout) {
       for (const line of result.stdout.split("\n").filter(Boolean)) {

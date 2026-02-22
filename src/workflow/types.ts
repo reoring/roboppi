@@ -1,3 +1,5 @@
+import type { ErrorClass } from "../types/common.js";
+
 export type DurationString = string; // "200ms", "5m", "30s", "2h", "1h30m"
 
 export interface WorkflowDefinition {
@@ -16,16 +18,29 @@ export interface WorkflowDefinition {
   steps: Record<string, StepDefinition>;
 }
 
+export interface ExportRef {
+  from: string;      // child workflow step ID
+  artifact: string;  // artifact name
+  as?: string;       // name in parent context (default: artifact)
+}
+
+// TODO: Refactor StepDefinition into a discriminated union
+// (WorkerStepDefinition | SubworkflowStepDefinition) keyed on the presence
+// of `workflow` vs `worker`.  Deferred due to large blast radius.
 export interface StepDefinition {
   description?: string;
   /** Optional agent profile id (resolved from an agent catalog). */
   agent?: string;
-  worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  worker?: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
   workspace?: string;
-  instructions: string;
-  capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  instructions?: string;
+  capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  /** Subworkflow YAML path (mutually exclusive with worker). */
+  workflow?: string;
+  /** Export child artifacts into parent context (subworkflow steps only). */
+  exports?: ExportRef[];
   depends_on?: string[];
   inputs?: InputRef[];
   outputs?: OutputDef[];
@@ -40,6 +55,20 @@ export interface StepDefinition {
 
   /** Optional: convergence control for completion_check loops (opt-in). */
   convergence?: ConvergenceDef;
+}
+
+export function isWorkerStep(step: StepDefinition): step is StepDefinition & {
+  worker: NonNullable<StepDefinition["worker"]>;
+  instructions: string;
+  capabilities: NonNullable<StepDefinition["capabilities"]>;
+} {
+  return step.workflow === undefined && step.worker !== undefined;
+}
+
+export function isSubworkflowStep(step: StepDefinition): step is StepDefinition & {
+  workflow: string;
+} {
+  return step.workflow !== undefined;
 }
 
 export interface ConvergenceStageDef {
@@ -159,6 +188,7 @@ export interface StepState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  errorClass?: ErrorClass;
 
   /**
    * Convergence guard state for completion_check.

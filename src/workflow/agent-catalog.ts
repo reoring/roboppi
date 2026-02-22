@@ -2,8 +2,8 @@ import YAML from "yaml";
 
 import type { StepDefinition, DurationString } from "./types.js";
 
-export type AgentWorkerKind = StepDefinition["worker"];
-export type AgentCapability = StepDefinition["capabilities"][number];
+export type AgentWorkerKind = NonNullable<StepDefinition["worker"]>;
+export type AgentCapability = NonNullable<StepDefinition["capabilities"]>[number];
 
 export interface AgentProfile {
   description?: string;

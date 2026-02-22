@@ -17,7 +17,7 @@ import { CommandSource } from "./events/command-source.js";
 import { mergeEventSources } from "./events/event-source.js";
 import type { EventSource } from "./events/event-source.js";
 import { parseWorkflow } from "../workflow/parser.js";
-import { parseAgentCatalog, type AgentCatalog } from "../workflow/agent-catalog.js";
+import { loadAgentCatalog } from "../workflow/workflow-loader.js";
 import type { StepRunner } from "../workflow/executor.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import { MultiWorkerStepRunner } from "../workflow/multi-worker-step-runner.js";
@@ -512,6 +512,12 @@ export class Daemon {
         this.shutdownAbortController.signal,
         branchContext,
         this.supervised,
+        undefined,
+        {
+          definitionPath: workflowPath,
+          workflowCallStack: [workflowPath],
+          agentCatalog,
+        },
       );
       const result = await executor.execute();
 
@@ -550,52 +556,21 @@ export class Daemon {
   private async loadAgentCatalogForWorkflow(
     workflowPath: string,
     workflowEnv: Record<string, string>,
-  ): Promise<AgentCatalog | undefined> {
-    const fromProcessEnv = splitPathList(
-      process.env.ROBOPPI_AGENTS_FILE,
-    );
+  ): Promise<import("../workflow/agent-catalog.js").AgentCatalog | undefined> {
+    const fromProcessEnv = splitPathList(process.env.ROBOPPI_AGENTS_FILE);
     const fromConfig = this.config.agents_file ? [this.config.agents_file] : [];
-    const fromWorkflowEnv = splitPathList(
-      workflowEnv.ROBOPPI_AGENTS_FILE,
-    );
-
-    // Precedence: process env (lowest) -> daemon config -> trigger env (highest).
-    const explicit = [...fromProcessEnv, ...fromConfig, ...fromWorkflowEnv];
+    const fromWorkflowEnv = splitPathList(workflowEnv.ROBOPPI_AGENTS_FILE);
 
     const resolveFromWorkspace = (p: string): string =>
       path.isAbsolute(p) ? p : path.resolve(this.workspaceDir, p);
 
-    const candidates: string[] = [];
-    if (explicit.length > 0) {
-      candidates.push(...explicit.map(resolveFromWorkspace));
-    } else {
-      const dir = path.dirname(workflowPath);
-      candidates.push(path.join(dir, "agents.yaml"));
-      candidates.push(path.join(dir, "agents.yml"));
-    }
+    const envAgentsPaths = fromProcessEnv.map(resolveFromWorkspace);
+    const explicitAgentsPaths = [...fromConfig, ...fromWorkflowEnv].map(resolveFromWorkspace);
 
-    let catalog: AgentCatalog | undefined;
-    for (const p of candidates) {
-      try {
-        const content = await readFile(p, "utf-8");
-        const parsed = parseAgentCatalog(content);
-        catalog = { ...(catalog ?? {}), ...parsed };
-      } catch (err: unknown) {
-        const code = (err as any)?.code;
-
-        // In implicit mode, missing default files are ignored.
-        if (explicit.length === 0 && code === "ENOENT") {
-          continue;
-        }
-
-        if (code === "ENOENT") {
-          throw new Error(`Agent catalog not found: ${p}`);
-        }
-        throw err;
-      }
-    }
-
-    return catalog;
+    return loadAgentCatalog(workflowPath, {
+      envAgentsPaths,
+      explicitAgentsPaths: explicitAgentsPaths.length > 0 ? explicitAgentsPaths : undefined,
+    });
   }
 
   private logBranchContext(triggerId: string, context: BranchRuntimeContext): void {

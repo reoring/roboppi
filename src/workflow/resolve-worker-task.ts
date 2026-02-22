@@ -55,10 +55,10 @@ export interface ResolvedWorkerTaskDef {
 // ---------------------------------------------------------------------------
 
 type TaskLikeDef = {
-  worker: StepDefinition["worker"];
+  worker?: StepDefinition["worker"];
   workspace?: string;
-  instructions: string;
-  capabilities: StepDefinition["capabilities"];
+  instructions?: string;
+  capabilities?: StepDefinition["capabilities"];
   timeout?: StepDefinition["timeout"];
   max_steps?: StepDefinition["max_steps"];
   max_command_time?: StepDefinition["max_command_time"];
@@ -79,11 +79,13 @@ function toWorkerKind(worker: StepDefinition["worker"]): WorkerKind {
       return WorkerKind.CLAUDE_CODE;
     case "CODEX_CLI":
       return WorkerKind.CODEX_CLI;
+    default:
+      throw new Error(`Unknown worker kind: ${String(worker)}`);
   }
 }
 
 function toWorkerCapabilities(
-  caps: StepDefinition["capabilities"],
+  caps: NonNullable<StepDefinition["capabilities"]>,
 ): WorkerCapability[] {
   return caps.map((c) => WorkerCapability[c]);
 }
@@ -122,8 +124,8 @@ export function resolveTaskLike(
   return {
     workerKind: toWorkerKind(def.worker),
     workspaceRef,
-    instructions: def.instructions,
-    capabilities: toWorkerCapabilities(def.capabilities),
+    instructions: def.instructions ?? "",
+    capabilities: toWorkerCapabilities(def.capabilities ?? []),
     timeoutMs,
     ...(def.model ? { model: def.model } : {}),
     ...(def.max_steps !== undefined ? { maxSteps: def.max_steps } : {}),

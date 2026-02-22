@@ -486,5 +486,113 @@ steps:
 `;
       expect(() => parseWorkflow(yaml)).toThrow(/no agent catalog/);
     });
+
+    it("rejects step id with path traversal (..)", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  "../escape":
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/safe path segment/);
+    });
+
+    it("rejects step id with slash", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  "foo/bar":
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/safe path segment/);
+    });
+
+    it("rejects reserved step id _subworkflows", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  _subworkflows:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/reserved/);
+    });
+
+    it("rejects reserved step id _meta.json", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  _meta.json:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/reserved/);
+    });
+
+    it("rejects reserved step id _workflow.json", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  _workflow.json:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/reserved/);
+    });
+
+    it("rejects reserved step id _convergence", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  _convergence:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/reserved/);
+    });
+
+    it("rejects exports on worker steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+    exports:
+      - from: step-a
+        artifact: report
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/exports cannot be used on worker steps/);
+    });
   });
 });

@@ -1,9 +1,35 @@
 import YAML from "yaml";
+import path from "node:path";
 import type { WorkflowDefinition, StepDefinition, CompletionCheckDef } from "./types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
 const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
+
+const RESERVED_STEP_IDS = new Set([
+  "_subworkflows",
+  "_workflow.json",
+  "_meta.json",
+  "_resolved.json",
+  "_convergence",
+]);
+
+// Names reserved within a step context directory.
+// These collide with Roboppi's own metadata / internal artifact directories.
+const RESERVED_ARTIFACT_NAMES = new Set([
+  "_meta.json",
+  "_resolved.json",
+  "_convergence",
+]);
+
+function assertValidStepId(stepId: string): void {
+  assertPathSegment(stepId, `steps key "${stepId}"`);
+  if (RESERVED_STEP_IDS.has(stepId)) {
+    throw new WorkflowParseError(
+      `step id "${stepId}" is reserved and cannot be used`,
+    );
+  }
+}
 
 export class WorkflowParseError extends Error {
   constructor(message: string) {
@@ -20,6 +46,28 @@ export interface WorkflowParseOptions {
 function assertString(value: unknown, field: string): asserts value is string {
   if (typeof value !== "string" || value === "") {
     throw new WorkflowParseError(`"${field}" must be a non-empty string`);
+  }
+}
+
+function assertPathSegment(value: unknown, field: string): void {
+  assertString(value, field);
+  if (
+    value.includes("..") ||
+    value.includes(path.sep) ||
+    value.includes("/") ||
+    value.includes("\\")
+  ) {
+    throw new WorkflowParseError(`"${field}" must be a safe path segment (got "${value}")`);
+  }
+}
+
+function assertArtifactName(value: unknown, field: string): void {
+  assertPathSegment(value, field);
+  const name = value as string;
+  if (RESERVED_ARTIFACT_NAMES.has(name)) {
+    throw new WorkflowParseError(
+      `"${field}" uses reserved artifact name "${name}"`,
+    );
   }
 }
 
@@ -214,12 +262,116 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   return obj as unknown as CompletionCheckDef;
 }
 
+function validateSubworkflowStep(stepId: string, obj: Record<string, unknown>): void {
+  assertString(obj["workflow"], `steps.${stepId}.workflow`);
+
+  // Fields that are exclusive to worker steps
+  const workerOnlyFields = [
+    "agent",
+    "workspace",
+    "worker",
+    "model",
+    "instructions",
+    "capabilities",
+    "outputs",
+    "completion_check",
+    "max_iterations",
+    "on_iterations_exhausted",
+    "max_steps",
+    "max_command_time",
+    "convergence",
+  ] as const;
+  for (const field of workerOnlyFields) {
+    if (obj[field] !== undefined) {
+      throw new WorkflowParseError(
+        `steps.${stepId}.${field} cannot be used with workflow (subworkflow steps)`
+      );
+    }
+  }
+
+  // Validate exports array
+  if (obj["exports"] !== undefined) {
+    if (!Array.isArray(obj["exports"])) {
+      throw new WorkflowParseError(`steps.${stepId}.exports must be an array`);
+    }
+      for (const exp of obj["exports"]) {
+        if (typeof exp !== "object" || exp === null) {
+          throw new WorkflowParseError(`steps.${stepId}.exports entries must be objects`);
+        }
+        const e = exp as Record<string, unknown>;
+        assertPathSegment(e["from"], `steps.${stepId}.exports[].from`);
+        assertArtifactName(e["artifact"], `steps.${stepId}.exports[].artifact`);
+        if (e["as"] !== undefined) {
+          assertArtifactName(e["as"], `steps.${stepId}.exports[].as`);
+        }
+      }
+    }
+}
+
 function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): StepDefinition {
   if (typeof step !== "object" || step === null) {
     throw new WorkflowParseError(`steps.${stepId} must be an object`);
   }
+
+  const rawObj = step as Record<string, unknown>;
+
+  // Subworkflow step: `workflow` is present
+  if (rawObj["workflow"] !== undefined) {
+    // workflow and worker are mutually exclusive
+    if (rawObj["worker"] !== undefined) {
+      throw new WorkflowParseError(
+        `steps.${stepId}: "workflow" and "worker" are mutually exclusive`
+      );
+    }
+    validateSubworkflowStep(stepId, rawObj);
+
+    // Validate common fields shared with worker steps
+    validateOptionalString(rawObj["description"], `steps.${stepId}.description`);
+    validateOptionalString(rawObj["timeout"], `steps.${stepId}.timeout`);
+    validateOptionalNumber(rawObj["max_retries"], `steps.${stepId}.max_retries`, { min: 0 });
+
+    if (rawObj["depends_on"] !== undefined) {
+      if (!Array.isArray(rawObj["depends_on"])) {
+        throw new WorkflowParseError(`steps.${stepId}.depends_on must be an array`);
+      }
+      for (const dep of rawObj["depends_on"]) {
+        if (typeof dep !== "string") {
+          throw new WorkflowParseError(`steps.${stepId}.depends_on must contain only strings`);
+        }
+      }
+    }
+
+    if (rawObj["inputs"] !== undefined) {
+      if (!Array.isArray(rawObj["inputs"])) {
+        throw new WorkflowParseError(`steps.${stepId}.inputs must be an array`);
+      }
+      for (const input of rawObj["inputs"]) {
+        if (typeof input !== "object" || input === null) {
+          throw new WorkflowParseError(`steps.${stepId}.inputs entries must be objects`);
+        }
+        const inp = input as Record<string, unknown>;
+        assertPathSegment(inp["from"], `steps.${stepId}.inputs[].from`);
+        assertArtifactName(inp["artifact"], `steps.${stepId}.inputs[].artifact`);
+        if (inp["as"] !== undefined) {
+          assertArtifactName(inp["as"], `steps.${stepId}.inputs[].as`);
+        }
+      }
+    }
+
+    if (rawObj["on_failure"] !== undefined) {
+      if (!["retry", "continue", "abort"].includes(rawObj["on_failure"] as string)) {
+        throw new WorkflowParseError(
+          `steps.${stepId}.on_failure must be "retry", "continue", or "abort"`
+        );
+      }
+    }
+
+    return rawObj as unknown as StepDefinition;
+  }
+
+  // Worker step: existing logic
   const obj = resolveTaskLikeWithAgent(
-    step as Record<string, unknown>,
+    rawObj,
     `steps.${stepId}`,
     agents,
   );
@@ -228,6 +380,12 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   validateWorker(obj["worker"], `steps.${stepId}.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.model`);
+
+  if (obj["exports"] !== undefined) {
+    throw new WorkflowParseError(
+      `steps.${stepId}.exports cannot be used on worker steps (exports is for subworkflow steps only)`,
+    );
+  }
 
   // Validate depends_on is array of strings if present
   if (obj["depends_on"] !== undefined) {
@@ -246,30 +404,33 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
     if (!Array.isArray(obj["inputs"])) {
       throw new WorkflowParseError(`steps.${stepId}.inputs must be an array`);
     }
-    for (const input of obj["inputs"]) {
-      if (typeof input !== "object" || input === null) {
-        throw new WorkflowParseError(`steps.${stepId}.inputs entries must be objects`);
+      for (const input of obj["inputs"]) {
+        if (typeof input !== "object" || input === null) {
+          throw new WorkflowParseError(`steps.${stepId}.inputs entries must be objects`);
+        }
+        const inp = input as Record<string, unknown>;
+        assertPathSegment(inp["from"], `steps.${stepId}.inputs[].from`);
+        assertArtifactName(inp["artifact"], `steps.${stepId}.inputs[].artifact`);
+        if (inp["as"] !== undefined) {
+          assertArtifactName(inp["as"], `steps.${stepId}.inputs[].as`);
+        }
       }
-      const inp = input as Record<string, unknown>;
-      assertString(inp["from"], `steps.${stepId}.inputs[].from`);
-      assertString(inp["artifact"], `steps.${stepId}.inputs[].artifact`);
     }
-  }
 
   // Validate outputs
   if (obj["outputs"] !== undefined) {
     if (!Array.isArray(obj["outputs"])) {
       throw new WorkflowParseError(`steps.${stepId}.outputs must be an array`);
     }
-    for (const output of obj["outputs"]) {
-      if (typeof output !== "object" || output === null) {
-        throw new WorkflowParseError(`steps.${stepId}.outputs entries must be objects`);
+      for (const output of obj["outputs"]) {
+        if (typeof output !== "object" || output === null) {
+          throw new WorkflowParseError(`steps.${stepId}.outputs entries must be objects`);
+        }
+        const out = output as Record<string, unknown>;
+        assertArtifactName(out["name"], `steps.${stepId}.outputs[].name`);
+        assertString(out["path"], `steps.${stepId}.outputs[].path`);
       }
-      const out = output as Record<string, unknown>;
-      assertString(out["name"], `steps.${stepId}.outputs[].name`);
-      assertString(out["path"], `steps.${stepId}.outputs[].path`);
     }
-  }
 
   // Validate completion_check + max_iterations constraint
   if (obj["completion_check"] !== undefined) {
@@ -361,6 +522,7 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
 
   const validatedSteps: Record<string, StepDefinition> = {};
   for (const stepId of stepIds) {
+    assertValidStepId(stepId);
     validatedSteps[stepId] = validateStep(stepId, stepsObj[stepId], options.agents);
   }
 
