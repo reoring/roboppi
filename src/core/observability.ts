@@ -19,12 +19,20 @@ export interface LogEntry {
   data?: unknown;
 }
 
+export type LogSink = (entry: LogEntry) => void;
+
+const defaultLogSink: LogSink = (entry) => {
+  // Output to stderr (stdout is reserved for IPC)
+  process.stderr.write(JSON.stringify(entry) + "\n");
+};
+
 export class Logger {
   private _traceId?: string;
 
   constructor(
     private readonly component: string,
     private readonly minLevel: LogLevel = "debug",
+    private readonly sink: LogSink = defaultLogSink,
   ) {}
 
   setTraceId(traceId: string): void {
@@ -67,8 +75,7 @@ export class Logger {
     if (data !== undefined) {
       entry.data = data;
     }
-    // Output to stderr (stdout is reserved for IPC)
-    process.stderr.write(JSON.stringify(entry) + "\n");
+    this.sink(entry);
   }
 }
 
@@ -173,13 +180,15 @@ export class MetricsCollector {
 export class ObservabilityProvider {
   private readonly metrics = new MetricsCollector();
   private readonly minLevel: LogLevel;
+  private readonly sink: LogSink;
 
-  constructor(minLevel: LogLevel = "debug") {
+  constructor(minLevel: LogLevel = "debug", sink?: LogSink) {
     this.minLevel = minLevel;
+    this.sink = sink ?? defaultLogSink;
   }
 
   createLogger(component: string): Logger {
-    return new Logger(component, this.minLevel);
+    return new Logger(component, this.minLevel, this.sink);
   }
 
   getMetrics(): MetricsCollector {

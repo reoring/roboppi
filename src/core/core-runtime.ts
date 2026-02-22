@@ -1,7 +1,7 @@
 import { JsonLinesTransport } from "../ipc/json-lines-transport.js";
 import { IpcProtocol } from "../ipc/protocol.js";
 import { AgentCore, type AgentCoreConfig } from "./agentcore.js";
-import { Logger } from "./observability.js";
+import { Logger, ObservabilityProvider, type LogSink } from "./observability.js";
 
 import { ProcessManager } from "../worker/process-manager.js";
 import { OpenCodeAdapter } from "../worker/adapters/opencode-adapter.js";
@@ -16,6 +16,7 @@ import { Readable, Writable } from "node:stream";
 export interface CoreRuntimeOptions {
   config?: AgentCoreConfig;
   loggerComponent?: string;
+  logSink?: LogSink;
 }
 
 function isNonInteractive(): boolean {
@@ -65,7 +66,7 @@ function parseDurationMs(input: string): number {
 
 export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
   const config = options.config;
-  const logger = new Logger(options.loggerComponent ?? "main", config?.logLevel ?? "info");
+  const logger = new Logger(options.loggerComponent ?? "main", config?.logLevel ?? "info", options.logSink);
 
   // Mark this process as the Core runtime for logging/diagnostics.
   if (!process.env.ROBOPPI_COMPONENT) process.env.ROBOPPI_COMPONENT = "core";
@@ -131,7 +132,8 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
 
   const transport = new JsonLinesTransport(stdin, stdout);
   const protocol = new IpcProtocol(transport);
-  const core = new AgentCore(protocol, config);
+  const observability = new ObservabilityProvider(config?.logLevel ?? "info", options.logSink);
+  const core = new AgentCore(protocol, config, observability);
 
   // Keepalive output for environments that kill silent subprocesses.
   // Enabled by default when non-interactive; can be overridden via env.

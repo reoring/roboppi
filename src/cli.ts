@@ -11,6 +11,7 @@
 import type { AgentCoreConfig } from "./core/agentcore.js";
 import type { LogLevel } from "./core/observability.js";
 import { startCoreRuntime } from "./core/core-runtime.js";
+import { CoreServerTui } from "./tui/core-server-tui.js";
 import { ExecutionBudget } from "./core/execution-budget.js";
 import { BackpressureController } from "./core/backpressure.js";
 import { CircuitBreakerRegistry } from "./core/circuit-breaker.js";
@@ -29,6 +30,7 @@ import type { WorkerTask, Job } from "./types/index.js";
 interface SharedOptions {
   help: boolean;
   version: boolean;
+  tui: boolean | undefined;
   concurrency: number | undefined;
   rps: number | undefined;
   maxCost: number | undefined;
@@ -56,7 +58,9 @@ const HELP_TEXT = `
 roboppi — execution-control runtime for agentic workers
 
 USAGE
-  roboppi [options]                          Start Core IPC server mode
+  roboppi                                   Show help (interactive)
+  roboppi server [options]                   Start Core IPC server mode (default: TUI when interactive)
+  roboppi [options]                          Start Core IPC server mode (when non-interactive)
   roboppi run [options] <instructions...>    Run a one-shot worker task
   roboppi workflow <workflow.yaml> [options] Run a workflow YAML
   roboppi daemon <daemon.yaml> [options]     Run daemon mode (resident workflows)
@@ -64,6 +68,7 @@ USAGE
 
 IPC SERVER MODE
   Reads JSON Lines from stdin, writes responses to stdout. Logs go to stderr.
+  TUI is enabled by default when stderr is a TTY; disable with --no-tui.
 
 RUN MODE OPTIONS
   --worker <kind>         Worker to use: opencode, claude-code, codex  (required)
@@ -87,6 +92,9 @@ SHARED OPTIONS
   --cb-half-open <n>      Circuit breaker half-open attempts            (default: 3)
 
   --log-level <level>     Log level: debug|info|warn|error|fatal       (default: info)
+
+  --tui                   Force TUI logs UI (stderr)
+  --no-tui, --plain       Disable TUI; emit JSON logs to stderr
 
   --help, -h              Show this help message
   --version, -v           Show version
@@ -139,6 +147,7 @@ function parseCliArgs(argv: string[]): CliMode {
   const shared: SharedOptions = {
     help: false,
     version: false,
+    tui: undefined,
     concurrency: undefined,
     rps: undefined,
     maxCost: undefined,
@@ -224,6 +233,8 @@ function parseCliArgs(argv: string[]): CliMode {
     switch (arg) {
       case "--help": case "-h": shared.help = true; break;
       case "--version": case "-v": shared.version = true; break;
+      case "--tui": shared.tui = true; break;
+      case "--no-tui": case "--plain": shared.tui = false; break;
       case "--concurrency": shared.concurrency = nextInt(); break;
       case "--rps": shared.rps = nextInt(); break;
       case "--max-cost": shared.maxCost = nextInt(); break;
@@ -244,6 +255,21 @@ function parseCliArgs(argv: string[]): CliMode {
     }
   }
   return { mode: "server", opts: shared };
+}
+
+function parseEnvBool(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return undefined;
+}
+
+function resolveTuiMode(cliTui: boolean | undefined, envTui: string | undefined): boolean {
+  if (cliTui !== undefined) return cliTui;
+  const envVal = parseEnvBool(envTui);
+  if (envVal !== undefined) return envVal;
+  return !!process.stderr.isTTY;
 }
 
 function buildConfig(opts: SharedOptions): AgentCoreConfig {
@@ -444,16 +470,36 @@ async function executeRun(opts: SharedOptions, run: RunOptions): Promise<void> {
 
 function startServer(opts: SharedOptions): void {
   const config = buildConfig(opts);
-  startCoreRuntime({
-    config,
-    loggerComponent: "cli",
-  });
+  const useTui = resolveTuiMode(opts.tui, process.env.ROBOPPI_TUI);
+  if (useTui && process.stderr.isTTY) {
+    // In Core stdio IPC mode, stdin is reserved for JSONL; use a passive renderer.
+    const tui = new CoreServerTui({ title: "roboppi core (IPC server)" });
+    tui.start();
+    process.on("exit", () => {
+      try { tui.stop(); } catch { /* ignore */ }
+    });
+    startCoreRuntime({
+      config,
+      loggerComponent: "cli",
+      logSink: tui.logSink,
+    });
+    return;
+  }
+
+  startCoreRuntime({ config, loggerComponent: "cli" });
 }
 
 // ── Main ──────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+
+  // Default: show help in interactive TTY.
+  // Starting the Core IPC server is explicit via `roboppi server` (or by passing options).
+  if (argv.length === 0 && process.stdin.isTTY && process.stderr.isTTY) {
+    console.log(HELP_TEXT);
+    process.exit(0);
+  }
 
   if (argv[0] === "workflow") {
     const { runWorkflowCli } = await import("./workflow/run.js");
@@ -464,6 +510,21 @@ async function main(): Promise<void> {
   if (argv[0] === "daemon") {
     const { runDaemonCli } = await import("./daemon/cli.js");
     await runDaemonCli(argv.slice(1));
+    return;
+  }
+
+  // Explicit server subcommand.
+  if (argv[0] === "server") {
+    const parsed = parseCliArgs(argv.slice(1));
+    if (parsed.opts.help) {
+      console.log(HELP_TEXT);
+      process.exit(0);
+    }
+    if (parsed.opts.version) {
+      console.log(`roboppi ${VERSION}`);
+      process.exit(0);
+    }
+    startServer(parsed.opts);
     return;
   }
 
