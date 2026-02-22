@@ -1,4 +1,5 @@
 import type { StepUiState } from "../../state-store.js";
+import { ansiTruncate, ansiWidth, sanitizeForTui } from "../../ansi-utils.js";
 
 export function renderLogsTab(
   step: StepUiState | undefined,
@@ -30,9 +31,9 @@ export function renderLogsTab(
   const visibleEntries = entries.slice(-height);
   const lines = visibleEntries.map((e) => {
     const prefix = getChannelPrefix(e.channel);
-    const truncated = e.line.length > width - 6
-      ? e.line.slice(0, width - 9) + "..."
-      : e.line;
+    const available = Math.max(0, width - ansiWidth(prefix) - 1);
+    const safe = sanitizeForTui(e.line);
+    const truncated = ansiTruncate(safe, available, { ellipsis: "..." });
     return `${prefix} ${truncated}`;
   });
 

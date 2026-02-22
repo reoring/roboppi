@@ -1,4 +1,5 @@
 import type { WorkflowUiState } from "../../state-store.js";
+import { ansiTruncate } from "../../ansi-utils.js";
 
 export function renderCoreTab(
   state: WorkflowUiState,
@@ -20,7 +21,7 @@ export function renderCoreTab(
     // Show last N lines
     const visible = logLines.slice(-(height - 3));
     for (const l of visible) {
-      const trunc = l.length > width ? l.slice(0, width - 3) + "..." : l;
+      const trunc = ansiTruncate(l, Math.max(0, width), { ellipsis: "..." });
       lines.push(`\x1b[90m${trunc}\x1b[0m`);
     }
   }

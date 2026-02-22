@@ -5,6 +5,7 @@ import { renderDiffsTab } from "./tabs/diffs-tab.js";
 import { renderResultTab } from "./tabs/result-tab.js";
 import { renderCoreTab } from "./tabs/core-tab.js";
 import { renderHelpTab } from "./tabs/help-tab.js";
+import { ansiFit } from "../ansi-utils.js";
 
 const TABS = [
   { key: "1", id: "overview", label: "Overview" },
@@ -17,13 +18,16 @@ const TABS = [
 
 export function renderDetailPane(state: WorkflowUiState, width: number, height: number): string {
   // Tab bar
-  const tabBar = TABS.map((t) => {
+  const tabBarRaw = TABS.map((t) => {
     const active = state.selectedTab === t.id;
     if (active) {
       return `\x1b[1m\x1b[4m${t.key}:${t.label}\x1b[0m`;
     }
     return `\x1b[90m${t.key}:${t.label}\x1b[0m`;
   }).join("  ");
+
+  const w = Math.max(0, width);
+  const tabBar = ansiFit(tabBarRaw, w);
 
   const contentHeight = height - 2; // tab bar + separator
   const step = state.selectedStepId ? state.steps.get(state.selectedStepId) : undefined;
@@ -52,5 +56,5 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
       content = "";
   }
 
-  return tabBar + "\n\x1b[90m" + "\u2500".repeat(width) + "\x1b[0m\n" + content;
+  return tabBar + "\n\x1b[90m" + "\u2500".repeat(w) + "\x1b[0m\n" + content;
 }

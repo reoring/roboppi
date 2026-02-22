@@ -4,6 +4,7 @@ import type { TuiStateStore } from "./state-store.js";
 import { renderHeader } from "./components/header.js";
 import { renderStepList } from "./components/step-list.js";
 import { renderDetailPane } from "./components/detail-pane.js";
+import { ansiFit, sanitizeForTui } from "./ansi-utils.js";
 
 export class WorkflowTui {
   private renderer: TuiRenderer;
@@ -174,10 +175,13 @@ export class WorkflowTui {
     try {
       const { columns = 80, rows = 24 } = process.stderr;
       const header = renderHeader(state, columns);
-      const contentHeight = rows - header.split("\n").length - 1;
+      const contentHeight = Math.max(0, rows - header.split("\n").length);
 
-      const leftWidth = Math.min(Math.max(24, Math.floor(columns * 0.3)), 40);
-      const rightWidth = columns - leftWidth - 3; // 3 for separator
+      const sepWidth = 3; // space + separator + space
+      const minRight = 16;
+      let leftWidth = Math.min(Math.max(24, Math.floor(columns * 0.3)), 40);
+      leftWidth = Math.min(leftWidth, Math.max(10, columns - sepWidth - minRight));
+      const rightWidth = Math.max(10, columns - leftWidth - sepWidth);
 
       const stepList = renderStepList(state, leftWidth, contentHeight);
       const detail = renderDetailPane(state, rightWidth, contentHeight);
@@ -189,15 +193,33 @@ export class WorkflowTui {
 
       const bodyLines: string[] = [];
       for (let i = 0; i < maxLines; i++) {
-        const left = (leftLines[i] ?? "").padEnd(leftWidth);
-        const right = rightLines[i] ?? "";
-        bodyLines.push(`${left.slice(0, leftWidth)} \x1b[90m\u2502\x1b[0m ${right}`);
+        const leftRaw = sanitizeForTui(leftLines[i] ?? "");
+        const rightRaw = sanitizeForTui(rightLines[i] ?? "");
+        const left = ansiFit(leftRaw, leftWidth);
+        const right = ansiFit(rightRaw, rightWidth);
+        bodyLines.push(`${left} \x1b[90m\u2502\x1b[0m ${right}`);
       }
 
-      const output = header + "\n" + bodyLines.join("\n");
-      this.renderer.render(output);
+      const rawOut = header + "\n" + bodyLines.join("\n");
+      this.renderer.render(fitFrame(rawOut, columns, rows));
     } catch {
       // Ignore render errors
     }
   }
+}
+
+function fitFrame(frame: string, columns: number, rows: number): string {
+  const cols = Math.max(0, Math.floor(columns));
+  const r = Math.max(0, Math.floor(rows));
+  const lines = frame.split("\n");
+  const out: string[] = [];
+
+  for (let i = 0; i < Math.min(lines.length, r); i++) {
+    out.push(ansiFit(lines[i] ?? "", cols));
+  }
+  while (out.length < r) {
+    out.push(" ".repeat(cols));
+  }
+
+  return out.join("\n");
 }

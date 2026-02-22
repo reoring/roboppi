@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows SemVer where practical.
 
+## [0.1.4] - 2026-02-22
+
+### Fixed
+
+- Stabilize OpenTUI workflow TUI rendering by sanitizing ANSI control sequences and using ANSI-aware width/truncation.
+
 ## [0.1.3] - 2026-02-22
 
 ### Added

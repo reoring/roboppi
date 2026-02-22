@@ -1,4 +1,5 @@
 import type { WorkflowUiState } from "../state-store.js";
+import { ansiFit } from "../ansi-utils.js";
 
 const SPINNER_FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
 let spinnerIdx = 0;
@@ -21,14 +22,15 @@ export function renderHeader(state: WorkflowUiState, width: number): string {
   const countStr = formatCounts(counts);
 
   const isFinished = status !== "RUNNING" && status !== "PENDING";
-  const line1 = `\x1b[1m${name}\x1b[0m  ${spinner}${statusColor}${status}\x1b[0m  \x1b[90m${mode} \u00B7 ${elapsed}\x1b[0m`;
+  const line1Raw = `\x1b[1m${name}\x1b[0m  ${spinner}${statusColor}${status}\x1b[0m  \x1b[90m${mode} \u00B7 ${elapsed}\x1b[0m`;
   const hints = isFinished
     ? "j/k:move  1-6:tabs  q:exit"
     : "j/k:move  1-6:tabs  Ctrl+C:cancel  q:quit";
-  const line2 = `\x1b[90m${countStr}  \u2502  ${hints}\x1b[0m`;
-  const separator = "\x1b[90m" + "\u2500".repeat(width) + "\x1b[0m";
+  const line2Raw = `\x1b[90m${countStr}  \u2502  ${hints}\x1b[0m`;
+  const separator = "\x1b[90m" + "\u2500".repeat(Math.max(0, width)) + "\x1b[0m";
 
-  return line1 + "\n" + line2 + "\n" + separator;
+  const w = Math.max(0, width);
+  return ansiFit(line1Raw, w) + "\n" + ansiFit(line2Raw, w) + "\n" + ansiFit(separator, w);
 }
 
 function formatElapsed(ms: number): string {

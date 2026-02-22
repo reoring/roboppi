@@ -1,4 +1,5 @@
 import type { StepUiState } from "../../state-store.js";
+import { ansiTruncate } from "../../ansi-utils.js";
 
 export function renderResultTab(
   step: StepUiState | undefined,
@@ -52,9 +53,7 @@ export function renderResultTab(
     lines.push(`\x1b[1mObservations:\x1b[0m`);
     for (const obs of r.observations.slice(0, 10)) {
       if (obs.summary) {
-        const trunc = obs.summary.length > width - 4
-          ? obs.summary.slice(0, width - 7) + "..."
-          : obs.summary;
+        const trunc = ansiTruncate(obs.summary, Math.max(0, width - 2), { ellipsis: "..." });
         lines.push(`  ${trunc}`);
       }
     }
