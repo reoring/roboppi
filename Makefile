@@ -1,5 +1,5 @@
 
-.PHONY: all build test tests test-unit test-integration test-at test-branch test-all typecheck clean install uninstall dev help
+.PHONY: all build test tests test-unit test-integration test-at test-branch test-all typecheck clean install install-user uninstall uninstall-user dev help
 
 BIN := roboppi
 
@@ -14,6 +14,12 @@ BUN_FLAGS ?=
 
 # Extra flags passed to `bun build` (e.g. BUN_BUILD_FLAGS=--compile-exec-argv=--smol)
 BUN_BUILD_FLAGS ?=
+
+# Install locations (override like: make install PREFIX=/opt)
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+INSTALL ?= install
+SUDO ?= sudo
 
 all: build ## Build the binary (default)
 
@@ -46,11 +52,27 @@ typecheck: ## Run TypeScript type checker
 clean: ## Remove build artifacts
 	rm -f $(BIN) $(EXTRA_BINS)
 
-install: build ## Install binary to /usr/local/bin
-	install -m 755 $(BIN) /usr/local/bin/$(BIN)
+install: build ## Install binary to PREFIX/bin (default: /usr/local/bin; uses sudo if needed)
+	@if [ -w "$(BINDIR)" ] || [ -w "$(PREFIX)" ]; then \
+		mkdir -p "$(BINDIR)"; \
+		$(INSTALL) -m 755 "$(BIN)" "$(BINDIR)/$(BIN)"; \
+	else \
+		$(SUDO) mkdir -p "$(BINDIR)"; \
+		$(SUDO) $(INSTALL) -m 755 "$(BIN)" "$(BINDIR)/$(BIN)"; \
+	fi
 
-uninstall: ## Remove binary from /usr/local/bin
-	rm -f /usr/local/bin/$(BIN) $(addprefix /usr/local/bin/,$(EXTRA_BINS))
+install-user: build ## Install binary to ~/.local/bin
+	@$(MAKE) install PREFIX="$(HOME)/.local"
+
+uninstall: ## Remove binary from PREFIX/bin (uses sudo if needed)
+	@if [ -w "$(BINDIR)" ]; then \
+		rm -f "$(BINDIR)/$(BIN)" $(addprefix $(BINDIR)/,$(EXTRA_BINS)); \
+	else \
+		$(SUDO) rm -f "$(BINDIR)/$(BIN)" $(addprefix $(BINDIR)/,$(EXTRA_BINS)); \
+	fi
+
+uninstall-user: ## Remove binary from ~/.local/bin
+	@$(MAKE) uninstall PREFIX="$(HOME)/.local"
 
 dev: ## Run in dev mode (no build)
 	$(BUN) $(BUN_FLAGS) run $(SRC)

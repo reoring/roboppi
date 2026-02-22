@@ -19,6 +19,8 @@ import { resolveTaskLike } from "./resolve-worker-task.js";
 import type { CompletionDecisionSource } from "./completion-decision.js";
 import type { BranchRuntimeContext } from "./branch-context.js";
 import { toBranchWorkflowMeta } from "./branch-context.js";
+import type { ExecEventSink } from "../tui/exec-event.js";
+import { NoopExecEventSink } from "../tui/noop-sink.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -160,6 +162,8 @@ export class WorkflowExecutor {
     private readonly env?: Record<string, string>,
     private readonly abortSignal?: AbortSignal,
     private readonly branchContext?: BranchRuntimeContext,
+    private readonly supervised: boolean = false,
+    private readonly sink: ExecEventSink = new NoopExecEventSink(),
   ) {
     this.stepDefs = definition.steps;
     this.concurrency =
@@ -189,6 +193,19 @@ export class WorkflowExecutor {
       startedAt,
       this.buildWorkflowMetaExtras(),
     );
+    this.sink.emit({
+      type: "workflow_started",
+      workflowId,
+      name: this.definition.name,
+      workspaceDir: this.workspaceDir,
+      supervised: this.supervised,
+      startedAt,
+      definitionSummary: {
+        steps: Object.keys(this.stepDefs),
+        concurrency: this.concurrency === Infinity ? undefined : this.concurrency,
+        timeout: this.definition.timeout,
+      },
+    });
     for (const [stepId, stepDef] of Object.entries(this.stepDefs)) {
       const maxIter = stepDef.max_iterations ?? 1;
       this.steps[stepId] = {
@@ -243,6 +260,11 @@ export class WorkflowExecutor {
         this.abortSignal.removeEventListener("abort", onExternalAbort);
       }
       completedAt = Date.now();
+      this.sink.emit({
+        type: "workflow_finished",
+        status: workflowStatus,
+        completedAt,
+      });
       await this.contextManager.writeWorkflowMeta({
         id: workflowId,
         name: this.definition.name,
@@ -351,6 +373,13 @@ export class WorkflowExecutor {
 
       if (deps.length === 0) {
         state.status = StepStatus.READY;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
         continue;
       }
 
@@ -374,9 +403,23 @@ export class WorkflowExecutor {
 
       if (shouldSkip) {
         state.status = StepStatus.SKIPPED;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
         this.notify();
       } else if (allResolved) {
         state.status = StepStatus.READY;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
       }
     }
   }
@@ -400,6 +443,21 @@ export class WorkflowExecutor {
     state.iteration = 1;
     state.startedAt = Date.now();
     this.runningCount++;
+
+    this.sink.emit({
+      type: "step_state",
+      stepId,
+      status: state.status,
+      iteration: state.iteration,
+      maxIterations: state.maxIterations,
+      startedAt: state.startedAt,
+    });
+    this.sink.emit({
+      type: "step_phase",
+      stepId,
+      phase: "executing",
+      at: Date.now(),
+    });
 
     // Fire-and-forget — the promise resolves when step reaches terminal state
     this.runStepLifecycle(stepId).catch(() => {
@@ -441,6 +499,14 @@ export class WorkflowExecutor {
 
         // Run the main worker
         state.status = StepStatus.RUNNING;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+          startedAt: state.startedAt,
+        });
         this.notify();
 
         const stepAbort = this.createStepAbort();
@@ -515,6 +581,12 @@ export class WorkflowExecutor {
 
         const collectOutputsIfDefined = async () => {
           if (stepDef.outputs && stepDef.outputs.length > 0) {
+            this.sink.emit({
+              type: "step_phase",
+              stepId,
+              phase: "collecting_outputs",
+              at: Date.now(),
+            });
             await this.contextManager.collectOutputs(stepId, stepDef.outputs, this.workspaceDir);
           }
         };
@@ -524,11 +596,32 @@ export class WorkflowExecutor {
           await collectOutputsIfDefined();
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
+          this.sink.emit({
+            type: "step_state",
+            stepId,
+            status: state.status,
+            iteration: state.iteration,
+            maxIterations: state.maxIterations,
+            completedAt: state.completedAt,
+          });
           return;
         }
 
         // Run completion check
         state.status = StepStatus.CHECKING;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
+        this.sink.emit({
+          type: "step_phase",
+          stepId,
+          phase: "checking",
+          at: Date.now(),
+        });
         this.notify();
 
         const checkAbort = this.createStepAbort();
@@ -591,6 +684,14 @@ export class WorkflowExecutor {
         if (effectiveCheckResult.complete) {
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
+          this.sink.emit({
+            type: "step_state",
+            stepId,
+            status: state.status,
+            iteration: state.iteration,
+            maxIterations: state.maxIterations,
+            completedAt: state.completedAt,
+          });
           return;
         }
 
@@ -646,12 +747,27 @@ export class WorkflowExecutor {
           } else {
             state.status = StepStatus.INCOMPLETE;
             state.completedAt = Date.now();
+            this.sink.emit({
+              type: "step_state",
+              stepId,
+              status: state.status,
+              iteration: state.iteration,
+              maxIterations: state.maxIterations,
+              completedAt: state.completedAt,
+            });
           }
           return;
         }
 
         // Loop: increment iteration and re-run
         state.iteration++;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
         retryCount = 0; // reset retry count for new iteration
       }
     } finally {
@@ -1108,6 +1224,15 @@ export class WorkflowExecutor {
     state.status = StepStatus.FAILED;
     state.completedAt = Date.now();
     state.error = error;
+    this.sink.emit({
+      type: "step_state",
+      stepId,
+      status: state.status,
+      iteration: state.iteration,
+      maxIterations: state.maxIterations,
+      completedAt: state.completedAt,
+      error,
+    });
   }
 
   private handleFailurePolicy(
@@ -1137,6 +1262,13 @@ export class WorkflowExecutor {
       const deps = stepDef.depends_on ?? [];
       if (deps.includes(failedStepId)) {
         state.status = StepStatus.SKIPPED;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
       }
     }
     // Transitively skip dependents of skipped steps
@@ -1151,6 +1283,13 @@ export class WorkflowExecutor {
           const depState = this.steps[depId];
           if (depState && depState.status === StepStatus.SKIPPED) {
             state.status = StepStatus.SKIPPED;
+            this.sink.emit({
+              type: "step_state",
+              stepId,
+              status: state.status,
+              iteration: state.iteration,
+              maxIterations: state.maxIterations,
+            });
             changed = true;
             break;
           }
@@ -1164,15 +1303,30 @@ export class WorkflowExecutor {
   // -----------------------------------------------------------------------
 
   private handleWorkflowTimeout(): void {
-    for (const [_stepId, state] of Object.entries(this.steps)) {
+    for (const [stepId, state] of Object.entries(this.steps)) {
       if (state.status === StepStatus.RUNNING || state.status === StepStatus.CHECKING) {
         state.status = StepStatus.CANCELLED;
         state.completedAt = Date.now();
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+          completedAt: state.completedAt,
+        });
       } else if (
         state.status === StepStatus.PENDING ||
         state.status === StepStatus.READY
       ) {
         state.status = StepStatus.SKIPPED;
+        this.sink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+        });
       }
     }
   }

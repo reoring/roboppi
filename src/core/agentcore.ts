@@ -64,7 +64,7 @@ export class AgentCore {
   private readonly activePermitsByJob = new Map<UUID, UUID>(); // jobId → permitId
   private started = false;
 
-  constructor(protocol: IpcProtocol, config?: AgentCoreConfig) {
+  constructor(protocol: IpcProtocol, config?: AgentCoreConfig, observability?: ObservabilityProvider) {
     this.protocol = protocol;
 
     // Initialize core components
@@ -75,7 +75,7 @@ export class AgentCore {
     this.permitGate = new PermitGate(this.budget, this.circuitBreakers, this.backpressure);
     this.watchdog = new Watchdog(config?.watchdog);
     this.escalation = new EscalationManager(config?.escalation);
-    this.observability = new ObservabilityProvider(config?.logLevel);
+    this.observability = observability ?? new ObservabilityProvider(config?.logLevel);
     this.workerGateway = new WorkerDelegationGateway();
 
     const logger = this.observability.createLogger("AgentCore");
