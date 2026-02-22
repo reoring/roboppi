@@ -511,6 +511,7 @@ export class Daemon {
         executorEnv,
         this.shutdownAbortController.signal,
         branchContext,
+        this.supervised,
       );
       const result = await executor.execute();
 

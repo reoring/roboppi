@@ -30,6 +30,8 @@ import {
   generateId,
   ErrorClass,
 } from "../types/index.js";
+import type { ExecEventSink } from "../tui/exec-event.js";
+import { NoopExecEventSink } from "../tui/noop-sink.js";
 
 function isPermitGranted(
   msg: PermitGrantedMessage | PermitRejectedMessage,
@@ -45,6 +47,15 @@ export interface CoreIpcStepRunnerOptions {
 
   /** IPC request/response timeout for ack/permit/cancel (defaults to IpcProtocol default). */
   ipcRequestTimeoutMs?: number;
+
+  /**
+   * If true, capture Core's stderr as line events (ExecEvent: core_log).
+   * When enabled, Core stderr is NOT forwarded directly to this process's stderr.
+   */
+  captureCoreStderr?: boolean;
+
+  /** Optional event sink for TUI instrumentation. */
+  sink?: ExecEventSink;
 }
 
 export class CoreIpcStepRunner implements StepRunner {
@@ -52,6 +63,7 @@ export class CoreIpcStepRunner implements StepRunner {
   private readonly coreEntryPoint: string;
   private readonly verbose: boolean;
   private readonly ownsCoreProcess: boolean;
+  private readonly sink: ExecEventSink;
 
   private ipc: IpcProtocol | null = null;
   private readonly waiters = new Map<UUID, { resolve: (m: JobCompletedMessage) => void }>();
@@ -59,9 +71,23 @@ export class CoreIpcStepRunner implements StepRunner {
   constructor(options: CoreIpcStepRunnerOptions = {}) {
     this.verbose = options.verbose ?? false;
     this.coreEntryPoint = options.coreEntryPoint ?? "src/index.ts";
+    this.sink = options.sink ?? new NoopExecEventSink();
+
+    const captureCoreStderr = options.captureCoreStderr ?? false;
 
     this.supervisor = new Supervisor({
       coreEntryPoint: this.coreEntryPoint,
+      ...(captureCoreStderr
+        ? {
+            onCoreStderrLine: (line: string) => {
+              this.sink.emit({
+                type: "core_log",
+                ts: Date.now(),
+                line,
+              });
+            },
+          }
+        : {}),
       ...(options.ipcRequestTimeoutMs !== undefined
         ? { ipc: { requestTimeoutMs: options.ipcRequestTimeoutMs } }
         : {}),
@@ -276,6 +302,7 @@ export class CoreIpcStepRunner implements StepRunner {
     try {
       await this.submitJob(ipc, job, parentAbort);
       submitted = true;
+      this.sink.emit({ type: "step_phase", stepId, phase: "submitting_job", at: Date.now() });
 
       const deadlineAt = Date.now() + task.timeoutMs;
       // Update job payload budget to reflect the post-ack execution deadline.
@@ -283,7 +310,9 @@ export class CoreIpcStepRunner implements StepRunner {
       const payload = job.payload as { budget: { deadlineAt: number } };
       payload.budget.deadlineAt = deadlineAt;
 
+      this.sink.emit({ type: "step_phase", stepId, phase: "waiting_permit", at: Date.now() });
       await this.requestPermitUntilGranted(ipc, job, deadlineAt, parentAbort);
+      this.sink.emit({ type: "step_phase", stepId, phase: "executing", at: Date.now() });
 
       execScoped = createScopedAbort(parentAbort, deadlineAt);
       onExecAbort = () => {
@@ -318,6 +347,8 @@ export class CoreIpcStepRunner implements StepRunner {
         result.cost = { ...(result.cost ?? { wallTimeMs: 0 }), wallTimeMs };
         if (result.durationMs === 0) result.durationMs = wallTimeMs;
       }
+
+      this.sink.emit({ type: "worker_result", stepId, ts: Date.now(), result });
 
       if (this.verbose) {
         const text = extractWorkerText(result);
@@ -361,6 +392,7 @@ export class CoreIpcStepRunner implements StepRunner {
         errorClass,
       };
     } finally {
+      this.sink.emit({ type: "step_phase", stepId, phase: "finalizing", at: Date.now() });
       parentAbort.removeEventListener("abort", onParentAbort);
       if (execScoped && onExecAbort) {
         execScoped.signal.removeEventListener("abort", onExecAbort);

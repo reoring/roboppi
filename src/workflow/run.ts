@@ -24,6 +24,10 @@ import {
   resolveBranchRuntimeContext,
   type BranchRuntimeContext,
 } from "./branch-context.js";
+import { TuiStateStore, NoopExecEventSink } from "../tui/index.js";
+import type { ExecEventSink } from "../tui/index.js";
+import { WorkflowTui } from "../tui/workflow-tui.js";
+import { createOpenTuiRenderer, PlainRenderer } from "../tui/opentui-platform.js";
 
 function isRunningUnderBun(): boolean {
   const base = path.basename(process.execPath).toLowerCase();
@@ -172,6 +176,21 @@ function resolveKeepaliveIntervalMs(keepaliveInterval: string | undefined): numb
   }
 }
 
+function resolveTuiMode(
+  cliTui: boolean | undefined,
+  envTui: string | undefined,
+): boolean {
+  // 1. Explicit CLI flag
+  if (cliTui !== undefined) return cliTui;
+
+  // 2. Environment variable
+  const envVal = parseEnvBool(envTui);
+  if (envVal !== undefined) return envVal;
+
+  // 3. Auto: enabled when stderr is a TTY
+  return !!process.stderr.isTTY;
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
 const STATUS_ICON: Record<string, string> = {
@@ -238,6 +257,7 @@ export async function runWorkflowCli(argv: string[]): Promise<void> {
   let cliAllowProtectedBranch = false;
   const agentsFiles: string[] = [];
   let coreEntryPointOverride: string | undefined;
+  let tuiMode: boolean | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -280,6 +300,10 @@ export async function runWorkflowCli(argv: string[]): Promise<void> {
     } else if (arg === "--core" || arg === "--core-entrypoint") {
       i++;
       coreEntryPointOverride = args[i] ?? "";
+    } else if (arg === "--tui") {
+      tuiMode = true;
+    } else if (arg === "--no-tui") {
+      tuiMode = false;
     } else if (arg === "--help" || arg === "-h") {
       console.log(`Usage:
   roboppi workflow <workflow.yaml> [options]
@@ -299,6 +323,8 @@ Options:
   --protected-branches <csv>  Protected work branches (default: main,master,release/*)
   --allow-protected-branch  Allow execution on protected branch (dangerous)
   --agents <path>           Agent catalog YAML (repeatable; merged with ROBOPPI_AGENTS_FILE; CLI wins on conflicts)
+  --tui                   Enable TUI mode (interactive workflow visualization)
+  --no-tui                Disable TUI mode (plain output)
   --core <path|cmd>          Core entrypoint for supervised mode (default: auto)
   --help, -h              Show help`);
       process.exit(0);
@@ -385,14 +411,23 @@ Options:
       process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
     }
 
+    // TUI setup
+    const useTui = resolveTuiMode(tuiMode, process.env.ROBOPPI_TUI);
+    const sink: ExecEventSink = useTui
+      ? new TuiStateStore({ supervised })
+      : new NoopExecEventSink();
+    let tui: WorkflowTui | null = null;
+
     // 4. Execute
     const runner = supervised
       ? new CoreIpcStepRunner({
           verbose,
           coreEntryPoint: resolveCoreEntryPointForSupervised(coreEntryPointOverride),
           ipcRequestTimeoutMs: resolveIpcRequestTimeoutMs(true, ipcRequestTimeout),
+          captureCoreStderr: useTui && sink instanceof TuiStateStore,
+          sink,
         })
-      : new MultiWorkerStepRunner(verbose);
+      : new MultiWorkerStepRunner(verbose, sink);
 
     let shuttingDown = false;
     const shutdown = async (reason: string, exitCode: number) => {
@@ -415,6 +450,13 @@ Options:
       });
       process.on("SIGTERM", () => {
         void shutdown("SIGTERM", 143);
+      });
+    } else if (useTui) {
+      // TUI handles Ctrl+C via its own abort controller
+      // But we still need SIGTERM handling
+      process.on("SIGTERM", () => {
+        if (tui) tui.stop();
+        process.exit(143);
       });
     }
 
@@ -456,26 +498,53 @@ Options:
     }
     const executorEnv =
       Object.keys(workflowEnv).length > 0 ? workflowEnv : undefined;
+    let workflowAbortSignal: AbortSignal | undefined;
+
+    if (useTui && sink instanceof TuiStateStore) {
+      let renderer;
+      try {
+        renderer = await createOpenTuiRenderer();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sink.emit({
+          type: "warning",
+          ts: Date.now(),
+          message: `OpenTUI init failed; falling back to plain renderer: ${msg}`,
+        });
+        renderer = new PlainRenderer();
+      }
+
+      tui = new WorkflowTui(sink, renderer);
+      workflowAbortSignal = tui.signal;
+    }
+
     const executor = new WorkflowExecutor(
       definition,
       ctx,
       runner,
       ws,
       executorEnv,
-      undefined,
+      workflowAbortSignal,
       branchContext,
+      supervised,
+      sink,
     );
 
     const startTime = Date.now();
     const keepaliveEnabled = resolveKeepaliveEnabled(keepalive);
-    const keepaliveIntervalMs = keepaliveEnabled ? resolveKeepaliveIntervalMs(keepaliveInterval) : 0;
+    const effectiveKeepalive = useTui ? false : keepaliveEnabled;
+    const keepaliveIntervalMs = effectiveKeepalive ? resolveKeepaliveIntervalMs(keepaliveInterval) : 0;
     let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
-    if (keepaliveEnabled) {
+    if (effectiveKeepalive) {
       keepaliveTimer = setInterval(() => {
         const elapsedS = Math.floor((Date.now() - startTime) / 1000);
         process.stderr.write(`[workflow] keepalive: running (${elapsedS}s elapsed)\n`);
       }, keepaliveIntervalMs);
+    }
+
+    if (tui) {
+      tui.start();
     }
 
     let state;
@@ -493,9 +562,15 @@ Options:
         }
       }
     }
+
+    // TUI mode: keep TUI open on the final state until user dismisses
+    if (tui) {
+      await tui.waitForDismiss();
+    }
+
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // 5. Report results
+    // 5. Report results (printed after TUI exits alternate screen)
     console.log("");
     console.log("\x1b[1m─── Results ───\x1b[0m");
     console.log("");

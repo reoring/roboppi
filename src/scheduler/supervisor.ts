@@ -24,6 +24,8 @@ export interface SupervisorConfig {
   gracefulShutdownMs?: number;
   maxRestarts?: number;
   restartWindowMs?: number;
+  /** When set, Core stderr lines are forwarded as callbacks instead of piped to process.stderr. */
+  onCoreStderrLine?: (line: string) => void;
 }
 
 const DEFAULT_CONFIG: SupervisorConfig = {
@@ -602,6 +604,13 @@ export class Supervisor {
   }
 
   private forwardCoreStderr(stream: unknown): void {
+    const onLine = this.config.onCoreStderrLine;
+
+    if (onLine) {
+      this.forwardCoreStderrAsLines(stream, onLine);
+      return;
+    }
+
     // Best-effort: forward Core stderr to this process's stderr.
     // Supports both Web ReadableStream<Uint8Array> and NodeJS.ReadableStream.
     const s = stream as any;
@@ -645,6 +654,56 @@ export class Supervisor {
       } catch {
         // ignore
       }
+    }
+  }
+
+  private forwardCoreStderrAsLines(stream: unknown, onLine: (line: string) => void): void {
+    const s = stream as any;
+    let buffer = "";
+
+    const processChunk = (chunk: Uint8Array | Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      buffer += text;
+
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIdx);
+        buffer = buffer.slice(newlineIdx + 1);
+        onLine(line);
+      }
+    };
+
+    // Handle Web ReadableStream
+    if (s && typeof s.getReader === "function") {
+      const reader = (s as ReadableStream<Uint8Array>).getReader();
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.byteLength > 0) processChunk(value);
+          }
+        } catch { /* ignore */ }
+        finally {
+          // Flush remaining buffer
+          if (buffer) onLine(buffer);
+          try { reader.releaseLock(); } catch { /* ignore */ }
+        }
+      })().catch(() => {});
+      return;
+    }
+
+    // Handle Node.js ReadableStream
+    if (s && typeof s.on === "function") {
+      try {
+        s.on("data", (chunk: unknown) => {
+          try { processChunk(chunk as any); } catch { /* ignore */ }
+        });
+        s.on("end", () => {
+          if (buffer) onLine(buffer);
+        });
+        s.on("error", () => {});
+      } catch { /* ignore */ }
     }
   }
 

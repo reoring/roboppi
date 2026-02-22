@@ -29,6 +29,8 @@ import {
   ErrorClass,
 } from "../types/index.js";
 import type { WorkerTask, WorkerResult } from "../types/index.js";
+import type { ExecEventSink } from "../tui/exec-event.js";
+import { NoopExecEventSink } from "../tui/noop-sink.js";
 
 type LlmWorker = Exclude<StepDefinition["worker"], "CUSTOM">;
 
@@ -38,7 +40,10 @@ export class MultiWorkerStepRunner implements StepRunner {
 
   private readonly adapters: Record<LlmWorker, WorkerAdapter>;
 
-  constructor(private readonly verbose: boolean = false) {
+  constructor(
+    private readonly verbose: boolean = false,
+    private readonly sink: ExecEventSink = new NoopExecEventSink(),
+  ) {
     this.shell = new ShellStepRunner(verbose);
     this.pm = new ProcessManager();
 
@@ -156,6 +161,13 @@ export class MultiWorkerStepRunner implements StepRunner {
   ): Promise<StepRunResult> {
     const result = await this.runWorkerTask(stepId, adapter, task);
 
+    this.sink.emit({
+      type: "worker_result",
+      stepId,
+      ts: Date.now(),
+      result,
+    });
+
     if (result.status === WorkerStatus.SUCCEEDED) {
       return {
         status: "SUCCEEDED",
@@ -214,17 +226,23 @@ export class MultiWorkerStepRunner implements StepRunner {
       taskForAdapter.abortSignal.addEventListener("abort", onAbort, { once: true });
     }
 
-    const streamDone = this.verbose
-      ? (async () => {
-          try {
-            for await (const ev of adapter.streamEvents(handle)) {
-              this.printWorkerEvent(stepId, ev);
-            }
-          } catch {
-            // Ignore stream errors on cancellation
+    const streamDone = (async () => {
+      try {
+        for await (const ev of adapter.streamEvents(handle)) {
+          this.sink.emit({
+            type: "worker_event",
+            stepId,
+            ts: Date.now(),
+            event: ev,
+          });
+          if (this.verbose) {
+            this.printWorkerEvent(stepId, ev);
           }
-        })()
-      : Promise.resolve();
+        }
+      } catch {
+        // Ignore stream errors on cancellation
+      }
+    })();
 
     try {
       const result = await adapter.awaitResult(handle);
