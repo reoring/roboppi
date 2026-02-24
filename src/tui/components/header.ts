@@ -24,8 +24,8 @@ export function renderHeader(state: WorkflowUiState, width: number): string {
   const isFinished = status !== "RUNNING" && status !== "PENDING";
   const line1Raw = `\x1b[1m${name}\x1b[0m  ${spinner}${statusColor}${status}\x1b[0m  \x1b[90m${mode} \u00B7 ${elapsed}\x1b[0m`;
   const hints = isFinished
-    ? "j/k:move  1-6:tabs  q:exit"
-    : "j/k:move  1-6:tabs  Ctrl+C:cancel  q:quit";
+    ? "j/k:move  1-6:tabs  y:copy  q:exit"
+    : "j/k:move  1-6:tabs  y:copy  Ctrl+C:cancel  q:quit";
   const line2Raw = `\x1b[90m${countStr}  \u2502  ${hints}\x1b[0m`;
   const separator = "\x1b[90m" + "\u2500".repeat(Math.max(0, width)) + "\x1b[0m";
 

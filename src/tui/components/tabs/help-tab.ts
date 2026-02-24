@@ -6,6 +6,7 @@ export function renderHelpTab(_width: number, height: number): string {
     "  \x1b[1mEnter\x1b[0m            Lock step selection",
     "  \x1b[1mf\x1b[0m                Follow running step",
     "  \x1b[1mSpace\x1b[0m            Toggle follow mode",
+    "  \x1b[1my\x1b[0m                Copy visible tab",
     "  \x1b[1m1-6\x1b[0m              Switch tabs",
     "  \x1b[1mCtrl+C\x1b[0m           Cancel workflow",
     "  \x1b[1mq\x1b[0m                Quit",

@@ -2,6 +2,7 @@ import type { LogEntry, LogSink } from "../core/observability.js";
 import { RingBuffer } from "./ring-buffer.js";
 import type { TuiRenderer } from "./opentui-platform.js";
 import { PassiveAnsiRenderer } from "./passive-ansi-renderer.js";
+import { ansiTruncate, ansiWidth, ansiWrap, sanitizeForTui } from "./ansi-utils.js";
 
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -20,13 +21,6 @@ function safeJson(v: unknown): string {
   }
 }
 
-function truncate(s: string, max: number): string {
-  if (max <= 0) return "";
-  if (s.length <= max) return s;
-  if (max <= 3) return s.slice(0, max);
-  return s.slice(0, max - 3) + "...";
-}
-
 function levelColor(level: string): string {
   switch (level) {
     case "debug":
@@ -43,13 +37,26 @@ function levelColor(level: string): string {
   }
 }
 
-function formatLogLine(entry: LogEntry, width: number): string {
+function formatLogLines(entry: LogEntry, width: number): string[] {
   const t = formatTime(entry.timestamp);
   const lvl = entry.level;
   const lvlColored = `${levelColor(lvl)}${lvl}\x1b[0m`;
-  const base = `${t} ${lvlColored} ${entry.component}: ${entry.message}`;
-  const data = entry.data !== undefined ? ` ${truncate(safeJson(entry.data), Math.max(0, width - base.length - 1))}` : "";
-  return truncate(base + data, width);
+  const prefix = `${t} ${lvlColored} ${entry.component}: `;
+
+  const data = entry.data !== undefined ? ` ${safeJson(entry.data)}` : "";
+  const value = sanitizeForTui(`${entry.message}${data}`);
+
+  const prefixW = ansiWidth(prefix);
+  const available = Math.max(0, width - prefixW);
+  const chunks = ansiWrap(value, available);
+  const indent = " ".repeat(prefixW);
+
+  const out: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (i === 0) out.push(prefix + (chunks[i] ?? ""));
+    else out.push(indent + (chunks[i] ?? ""));
+  }
+  return out;
 }
 
 export interface CoreServerTuiOptions {
@@ -76,7 +83,9 @@ export class CoreServerTui {
   get logSink(): LogSink {
     return (entry) => {
       const width = (process.stderr.columns ?? 120);
-      this.logs.push(formatLogLine(entry, width));
+      for (const line of formatLogLines(entry, width)) {
+        this.logs.push(line);
+      }
 
       // Best-effort: infer transport from the startup log.
       if (entry.message.includes("awaiting IPC messages")) {
@@ -120,13 +129,17 @@ export class CoreServerTui {
     const header2 = `stdin/stdout: JSONL IPC (server)  logs: TUI (stderr)  help: --help  stop: Ctrl+C  plain: --no-tui`;
     const sep = "-".repeat(Math.max(0, Math.min(columns, 120)));
 
-    const headerLines = [truncate(header1, columns), truncate(header2, columns), sep];
+    const headerLines = [
+      ansiTruncate(header1, columns, { ellipsis: "..." }),
+      ansiTruncate(header2, columns, { ellipsis: "..." }),
+      sep,
+    ];
     const bodyHeight = Math.max(0, rows - headerLines.length - 1);
 
     const lines = this.logs.lines();
     const visible = lines.slice(Math.max(0, lines.length - bodyHeight));
     const padded: string[] = [];
-    for (const line of visible) padded.push(truncate(line, columns));
+    for (const line of visible) padded.push(ansiTruncate(line, columns, { ellipsis: "..." }));
     while (padded.length < bodyHeight) padded.unshift("");
 
     const out = headerLines.join("\n") + "\n" + padded.join("\n") + "\n";

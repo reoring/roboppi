@@ -2,6 +2,111 @@ type AnsiTruncateOptions = {
   ellipsis?: string;
 };
 
+export function ansiWrap(input: string, maxWidth: number): string[] {
+  const width = Math.max(0, Math.floor(maxWidth));
+  if (width <= 0) return [""];
+
+  const rawLines = input.split("\n");
+  const out: string[] = [];
+
+  for (const raw of rawLines) {
+    if (raw.length === 0) {
+      out.push("");
+      continue;
+    }
+
+    let line = "";
+    let w = 0;
+
+    for (let i = 0; i < raw.length; ) {
+      const c = raw.charCodeAt(i);
+      if (c === 27 /* ESC */ && raw[i + 1] === "[") {
+        const end = scanCsi(raw, i);
+        if (end === -1) break;
+        line += raw.slice(i, end);
+        i = end;
+        continue;
+      }
+
+      const cp = raw.codePointAt(i)!;
+      const cpStr = String.fromCodePoint(cp);
+      const cpW = codePointWidth(cp, cpStr);
+
+      // Keep combining marks attached to the prior cell.
+      if (cpW > 0 && w + cpW > width) {
+        out.push(line);
+        line = "";
+        w = 0;
+      }
+
+      line += cpStr;
+      if (cpW > 0) {
+        // If a single code point is wider than maxWidth, still render it.
+        w += cpW;
+      }
+
+      i += cp > 0xffff ? 2 : 1;
+    }
+
+    out.push(line);
+  }
+
+  return out;
+}
+
+export function stripAnsi(input: string): string {
+  // Remove all ANSI escape sequences (CSI/OSC/other). Keep visible text.
+  let out = "";
+  for (let i = 0; i < input.length; ) {
+    const c = input.charCodeAt(i);
+
+    if (c === 27 /* ESC */) {
+      const next = input[i + 1];
+
+      // CSI: ESC [ ... <final>
+      if (next === "[") {
+        let j = i + 2;
+        while (j < input.length) {
+          const cj = input.charCodeAt(j);
+          if (cj >= 0x40 && cj <= 0x7e) break;
+          j++;
+        }
+        if (j >= input.length) break;
+        i = j + 1;
+        continue;
+      }
+
+      // OSC: ESC ] ... BEL or ST (ESC \\)
+      if (next === "]") {
+        let j = i + 2;
+        while (j < input.length) {
+          const cj = input.charCodeAt(j);
+          if (cj === 7 /* BEL */) {
+            j++;
+            break;
+          }
+          if (cj === 27 /* ESC */ && input[j + 1] === "\\") {
+            j += 2;
+            break;
+          }
+          j++;
+        }
+        i = j;
+        continue;
+      }
+
+      // Other escapes: drop ESC and continue.
+      i++;
+      continue;
+    }
+
+    out += input[i]!;
+    i++;
+  }
+
+  return out;
+}
+
 export function sanitizeForTui(input: string): string {
   // Make arbitrary text safe to embed in our own ANSI-rendered UI.
   // - Drop carriage returns (they reposition the cursor in real terminals)

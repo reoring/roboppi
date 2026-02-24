@@ -1,5 +1,5 @@
 import type { StepUiState } from "../../state-store.js";
-import { ansiTruncate, ansiWidth, sanitizeForTui } from "../../ansi-utils.js";
+import { ansiWrap, ansiWidth, sanitizeForTui } from "../../ansi-utils.js";
 
 export function renderLogsTab(
   step: StepUiState | undefined,
@@ -27,15 +27,32 @@ export function renderLogsTab(
     return padLines(["\x1b[90mNo logs yet\x1b[0m"], height);
   }
 
-  // Show last N lines that fit
-  const visibleEntries = entries.slice(-height);
-  const lines = visibleEntries.map((e) => {
+  const lines: string[] = [];
+
+  // Build the last N physical lines with wrapping.
+  for (let idx = entries.length - 1; idx >= 0 && lines.length < height; idx--) {
+    const e = entries[idx]!;
     const prefix = getChannelPrefix(e.channel);
-    const available = Math.max(0, width - ansiWidth(prefix) - 1);
+    const prefixW = ansiWidth(prefix);
+    const available = Math.max(0, width - prefixW - 1);
+
     const safe = sanitizeForTui(e.line);
-    const truncated = ansiTruncate(safe, available, { ellipsis: "..." });
-    return `${prefix} ${truncated}`;
-  });
+    const chunks = ansiWrap(safe, available);
+
+    const contPrefix = " ".repeat(prefixW) + " ";
+    const entryLines: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const p = i === 0 ? `${prefix} ` : contPrefix;
+      entryLines.push(p + (chunks[i] ?? ""));
+    }
+
+    // Prepend only what we still need.
+    const remaining = height - lines.length;
+    const take = entryLines.slice(Math.max(0, entryLines.length - remaining));
+    for (let i = take.length - 1; i >= 0; i--) {
+      lines.unshift(take[i]!);
+    }
+  }
 
   return padLines(lines, height);
 }
