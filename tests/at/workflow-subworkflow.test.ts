@@ -136,7 +136,7 @@ steps:
     expect(() => parseWorkflow(yaml)).toThrow(/cannot be used with workflow/);
   });
 
-  it("rejects workflow + completion_check together", () => {
+  it("accepts workflow + completion_check together", () => {
     const yaml = `
 name: parent
 version: "1"
@@ -151,11 +151,13 @@ steps:
       decision_file: "check.txt"
     max_iterations: 3
 `;
-    expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-    expect(() => parseWorkflow(yaml)).toThrow(/cannot be used with workflow/);
+    const def = parseWorkflow(yaml);
+    expect(def.steps["bad"]!.workflow).toBe("./child.yaml");
+    expect(def.steps["bad"]!.completion_check).toBeDefined();
+    expect(def.steps["bad"]!.max_iterations).toBe(3);
   });
 
-  it("rejects workflow + convergence together", () => {
+  it("accepts workflow + convergence together", () => {
     const yaml = `
 name: parent
 version: "1"
@@ -166,8 +168,9 @@ steps:
     convergence:
       enabled: true
 `;
-    expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-    expect(() => parseWorkflow(yaml)).toThrow(/cannot be used with workflow/);
+    const def = parseWorkflow(yaml);
+    expect(def.steps["bad"]!.workflow).toBe("./child.yaml");
+    expect(def.steps["bad"]!.convergence?.enabled).toBe(true);
   });
 
   it("validates exports array correctly", () => {
@@ -468,6 +471,7 @@ steps:
     capabilities: [READ]
   invoke-child:
     workflow: "./child.yaml"
+    bubble_subworkflow_events: true
     depends_on: [setup]
     timeout: "5m"
 `;
@@ -487,15 +491,15 @@ steps:
       expect(state.steps["invoke-child"]!.status).toBe(StepStatus.SUCCEEDED);
 
       // Verify child steps were actually run
-      expect(runner.getStepCallCount("child-step-a")).toBe(1);
-      expect(runner.getStepCallCount("child-step-b")).toBe(1);
+      expect(runner.getStepCallCount("invoke-child/child-step-a")).toBe(1);
+      expect(runner.getStepCallCount("invoke-child/child-step-b")).toBe(1);
     });
   });
 
   it("propagates child failure to parent step", async () => {
     await withTempDir(async (dir) => {
       const runner = new MockStepRunner(async (stepId) => {
-        if (stepId === "child-step-b") {
+        if (stepId === "invoke-child/child-step-b") {
           return { status: "FAILED" };
         }
         return { status: "SUCCEEDED" };
@@ -576,7 +580,7 @@ steps:
       let stepAborted = false;
       const runner = new MockStepRunner(async (_stepId, _step, callIndex, abortSignal) => {
         void callIndex;
-        if (_stepId === "long-step") {
+        if (_stepId === "invoke-child/long-step") {
           await new Promise<void>((resolve) => {
             abortSignal.addEventListener("abort", () => {
               stepAborted = true;
@@ -598,6 +602,7 @@ timeout: "10m"
 steps:
   invoke-child:
     workflow: "./child.yaml"
+    bubble_subworkflow_events: true
 `;
       await writeFile(parentPath, parentContent);
       await writeFile(path.join(dir, "child.yaml"), slowChildYaml);
@@ -645,20 +650,21 @@ steps:
       - name: report
         path: "report.txt"
 `;
-      const parentWithExports = `
+       const parentWithExports = `
 name: parent-exports
 version: "1"
 timeout: "10m"
 steps:
   invoke-child:
     workflow: "./child.yaml"
+    bubble_subworkflow_events: true
     exports:
       - from: generate
         artifact: report
         as: child-report
 `;
       const runner = new MockStepRunner(async (stepId) => {
-        if (stepId === "generate") {
+        if (stepId === "invoke-child/generate") {
           // Create the output file that will be collected
           await writeWorkspaceFile(dir, "report.txt", "Test Report Content");
         }

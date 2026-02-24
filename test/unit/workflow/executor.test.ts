@@ -528,6 +528,128 @@ describe("WorkflowExecutor", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Subworkflow + completion_check loop
+  // -----------------------------------------------------------------------
+  describe("subworkflow completion_check loop", () => {
+    it("re-runs child workflow until completion_check passes", async () => {
+      await withTempDir(async (dir) => {
+        // Child workflow YAML (loaded via loadChildWorkflow)
+        await writeFile(
+          path.join(dir, "child.yaml"),
+          `name: child\nversion: "1"\ntimeout: "1m"\nsteps:\n  work:\n    worker: CUSTOM\n    instructions: "do child work"\n    capabilities: [READ]\n`,
+          "utf-8",
+        );
+
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async (_stepId, _check, callIndex) => ({
+            complete: callIndex >= 3,
+            failed: false,
+          }),
+        );
+
+        const wf = makeWorkflow({
+          cycle: {
+            workflow: "./child.yaml",
+            bubble_subworkflow_events: true,
+            completion_check: {
+              worker: "CUSTOM",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 5,
+          },
+        });
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          { definitionPath: path.join(dir, "parent.yaml") },
+        );
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+        expect(result.steps["cycle"]!.status).toBe(StepStatus.SUCCEEDED);
+        expect(result.steps["cycle"]!.iteration).toBe(3);
+
+        // Child step runs show up with a prefixed step id.
+        expect(runner.stepCalls.map((c) => c.stepId)).toEqual([
+          "cycle/work",
+          "cycle/work",
+          "cycle/work",
+        ]);
+        // Parent completion_check is called once per iteration.
+        expect(runner.checkCalls.map((c) => c.stepId)).toEqual([
+          "cycle",
+          "cycle",
+          "cycle",
+        ]);
+      });
+    });
+
+    it("aggregates child worker events into the parent step when bubbling is disabled", async () => {
+      await withTempDir(async (dir) => {
+        await writeFile(
+          path.join(dir, "child.yaml"),
+          `name: child\nversion: "1"\ntimeout: "1m"\nsteps:\n  work:\n    worker: CUSTOM\n    instructions: "do child work"\n    capabilities: [READ]\n`,
+          "utf-8",
+        );
+
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async (_stepId, _check, callIndex) => ({
+            complete: callIndex >= 2,
+            failed: false,
+          }),
+        );
+
+        const wf = makeWorkflow({
+          cycle: {
+            workflow: "./child.yaml",
+            // bubble_subworkflow_events: false (default)
+            completion_check: {
+              worker: "CUSTOM",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 5,
+          },
+        });
+
+        const ctx = new ContextManager(path.join(dir, "context"));
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          { definitionPath: path.join(dir, "parent.yaml") },
+        );
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+        expect(result.steps["cycle"]!.iteration).toBe(2);
+
+        // Child step calls are mapped to the parent step id.
+        expect(runner.stepCalls.map((c) => c.stepId)).toEqual(["cycle", "cycle"]);
+        expect(runner.checkCalls.map((c) => c.stepId)).toEqual(["cycle", "cycle"]);
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // max_iterations exhausted + abort
   // -----------------------------------------------------------------------
   describe("max_iterations exhausted + abort", () => {

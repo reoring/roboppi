@@ -2,6 +2,7 @@ import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import {
   extractWorkerText,
+  interpolateCompletionCheckId,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
 } from "./completion-decision.js";
@@ -152,13 +153,17 @@ export class CoreIpcStepRunner implements StepRunner {
   ): Promise<CheckResult> {
     const checkStartedAt = Date.now();
     const checkId = generateId();
-    const checkEnv = check.decision_file
-      ? {
-        ...(env ?? {}),
-        [COMPLETION_CHECK_ID_ENV]: checkId,
-      }
-      : env;
-    const task = resolveTaskLike(check, workspaceDir, checkEnv);
+
+    const checkEnv = {
+      ...(env ?? {}),
+      [COMPLETION_CHECK_ID_ENV]: checkId,
+    };
+
+    const baseTask = resolveTaskLike(check, workspaceDir, checkEnv);
+    const task = {
+      ...baseTask,
+      instructions: interpolateCompletionCheckId(baseTask.instructions, checkId),
+    };
     const result = await this.runWorkerTask(stepId, task, abortSignal);
 
     if (check.worker === "CUSTOM") {
@@ -194,6 +199,7 @@ export class CoreIpcStepRunner implements StepRunner {
       workspaceDir,
       checkStartedAt,
       checkId,
+      extractWorkerText(result),
     );
 
     if (this.verbose) {
@@ -223,7 +229,7 @@ export class CoreIpcStepRunner implements StepRunner {
       complete: false,
       failed: false,
       errorClass: ErrorClass.RETRYABLE_TRANSIENT,
-      reason: decision.reason ?? "could not parse completion decision (expected decision_file JSON)",
+      reason: decision.reason ?? "could not parse completion decision",
       decisionSource: decision.source,
       decisionCheckIdMatch: decision.checkIdMatch,
       ...(decision.reasons ? { reasons: decision.reasons } : {}),

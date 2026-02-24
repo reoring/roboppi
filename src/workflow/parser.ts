@@ -274,17 +274,25 @@ function validateSubworkflowStep(stepId: string, obj: Record<string, unknown>): 
     "instructions",
     "capabilities",
     "outputs",
-    "completion_check",
-    "max_iterations",
-    "on_iterations_exhausted",
     "max_steps",
     "max_command_time",
-    "convergence",
   ] as const;
   for (const field of workerOnlyFields) {
     if (obj[field] !== undefined) {
       throw new WorkflowParseError(
         `steps.${stepId}.${field} cannot be used with workflow (subworkflow steps)`
+      );
+    }
+  }
+
+  // Subworkflow-only fields
+  validateOptionalBoolean(obj["bubble_subworkflow_events"], `steps.${stepId}.bubble_subworkflow_events`);
+  validateOptionalString(obj["subworkflow_event_prefix"], `steps.${stepId}.subworkflow_event_prefix`);
+  if (obj["exports_mode"] !== undefined) {
+    const v = obj["exports_mode"];
+    if (typeof v !== "string" || !["merge", "replace"].includes(v)) {
+      throw new WorkflowParseError(
+        `steps.${stepId}.exports_mode must be "merge" or "replace"`,
       );
     }
   }
@@ -323,29 +331,32 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
         `steps.${stepId}: "workflow" and "worker" are mutually exclusive`
       );
     }
-    validateSubworkflowStep(stepId, rawObj);
+    // Create a shallow copy so we can normalize/replace validated fields.
+    const obj: Record<string, unknown> = { ...rawObj };
+
+    validateSubworkflowStep(stepId, obj);
 
     // Validate common fields shared with worker steps
-    validateOptionalString(rawObj["description"], `steps.${stepId}.description`);
-    validateOptionalString(rawObj["timeout"], `steps.${stepId}.timeout`);
-    validateOptionalNumber(rawObj["max_retries"], `steps.${stepId}.max_retries`, { min: 0 });
+    validateOptionalString(obj["description"], `steps.${stepId}.description`);
+    validateOptionalString(obj["timeout"], `steps.${stepId}.timeout`);
+    validateOptionalNumber(obj["max_retries"], `steps.${stepId}.max_retries`, { min: 0 });
 
-    if (rawObj["depends_on"] !== undefined) {
-      if (!Array.isArray(rawObj["depends_on"])) {
+    if (obj["depends_on"] !== undefined) {
+      if (!Array.isArray(obj["depends_on"])) {
         throw new WorkflowParseError(`steps.${stepId}.depends_on must be an array`);
       }
-      for (const dep of rawObj["depends_on"]) {
+      for (const dep of obj["depends_on"]) {
         if (typeof dep !== "string") {
           throw new WorkflowParseError(`steps.${stepId}.depends_on must contain only strings`);
         }
       }
     }
 
-    if (rawObj["inputs"] !== undefined) {
-      if (!Array.isArray(rawObj["inputs"])) {
+    if (obj["inputs"] !== undefined) {
+      if (!Array.isArray(obj["inputs"])) {
         throw new WorkflowParseError(`steps.${stepId}.inputs must be an array`);
       }
-      for (const input of rawObj["inputs"]) {
+      for (const input of obj["inputs"]) {
         if (typeof input !== "object" || input === null) {
           throw new WorkflowParseError(`steps.${stepId}.inputs entries must be objects`);
         }
@@ -358,15 +369,44 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
       }
     }
 
-    if (rawObj["on_failure"] !== undefined) {
-      if (!["retry", "continue", "abort"].includes(rawObj["on_failure"] as string)) {
+    if (obj["on_failure"] !== undefined) {
+      if (!["retry", "continue", "abort"].includes(obj["on_failure"] as string)) {
         throw new WorkflowParseError(
           `steps.${stepId}.on_failure must be "retry", "continue", or "abort"`
         );
       }
     }
 
-    return rawObj as unknown as StepDefinition;
+    // Validate completion_check + max_iterations constraint
+    if (obj["completion_check"] !== undefined) {
+      obj["completion_check"] = validateCompletionCheck(obj["completion_check"], stepId, agents);
+      const maxIter = obj["max_iterations"];
+      if (maxIter !== undefined) {
+        if (typeof maxIter !== "number" || maxIter < 2) {
+          throw new WorkflowParseError(
+            `steps.${stepId}.max_iterations must be >= 2 when completion_check is defined (got ${String(maxIter)})`
+          );
+        }
+      } else {
+        throw new WorkflowParseError(
+          `steps.${stepId}.max_iterations is required when completion_check is defined and must be >= 2`
+        );
+      }
+    }
+
+    // Validate convergence config (opt-in)
+    validateConvergence(obj["convergence"], stepId);
+
+    // Validate on_iterations_exhausted enum
+    if (obj["on_iterations_exhausted"] !== undefined) {
+      if (!["abort", "continue"].includes(obj["on_iterations_exhausted"] as string)) {
+        throw new WorkflowParseError(
+          `steps.${stepId}.on_iterations_exhausted must be "abort" or "continue"`
+        );
+      }
+    }
+
+    return obj as unknown as StepDefinition;
   }
 
   // Worker step: existing logic
@@ -384,6 +424,22 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   if (obj["exports"] !== undefined) {
     throw new WorkflowParseError(
       `steps.${stepId}.exports cannot be used on worker steps (exports is for subworkflow steps only)`,
+    );
+  }
+
+  if (obj["bubble_subworkflow_events"] !== undefined) {
+    throw new WorkflowParseError(
+      `steps.${stepId}.bubble_subworkflow_events cannot be used on worker steps (subworkflow steps only)`,
+    );
+  }
+  if (obj["subworkflow_event_prefix"] !== undefined) {
+    throw new WorkflowParseError(
+      `steps.${stepId}.subworkflow_event_prefix cannot be used on worker steps (subworkflow steps only)`,
+    );
+  }
+  if (obj["exports_mode"] !== undefined) {
+    throw new WorkflowParseError(
+      `steps.${stepId}.exports_mode cannot be used on worker steps (subworkflow steps only)`,
     );
   }
 

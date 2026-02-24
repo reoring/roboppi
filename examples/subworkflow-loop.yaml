@@ -1,0 +1,41 @@
+# Subworkflow loop example
+#
+# Runs a child workflow via a `workflow:` step and uses a CUSTOM completion_check
+# to repeat the subworkflow until it becomes COMPLETE.
+#
+# Run:
+#   ./roboppi workflow examples/subworkflow-loop.yaml --verbose
+#   # (dev)
+#   bun run src/workflow/run.ts examples/subworkflow-loop.yaml --verbose
+
+name: subworkflow-loop
+version: "1"
+timeout: "5m"
+
+steps:
+  cycle:
+    workflow: "./subworkflow-loop-child.yaml"
+
+    # Show child steps in the UI as `cycle/<child-step-id>`.
+    bubble_subworkflow_events: true
+
+    # Copy exported artifacts deterministically across iterations.
+    exports_mode: replace
+    exports:
+      - from: produce
+        artifact: report
+        as: child-report
+
+    # exit 0 = COMPLETE, exit 1 = INCOMPLETE
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        set -euo pipefail
+        if [ -f report.txt ] && grep -q '^OK$' report.txt; then
+          exit 0
+        fi
+        exit 1
+      capabilities: [READ, RUN_COMMANDS]
+
+    max_iterations: 5
+    on_iterations_exhausted: abort

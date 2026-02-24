@@ -41,6 +41,20 @@ export interface StepDefinition {
   workflow?: string;
   /** Export child artifacts into parent context (subworkflow steps only). */
   exports?: ExportRef[];
+
+  /**
+   * Whether to forward (bubble) child subworkflow events into the parent sink.
+   *
+   * - true: child steps appear as distinct steps in the TUI (prefixed step ids)
+   * - false: child worker events are aggregated into the parent step id (blackbox)
+   */
+  bubble_subworkflow_events?: boolean;
+
+  /** Optional prefix used when bubbling subworkflow events (default: "auto"). */
+  subworkflow_event_prefix?: string;
+
+  /** Controls how subworkflow exports are copied into the parent context. */
+  exports_mode?: "merge" | "replace";
   depends_on?: string[];
   inputs?: InputRef[];
   outputs?: OutputDef[];

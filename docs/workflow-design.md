@@ -44,6 +44,13 @@ steps:
 
 ### 2.2 StepDefinition
 
+Each step is one of:
+
+- **Worker step**: runs a worker (`worker` + `instructions` + `capabilities`)
+- **Subworkflow step**: runs a child workflow (`workflow`) and optionally exports child artifacts (`exports`)
+
+`worker` and `workflow` are mutually exclusive.
+
 ```yaml
 steps:
   <step_id>:
@@ -58,6 +65,16 @@ steps:
     instructions: string                    # instructions passed to the worker
     capabilities:                           # allowed operations
       - enum                                # READ | EDIT | RUN_TESTS | RUN_COMMANDS
+
+    # ---- Subworkflow config (alternative to Worker config) ----
+    workflow?: string                        # child workflow YAML path (mutually exclusive with worker)
+    exports?:                                # optional: copy child artifacts into this step's context
+      - from: string                         # child step id
+        artifact: string                     # child artifact name
+        as?: string                          # name in parent context (default: artifact)
+    exports_mode?: enum                      # merge | replace
+    bubble_subworkflow_events?: boolean      # default: false (blackbox) / true (show child steps)
+    subworkflow_event_prefix?: string        # default: auto (= parent step id)
 
     # ---- DAG dependencies ----
     depends_on?: string[]                   # list of prerequisite step ids
@@ -111,9 +128,12 @@ completion_check:
 ```
 
 The checker worker evaluates artifact state and returns **complete / incomplete**.
-If incomplete, the main worker is rerun (up to `max_iterations`).
+If incomplete, the step is rerun (up to `max_iterations`).
 
-Because the checker and main worker run in the same `workspace`, file state naturally carries over across iterations.
+- For worker steps: rerun the worker
+- For subworkflow steps: rerun the child workflow
+
+Because the checker and the step execution run in the same `workspace`, file state naturally carries over across iterations.
 
 ### 2.6 Full type definition (TypeScript representation)
 
@@ -128,13 +148,17 @@ interface WorkflowDefinition {
   steps: Record<string, StepDefinition>;
 }
 
-interface StepDefinition {
+type StepDefinition = WorkerStepDefinition | SubworkflowStepDefinition;
+
+interface WorkerStepDefinition {
   description?: string;
   agent?: string;                          // optional agent profile id
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  model?: string;
   workspace?: string;
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+
   depends_on?: string[];
   inputs?: InputRef[];
   outputs?: OutputDef[];
@@ -142,11 +166,53 @@ interface StepDefinition {
   max_retries?: number;
   max_steps?: number;
   max_command_time?: DurationString;
+
   completion_check?: CompletionCheckDef;
   convergence?: ConvergenceDef;         // optional; opt-in convergence control for loops
   max_iterations?: number;              // default: 1 (no loop)
   on_iterations_exhausted?: "abort" | "continue";
   on_failure?: "retry" | "continue" | "abort";
+
+  // Disallow subworkflow-only fields
+  workflow?: never;
+  exports?: never;
+}
+
+interface ExportRef {
+  from: string;
+  artifact: string;
+  as?: string;
+}
+
+interface SubworkflowStepDefinition {
+  description?: string;
+  workflow: string;
+  exports?: ExportRef[];
+  exports_mode?: "merge" | "replace";
+  bubble_subworkflow_events?: boolean;
+  subworkflow_event_prefix?: string;
+
+  depends_on?: string[];
+  inputs?: InputRef[];
+  timeout?: DurationString;
+  max_retries?: number;
+
+  completion_check?: CompletionCheckDef;
+  convergence?: ConvergenceDef;
+  max_iterations?: number;
+  on_iterations_exhausted?: "abort" | "continue";
+  on_failure?: "retry" | "continue" | "abort";
+
+  // Disallow worker-only fields
+  agent?: never;
+  worker?: never;
+  model?: never;
+  workspace?: never;
+  instructions?: never;
+  capabilities?: never;
+  outputs?: never;
+  max_steps?: never;
+  max_command_time?: never;
 }
 
 interface ConvergenceStageDef {
