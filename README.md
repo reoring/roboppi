@@ -114,6 +114,11 @@ Workflows are executed by the workflow runner.
 By default, workflows run in supervised mode (Supervisor -> Core -> Worker).
 Use `--direct` to spawn workers directly from the runner (no Core IPC).
 
+TUI notes:
+
+- TUI is enabled by default when stderr is a TTY (disable with `--no-tui`).
+- In supervised + TUI mode, `2: Logs` shows real-time worker output (stdout/stderr/progress/patch). To disable stdout/stderr forwarding, set `ROBOPPI_TUI_STREAM_STDIO=0`.
+
 ```bash
 ROBOPPI_VERBOSE=1 bun run src/workflow/run.ts examples/agent-pr-loop.yaml \
   --workspace /tmp/my-work --verbose

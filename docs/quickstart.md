@@ -212,6 +212,11 @@ bun run --cwd "$AGENTCORE_ROOT" src/workflow/run.ts \
   --supervised --verbose
 ```
 
+TUI notes:
+
+- TUI is enabled by default when stderr is a TTY (disable with `--no-tui`).
+- In supervised + TUI mode, `2: Logs` shows real-time worker output (stdout/stderr/progress/patch). To disable stdout/stderr forwarding, set `ROBOPPI_TUI_STREAM_STDIO=0`.
+
 ### Arguments
 
 | Argument | Description |

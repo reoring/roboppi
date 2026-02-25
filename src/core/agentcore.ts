@@ -5,7 +5,7 @@ import type {
   EscalationEvent,
   UUID,
 } from "../types/index.js";
-import { JobType, ErrorClass, PermitRejectionReason, now, isWorkerTaskJobPayload } from "../types/index.js";
+import { JobType, ErrorClass, PermitRejectionReason, now, isWorkerTaskJobPayload, OutputMode } from "../types/index.js";
 import { WorkerStatus } from "../types/index.js";
 import type { IpcProtocol } from "../ipc/protocol.js";
 import { CancellationManager } from "./cancellation.js";
@@ -23,6 +23,7 @@ import type { EscalationManagerConfig } from "./escalation-manager.js";
 import { ObservabilityProvider } from "./observability.js";
 import type { LogLevel } from "./observability.js";
 import { WorkerDelegationGateway } from "../worker/worker-gateway.js";
+import { JobEventThrottle } from "./job-event-throttle.js";
 
 export interface AgentCoreConfig {
   budget?: ExecutionBudgetConfig;
@@ -281,9 +282,44 @@ export class AgentCore {
       abortSignal: permit.abortController.signal,
     };
 
+    // Choose delegation strategy based on output mode
+    const delegationPromise = workerTask.outputMode === OutputMode.STREAM
+      ? (() => {
+          let seq = 0;
+          // Default: forward stdio in TUI streaming mode.
+          // Opt-out with ROBOPPI_TUI_STREAM_STDIO=0/false/no/off.
+          const rawForwardStdio = process.env["ROBOPPI_TUI_STREAM_STDIO"];
+          const forwardStdio = rawForwardStdio === undefined
+            ? true
+            : (() => {
+                const v = rawForwardStdio.trim().toLowerCase();
+                // Treat empty (e.g. `export ROBOPPI_TUI_STREAM_STDIO`) as enabled.
+                if (v === "") return true;
+                if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+                if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+                // Unknown value: default to enabled.
+                return true;
+              })();
+          const throttle = new JobEventThrottle((ev) => {
+            this.protocol.sendJobEvent(job.jobId, Date.now(), seq++, ev).catch((err: unknown) => {
+              logger.error("Failed to send job_event", { jobId: job.jobId, error: err });
+            });
+          }, { forwardStdio });
+          return this.workerGateway
+            .delegateTaskWithEvents(
+              workerTask as Parameters<WorkerDelegationGateway["delegateTaskWithEvents"]>[0],
+              permit,
+              { onEvent: (ev) => throttle.emit(ev) },
+            )
+            .finally(() => throttle.dispose());
+        })()
+      : this.workerGateway.delegateTask(
+          workerTask as Parameters<WorkerDelegationGateway["delegateTask"]>[0],
+          permit,
+        );
+
     // Run asynchronously — don't block the IPC handler
-    this.workerGateway
-      .delegateTask(workerTask as Parameters<WorkerDelegationGateway["delegateTask"]>[0], permit)
+    delegationPromise
       .then((result) => {
         this.permitGate.completePermit(permit.permitId);
         this.cancellation.removeController(permit.permitId);

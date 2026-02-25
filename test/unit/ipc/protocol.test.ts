@@ -153,6 +153,61 @@ describe("IpcProtocol", () => {
       await protocol.stop();
     });
 
+    test("routes job_event messages to registered handler", async () => {
+      const { protocol, feedInput, closeInput } = createTestProtocol();
+      let received: unknown = null;
+
+      protocol.onMessage("job_event", (msg) => {
+        received = msg;
+      });
+      protocol.start();
+
+      await feedInput(JSON.stringify({
+        type: "job_event",
+        jobId: "job-42",
+        ts: 1700000000,
+        seq: 3,
+        event: { type: "stdout", data: "hello world" },
+      }) + "\n");
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(received).not.toBeNull();
+      const msg = received as { jobId: string; ts: number; seq: number; event: { type: string; data: string } };
+      expect(msg.jobId).toBe("job-42");
+      expect(msg.ts).toBe(1700000000);
+      expect(msg.seq).toBe(3);
+      expect(msg.event.type).toBe("stdout");
+      expect(msg.event.data).toBe("hello world");
+
+      await closeInput();
+      await protocol.stop();
+    });
+
+    test("job_event without requestId is not consumed by correlation", async () => {
+      const { protocol, feedInput, closeInput } = createTestProtocol();
+      let received = false;
+
+      protocol.onMessage("job_event", () => {
+        received = true;
+      });
+      protocol.start();
+
+      // job_event intentionally omits requestId — must be routed to handler
+      await feedInput(JSON.stringify({
+        type: "job_event",
+        jobId: "job-99",
+        ts: 123,
+        seq: 0,
+        event: { type: "progress", message: "ok" },
+      }) + "\n");
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(received).toBe(true);
+
+      await closeInput();
+      await protocol.stop();
+    });
+
     test("ignores messages with no registered handler", async () => {
       const { protocol, feedInput, closeInput } = createTestProtocol();
       protocol.start();
@@ -340,6 +395,26 @@ describe("IpcProtocol", () => {
         requestId: "req-1",
         code: "INVALID_JOB",
         message: "Missing payload",
+      });
+
+      await closeInput();
+      await protocol.stop();
+    });
+
+    test("sendJobEvent writes correct message (no requestId)", async () => {
+      const { protocol, readOutput, closeInput } = createTestProtocol();
+
+      const outputPromise = readOutput();
+      const event = { type: "progress" as const, message: "step 1/3" };
+      await protocol.sendJobEvent("job-99", 1700000000, 0, event);
+      const output = await outputPromise;
+
+      expect(output).toEqual({
+        type: "job_event",
+        jobId: "job-99",
+        ts: 1700000000,
+        seq: 0,
+        event: { type: "progress", message: "step 1/3" },
       });
 
       await closeInput();
@@ -842,6 +917,15 @@ describe("IpcProtocol", () => {
         expect(validateMessage({ type: "error", code: "ERR", message: "test" })).toBeNull();
         expect(validateMessage({ type: "error", message: "test" })).toBe("missing required field 'code'");
         expect(validateMessage({ type: "error", code: "ERR" })).toBe("missing required field 'message'");
+      });
+
+      test("job_event requires jobId, ts, seq, and event", () => {
+        expect(validateMessage({ type: "job_event", jobId: "j1", ts: 123, seq: 0, event: { type: "stdout", data: "hi" } })).toBeNull();
+        expect(validateMessage({ type: "job_event", ts: 123, seq: 0, event: {} })).toBe("missing required field 'jobId'");
+        expect(validateMessage({ type: "job_event", jobId: "j1", seq: 0, event: {} })).toBe("missing required field 'ts'");
+        expect(validateMessage({ type: "job_event", jobId: "j1", ts: 123, event: {} })).toBe("missing required field 'seq'");
+        expect(validateMessage({ type: "job_event", jobId: "j1", ts: 123, seq: 0 })).toBe("missing required field 'event'");
+        expect(validateMessage({ type: "job_event", jobId: "j1", ts: 123, seq: 0, event: null })).toBe("missing required field 'event'");
       });
 
       test("unknown message types pass validation", () => {
