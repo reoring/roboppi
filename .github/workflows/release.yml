@@ -84,22 +84,27 @@ jobs:
             bun_target: bun-linux-x64
             platform: linux-x64
             exe: roboppi
-          - os: ubuntu-24.04-arm64
+            opentui_pkg: ""
+          - os: ubuntu-latest
             bun_target: bun-linux-arm64
             platform: linux-arm64
             exe: roboppi
+            opentui_pkg: "@opentui/core-linux-arm64"
           - os: macos-latest
             bun_target: bun-darwin-arm64
             platform: macos-arm64
             exe: roboppi
-          - os: macos-13
+            opentui_pkg: ""
+          - os: macos-latest
             bun_target: bun-darwin-x64
             platform: macos-x64
             exe: roboppi
+            opentui_pkg: "@opentui/core-darwin-x64"
           - os: windows-latest
             bun_target: bun-windows-x64
             platform: windows-x64
             exe: roboppi.exe
+            opentui_pkg: ""
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -116,6 +121,59 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Install OpenTUI platform package (for cross builds)
+        if: ${{ matrix.opentui_pkg != '' }}
+        shell: bash
+        env:
+          PKG: ${{ matrix.opentui_pkg }}
+        run: |
+          set -euo pipefail
+
+          VER=$(node -e "const p=require('./package.json'); process.stdout.write(String((p.dependencies||{})['@opentui/core']||''));")
+          if [[ -z "$VER" ]]; then
+            echo "@opentui/core version not found in package.json" >&2
+            exit 1
+          fi
+
+          TARBALL=$(VER="$VER" python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          import urllib.parse
+
+          pkg = os.environ['PKG']
+          ver = os.environ['VER']
+
+          meta_url = 'https://registry.npmjs.org/' + urllib.parse.quote(pkg, safe='')
+          with urllib.request.urlopen(meta_url) as r:
+            meta = json.load(r)
+
+          try:
+            tarball = meta['versions'][ver]['dist']['tarball']
+          except Exception as e:
+            raise SystemExit(f'could not resolve tarball for {pkg}@{ver}: {e}')
+
+          print(tarball)
+          PY
+          )
+
+          echo "Installing $PKG@$VER from $TARBALL" >&2
+
+          rm -f /tmp/opentui-pkg.tgz
+          curl -fsSL "$TARBALL" -o /tmp/opentui-pkg.tgz
+
+          SCOPE=$(node -e "const s=process.env.PKG; process.stdout.write(s.startsWith('@')?s.split('/')[0].slice(1):'');")
+          NAME=$(node -e "const s=process.env.PKG; process.stdout.write(s.startsWith('@')?s.split('/')[1]:s);")
+
+          if [[ -z "$SCOPE" || -z "$NAME" ]]; then
+            echo "Could not parse scoped package name: $PKG" >&2
+            exit 1
+          fi
+
+          DEST="node_modules/@${SCOPE}/${NAME}"
+          mkdir -p "$DEST"
+          tar -xzf /tmp/opentui-pkg.tgz -C "$DEST" --strip-components=1 package
 
       - name: Build standalone binary
         shell: bash
