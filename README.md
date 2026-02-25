@@ -29,6 +29,13 @@ Note: the primary CLI/binary name is `roboppi`.
 - **Branch safety** — base-branch resolution, drift detection, and protected-branch guards
 - **Extensible worker adapters** — unified interface for OpenCode, Claude Code, Codex CLI, and custom agents
 
+## TUI Support
+
+Roboppi runs workflows in supervised mode and provides live visibility into execution—step status, timings, and streaming logs—so you can see progress as it happens.
+
+<img width="3152" height="1900" alt="image" src="https://github.com/user-attachments/assets/0cf8b236-c1af-4381-bd38-51b6a0ea5d53" />
+
+
 ## Install
 
 ### Prebuilt binary (recommended)
