@@ -1,6 +1,6 @@
 # Supervised TUI: Logs tab is empty (no real-time monitoring) / IPC streaming extension proposal
 
-Status: design proposal (not implemented)
+Status: implemented
 
 ## Problem
 
@@ -162,8 +162,8 @@ Candidate implementation location:
 
 Future option design:
 
-- add an explicit opt-in like `ROBOPPI_TUI_STREAM_STDIO=1`
-- default ON for progress/patch, default OFF for stdout/stderr (reduce secret leakage risk)
+- add an explicit opt-out like `ROBOPPI_TUI_STREAM_STDIO=0` (default ON in TUI)
+- keep progress/patch always ON; allow stdout/stderr to be disabled when needed
 
 ## Backpressure / limits / security
 
@@ -189,10 +189,10 @@ Recommended minimum controls:
 
 - send only the latest value every N ms (e.g. 100ms)
 
-4) stdout/stderr default OFF (recommended)
+4) stdout/stderr default ON (opt-out available)
 
-- default for supervised TUI: `progress` + `patch` only
-- `stdout/stderr` require explicit opt-in (env var or CLI)
+- in supervised TUI, forward `stdout/stderr/progress/patch`
+- set `ROBOPPI_TUI_STREAM_STDIO=0` to disable stdout/stderr (progress/patch only)
 
 Rationale:
 

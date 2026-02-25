@@ -15,6 +15,7 @@ import { IpcTimeoutError } from "../ipc/errors.js";
 import type {
   Job,
   JobCompletedMessage,
+  JobEventMessage,
   PermitGrantedMessage,
   PermitRejectedMessage,
   WorkerResult,
@@ -57,6 +58,9 @@ export interface CoreIpcStepRunnerOptions {
 
   /** Optional event sink for TUI instrumentation. */
   sink?: ExecEventSink;
+
+  /** When true, use OutputMode.STREAM so workers emit incremental events over IPC. */
+  tuiEnabled?: boolean;
 }
 
 export class CoreIpcStepRunner implements StepRunner {
@@ -65,14 +69,17 @@ export class CoreIpcStepRunner implements StepRunner {
   private readonly verbose: boolean;
   private readonly ownsCoreProcess: boolean;
   private readonly sink: ExecEventSink;
+  private readonly tuiEnabled: boolean;
 
   private ipc: IpcProtocol | null = null;
   private readonly waiters = new Map<UUID, { resolve: (m: JobCompletedMessage) => void }>();
+  private readonly jobStepMap = new Map<UUID, string>();
 
   constructor(options: CoreIpcStepRunnerOptions = {}) {
     this.verbose = options.verbose ?? false;
     this.coreEntryPoint = options.coreEntryPoint ?? "src/index.ts";
     this.sink = options.sink ?? new NoopExecEventSink();
+    this.tuiEnabled = options.tuiEnabled ?? false;
 
     const captureCoreStderr = options.captureCoreStderr ?? false;
 
@@ -100,6 +107,9 @@ export class CoreIpcStepRunner implements StepRunner {
       this.ipc.onMessage("job_completed", (msg) => {
         this.onJobCompleted(msg as JobCompletedMessage);
       });
+      this.ipc.onMessage("job_event", (msg) => {
+        this.onJobEvent(msg as JobEventMessage);
+      });
     }
   }
 
@@ -109,6 +119,7 @@ export class CoreIpcStepRunner implements StepRunner {
     }
     this.ipc = null;
     this.waiters.clear();
+    this.jobStepMap.clear();
   }
 
   async runStep(
@@ -243,6 +254,9 @@ export class CoreIpcStepRunner implements StepRunner {
     ipc.onMessage("job_completed", (msg) => {
       this.onJobCompleted(msg as JobCompletedMessage);
     });
+    ipc.onMessage("job_event", (msg) => {
+      this.onJobEvent(msg as JobEventMessage);
+    });
     this.ipc = ipc;
     return ipc;
   }
@@ -264,6 +278,17 @@ export class CoreIpcStepRunner implements StepRunner {
     }
   }
 
+  private onJobEvent(msg: JobEventMessage): void {
+    const stepId = this.jobStepMap.get(msg.jobId);
+    if (!stepId) return; // unknown job, ignore
+    this.sink.emit({
+      type: "worker_event",
+      stepId,
+      ts: msg.ts,
+      event: msg.event,
+    });
+  }
+
   private waitForJobCompleted(jobId: UUID): Promise<JobCompletedMessage> {
     return new Promise<JobCompletedMessage>((resolve) => {
       this.waiters.set(jobId, { resolve });
@@ -282,6 +307,7 @@ export class CoreIpcStepRunner implements StepRunner {
     // We'll compute the real deadline after submit_job is acknowledged.
     const placeholderDeadlineAt = Date.now() + task.timeoutMs;
     const job = this.buildWorkerJob({ ...task, deadlineAt: placeholderDeadlineAt });
+    this.jobStepMap.set(job.jobId, stepId);
     const completionPromise = this.waitForJobCompleted(job.jobId);
 
     const cancelReason = `step:${stepId} aborted`;
@@ -404,9 +430,10 @@ export class CoreIpcStepRunner implements StepRunner {
         execScoped.signal.removeEventListener("abort", onExecAbort);
       }
       execScoped?.cleanup();
-      // Clean up waiter to prevent Map leak when we return without
-      // receiving a job_completed (e.g. abort, timeout, IPC error).
+      // Clean up waiter and jobStepMap to prevent Map leak when we return
+      // without receiving a job_completed (e.g. abort, timeout, IPC error).
       this.waiters.delete(job.jobId);
+      this.jobStepMap.delete(job.jobId);
     }
   }
 
@@ -421,7 +448,7 @@ export class CoreIpcStepRunner implements StepRunner {
       instructions: task.instructions,
       ...(task.model ? { model: task.model } : {}),
       capabilities: task.capabilities,
-      outputMode: OutputMode.BATCH,
+      outputMode: this.tuiEnabled ? OutputMode.STREAM : OutputMode.BATCH,
       budget: {
         deadlineAt: task.deadlineAt,
         ...(task.maxSteps !== undefined ? { maxSteps: task.maxSteps } : {}),

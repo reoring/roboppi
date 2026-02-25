@@ -3,6 +3,7 @@ import type { Job } from "./job.js";
 import type { Permit, PermitRejection } from "./permit.js";
 import type { EscalationEvent } from "./escalation.js";
 import type { WorkerResult } from "./worker-result.js";
+import type { WorkerEvent } from "../worker/worker-adapter.js";
 
 // --- Scheduler → Core ---
 
@@ -99,12 +100,26 @@ export interface ErrorMessage {
   message: string;
 }
 
+/**
+ * Asynchronous streaming event for a running job (Core → Supervisor).
+ * Intentionally omits requestId — this is a fire-and-forget notification,
+ * not a request/response pair.
+ */
+export interface JobEventMessage {
+  type: "job_event";
+  jobId: UUID;
+  ts: number;
+  seq: number;
+  event: WorkerEvent;
+}
+
 export type OutboundMessage =
   | AckMessage
   | PermitGrantedMessage
   | PermitRejectedMessage
   | JobCompletedMessage
   | JobCancelledMessage
+  | JobEventMessage
   | EscalationMessage
   | HeartbeatMessage
   | HeartbeatAckMessage

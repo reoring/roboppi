@@ -382,6 +382,7 @@ Options:
           ipcRequestTimeoutMs: resolveIpcRequestTimeoutMs(true, ipcRequestTimeout),
           captureCoreStderr: useTui && sink instanceof TuiStateStore,
           sink,
+          tuiEnabled: useTui,
         })
       : new MultiWorkerStepRunner(verbose, sink);
 

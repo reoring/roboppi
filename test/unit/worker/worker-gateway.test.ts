@@ -311,4 +311,96 @@ describe("WorkerDelegationGateway", () => {
     // If clearTimeout wasn't called, this would leak — no assertion needed,
     // just verifying the test doesn't hang or throw
   });
+
+  describe("delegateTaskWithEvents", () => {
+    test("streams events to onEvent callback and returns result", async () => {
+      const gateway = new WorkerDelegationGateway();
+      const events: import("../../../src/worker/worker-adapter.js").WorkerEvent[] = [
+        { type: "progress", message: "step 1" },
+        { type: "stdout", data: "output line" },
+        { type: "patch", filePath: "src/foo.ts", diff: "+new line" },
+      ];
+      const adapter = new MockWorkerAdapter(WorkerKind.CODEX_CLI, { delayMs: 5, events });
+      gateway.registerAdapter(WorkerKind.CODEX_CLI, adapter);
+
+      const received: import("../../../src/worker/worker-adapter.js").WorkerEvent[] = [];
+      const task = makeTask();
+      const permit = makePermit();
+
+      const result = await gateway.delegateTaskWithEvents(task, permit, {
+        onEvent: (ev) => received.push(ev),
+      });
+
+      expect(result.status).toBe(WorkerStatus.SUCCEEDED);
+      expect(received).toHaveLength(3);
+      expect(received[0]!.type).toBe("progress");
+      expect(received[1]!.type).toBe("stdout");
+      expect(received[2]!.type).toBe("patch");
+    });
+
+    test("completes even when no events are streamed", async () => {
+      const gateway = new WorkerDelegationGateway();
+      const adapter = new MockWorkerAdapter(WorkerKind.CODEX_CLI, { delayMs: 5, events: [] });
+      gateway.registerAdapter(WorkerKind.CODEX_CLI, adapter);
+
+      const received: unknown[] = [];
+      const result = await gateway.delegateTaskWithEvents(
+        makeTask(),
+        makePermit(),
+        { onEvent: (ev) => received.push(ev) },
+      );
+
+      expect(result.status).toBe(WorkerStatus.SUCCEEDED);
+      expect(received).toHaveLength(0);
+    });
+
+    test("permit abort cancels worker during streaming", async () => {
+      const gateway = new WorkerDelegationGateway();
+      const events: import("../../../src/worker/worker-adapter.js").WorkerEvent[] = [
+        { type: "progress", message: "step 1" },
+        { type: "progress", message: "step 2" },
+        { type: "progress", message: "step 3" },
+      ];
+      const adapter = new MockWorkerAdapter(WorkerKind.CODEX_CLI, {
+        delayMs: 50,
+        events,
+        shouldTimeout: true,
+        shouldRespectCancel: true,
+      });
+      gateway.registerAdapter(WorkerKind.CODEX_CLI, adapter);
+
+      const received: unknown[] = [];
+      const permit = makePermit();
+      const resultPromise = gateway.delegateTaskWithEvents(
+        makeTask(),
+        permit,
+        { onEvent: (ev) => received.push(ev) },
+      );
+
+      // Cancel after a short delay
+      await new Promise((r) => setTimeout(r, 30));
+      permit.abortController.abort("test cancel");
+
+      const result = await resultPromise;
+      expect(result.status).toBe(WorkerStatus.CANCELLED);
+    });
+
+    test("releases workspace lock after delegateTaskWithEvents", async () => {
+      const wsLock = new WorkspaceLock();
+      const gateway = new WorkerDelegationGateway(wsLock);
+      const events: import("../../../src/worker/worker-adapter.js").WorkerEvent[] = [
+        { type: "stdout", data: "line" },
+      ];
+      const adapter = new MockWorkerAdapter(WorkerKind.CODEX_CLI, { delayMs: 5, events });
+      gateway.registerAdapter(WorkerKind.CODEX_CLI, adapter);
+
+      const task = makeTask({ workspaceRef: "/workspace/stream-test" });
+      const result = await gateway.delegateTaskWithEvents(task, makePermit(), {
+        onEvent: () => {},
+      });
+
+      expect(result.status).toBe(WorkerStatus.SUCCEEDED);
+      expect(wsLock.isLocked("/workspace/stream-test")).toBe(false);
+    });
+  });
 });

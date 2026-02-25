@@ -1,6 +1,6 @@
 # Supervised TUI: Logs タブが空 (リアルタイム監視不可) / IPC ストリーミング拡張案
 
-ステータス: 設計案（未実装）
+ステータス: 実装済み
 
 ## 問題
 
@@ -168,8 +168,8 @@ this.sink.emit({
 
 オプション設計（将来）:
 
-- `ROBOPPI_TUI_STREAM_STDIO=1` のように stdout/stderr 転送を明示 opt-in にする
-- progress/patch はデフォルトで ON、stdout/stderr は OFF（秘密情報混入リスクを下げる）
+- `ROBOPPI_TUI_STREAM_STDIO=0` のように stdout/stderr 転送を明示 opt-out にする（TUI では既定で ON）
+- progress/patch は常に ON（stdout/stderr は必要に応じて OFF にできる）
 
 ## バックプレッシャ / 制限 / セキュリティ
 
@@ -195,10 +195,10 @@ stdout/stderr の無制限ストリーミングは以下を引き起こす:
 
 - N ms ごとに最新のみ送る（例: 100ms）
 
-4) stdout/stderr の既定OFF（推奨）
+4) stdout/stderr の既定ON（ただし opt-out 可能）
 
-- supervised TUI の既定は `progress` + `patch` のみ
-- `stdout/stderr` は明示 opt-in（環境変数 or CLI）
+- supervised TUI では `stdout/stderr/progress/patch` を転送する
+- `ROBOPPI_TUI_STREAM_STDIO=0` で stdout/stderr を OFF（progress/patch のみ）
 
 理由:
 

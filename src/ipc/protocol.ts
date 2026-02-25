@@ -9,6 +9,7 @@ import type {
   PermitRejectedMessage,
   JobCompletedMessage,
   JobCancelledMessage,
+  JobEventMessage,
   EscalationMessage,
   HeartbeatMessage,
   HeartbeatAckMessage,
@@ -23,6 +24,7 @@ import type {
   Permit,
   Job,
 } from "../types/index.js";
+import type { WorkerEvent } from "../worker/worker-adapter.js";
 import { JsonLinesTransport } from "./json-lines-transport.js";
 import { IpcDisconnectError, IpcStoppedError, IpcTimeoutError } from "./errors.js";
 
@@ -228,6 +230,12 @@ export class IpcProtocol {
     await this.transport.write(msg);
   }
 
+  /** Send a job event (async streaming, no requestId — fire-and-forget). */
+  async sendJobEvent(jobId: UUID, ts: number, seq: number, event: WorkerEvent): Promise<void> {
+    const msg: JobEventMessage = { type: "job_event", jobId, ts, seq, event };
+    await this.transport.write(msg);
+  }
+
   /** Wait for a response message with a matching requestId (for request/response correlation). */
   waitForResponse(requestId: string, timeoutMs?: number): Promise<unknown> {
     const timeout = timeoutMs ?? this.requestTimeoutMs;
@@ -341,6 +349,13 @@ export function validateMessage(msg: Record<string, unknown>): string | null {
     case "job_completed":
       if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
       if (typeof msg["outcome"] !== "string") return "missing required field 'outcome'";
+      return null;
+
+    case "job_event":
+      if (typeof msg["jobId"] !== "string") return "missing required field 'jobId'";
+      if (typeof msg["ts"] !== "number") return "missing required field 'ts'";
+      if (typeof msg["seq"] !== "number") return "missing required field 'seq'";
+      if (typeof msg["event"] !== "object" || msg["event"] === null) return "missing required field 'event'";
       return null;
 
     case "job_cancelled":
