@@ -211,6 +211,11 @@ bun run --cwd "$AGENTCORE_ROOT" src/workflow/run.ts \
   --supervised --verbose
 ```
 
+TUI について:
+
+- stderr が TTY のとき TUI は自動で有効です（無効化: `--no-tui`）。
+- supervised + TUI では `2: Logs` に worker のリアルタイム出力（stdout/stderr/progress/patch）が表示されます。stdout/stderr を転送したくない場合は `ROBOPPI_TUI_STREAM_STDIO=0` を設定してください。
+
 ### 引数の説明
 
 | 引数 | 説明 |

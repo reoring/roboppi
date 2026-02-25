@@ -579,12 +579,21 @@ Use `--direct` to spawn worker processes directly from the runner (no Core IPC).
 | `--supervised` | - | supervised mode: delegate steps via Core IPC (Supervisor -> Core -> Worker) | on |
 | `--direct` | - | direct mode: spawn worker processes directly (no Core IPC) | off |
 | `--no-supervised` | - | alias for `--direct` | - |
+| `--tui` | - | force-enable the interactive workflow TUI (renders to stderr) | auto |
+| `--no-tui` | - | disable the TUI (plain output) | auto |
 | `--keepalive` | - | emit periodic output to avoid no-output watchdogs | auto (on when non-TTY) |
 | `--no-keepalive` | - | disable keepalive output | - |
 | `--keepalive-interval <d>` | - | keepalive interval (DurationString) | `10s` |
 | `--ipc-request-timeout <d>` | - | IPC request timeout for supervised mode (DurationString) | `2m` |
 | `--agents <path>` | - | agent catalog YAML (repeatable); merged with `ROBOPPI_AGENTS_FILE` | auto-load `agents.yaml` / `agents.yml` next to workflow |
 | `--help` | `-h` | show help | - |
+
+### TUI logs streaming (supervised)
+
+When running in supervised mode with TUI enabled, the `2: Logs` tab shows real-time worker output (stdout/stderr/progress/patch).
+
+- Default: stdout/stderr are forwarded.
+- Opt-out: set `ROBOPPI_TUI_STREAM_STDIO=0` to forward progress/patch only.
 
 ### Examples
 

@@ -401,6 +401,11 @@ roboppi workflow my-workflow.yaml --verbose
 # (dev) bun run src/workflow/run.ts my-workflow.yaml --verbose
 ```
 
+TUI notes:
+
+- TUI is enabled by default when stderr is a TTY (disable with `--no-tui`).
+- In supervised + TUI mode, `2: Logs` shows real-time worker output (stdout/stderr/progress/patch). To disable stdout/stderr forwarding, set `ROBOPPI_TUI_STREAM_STDIO=0`.
+
 For each step, Roboppi Core requests a Permit, delegates to the worker, and collects results. If a step fails, it aborts depending on policy.
 
 ### Reuse worker settings with agent catalogs

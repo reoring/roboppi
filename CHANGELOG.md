@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows SemVer where practical.
 
+## [Unreleased]
+
+### Added
+
+- Supervised workflow TUI now streams worker events to `2: Logs` in real time (stdout/stderr/progress/patch) via IPC `job_event` messages.
+
+### Changed
+
+- In supervised + TUI mode, stdout/stderr forwarding to `2: Logs` is enabled by default; set `ROBOPPI_TUI_STREAM_STDIO=0` to forward progress/patch only.
+
 ## [0.1.5] - 2026-02-25
 
 ### Added
