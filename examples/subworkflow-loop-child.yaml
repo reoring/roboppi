@@ -1,0 +1,29 @@
+# Child workflow used by examples/subworkflow-loop.yaml
+
+name: subworkflow-loop-child
+version: "1"
+timeout: "1m"
+
+steps:
+  produce:
+    worker: CUSTOM
+    instructions: |
+      set -euo pipefail
+      mkdir -p .roboppi-loop
+
+      n=0
+      if [ -f .roboppi-loop/counter ]; then
+        n="$(cat .roboppi-loop/counter)"
+      fi
+      n=$((n+1))
+      echo "$n" > .roboppi-loop/counter
+
+      echo "run=$n" > report.txt
+      if [ "$n" -ge 3 ]; then
+        echo "OK" >> report.txt
+      fi
+      cat report.txt
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    outputs:
+      - name: report
+        path: report.txt

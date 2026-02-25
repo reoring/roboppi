@@ -1,6 +1,6 @@
 import { ErrorClass } from "../types/common.js";
 import type { Artifact, Observation, WorkerCost } from "../types/worker-result.js";
-import { mkdir, readFile, writeFile, cp, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, cp, stat, rm } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type {
@@ -20,7 +20,7 @@ import { resolveTaskLike } from "./resolve-worker-task.js";
 import type { CompletionDecisionSource } from "./completion-decision.js";
 import type { BranchRuntimeContext } from "./branch-context.js";
 import { toBranchWorkflowMeta } from "./branch-context.js";
-import type { ExecEventSink } from "../tui/exec-event.js";
+import type { ExecEventSink, ExecEvent } from "../tui/exec-event.js";
 import { NoopExecEventSink } from "../tui/noop-sink.js";
 import { loadChildWorkflow } from "./workflow-loader.js";
 import { assertNoRecursion, resolveMaxNestingDepth, SubworkflowRecursionError, SubworkflowDepthError } from "./recursion-guard.js";
@@ -95,6 +95,105 @@ const TERMINAL_STATUSES = new Set<StepStatus>([
 
 function isTerminal(status: StepStatus): boolean {
   return TERMINAL_STATUSES.has(status);
+}
+
+class MappedStepRunner implements StepRunner {
+  constructor(
+    private readonly inner: StepRunner,
+    private readonly mapStepId: (stepId: string) => string,
+  ) {}
+
+  runStep(
+    stepId: string,
+    step: StepDefinition,
+    workspaceDir: string,
+    abortSignal: AbortSignal,
+    env?: Record<string, string>,
+  ): Promise<StepRunResult> {
+    return this.inner.runStep(
+      this.mapStepId(stepId),
+      step,
+      workspaceDir,
+      abortSignal,
+      env,
+    );
+  }
+
+  runCheck(
+    stepId: string,
+    check: CompletionCheckDef,
+    workspaceDir: string,
+    abortSignal: AbortSignal,
+    env?: Record<string, string>,
+  ): Promise<CheckResult> {
+    return this.inner.runCheck(
+      this.mapStepId(stepId),
+      check,
+      workspaceDir,
+      abortSignal,
+      env,
+    );
+  }
+}
+
+class SubworkflowBubbleSink implements ExecEventSink {
+  constructor(
+    private readonly parentSink: ExecEventSink,
+    private readonly mapStepId: (stepId: string) => string,
+    private readonly label: string,
+  ) {}
+
+  emit(event: ExecEvent): void {
+    // Never forward child workflow lifecycle events to avoid clobbering the parent UI.
+    if (event.type === "workflow_started" || event.type === "workflow_finished") return;
+
+    if (event.type === "step_state") {
+      this.parentSink.emit({
+        ...event,
+        stepId: this.mapStepId(event.stepId),
+      });
+      return;
+    }
+    if (event.type === "step_phase") {
+      this.parentSink.emit({
+        ...event,
+        stepId: this.mapStepId(event.stepId),
+      });
+      return;
+    }
+
+    // worker_* events are usually emitted by the StepRunner sink, not the executor.
+    // Forward defensively with mapped step ids.
+    if (event.type === "worker_event") {
+      this.parentSink.emit({
+        ...event,
+        stepId: this.mapStepId(event.stepId),
+      });
+      return;
+    }
+    if (event.type === "worker_result") {
+      this.parentSink.emit({
+        ...event,
+        stepId: this.mapStepId(event.stepId),
+      });
+      return;
+    }
+
+    if (event.type === "warning") {
+      this.parentSink.emit({
+        ...event,
+        message: `[subworkflow:${this.label}] ${event.message}`,
+      });
+      return;
+    }
+    if (event.type === "core_log") {
+      this.parentSink.emit({
+        ...event,
+        line: `[subworkflow:${this.label}] ${event.line}`,
+      });
+      return;
+    }
+  }
 }
 
 /** Returns true if the dependency allows downstream steps to proceed. */
@@ -824,6 +923,26 @@ export class WorkflowExecutor {
     let retryCount = 0;
     const maxRetries = stepDef.max_retries ?? 0;
 
+    // Event bubbling / step id mapping for child steps.
+    // - bubble=false: aggregate all child worker events into the parent step id
+    // - bubble=true: expose child steps as distinct steps (prefixed ids)
+    const bubble = stepDef.bubble_subworkflow_events === true;
+    const prefixRaw = (stepDef.subworkflow_event_prefix ?? "").trim();
+    const bubblePrefix = bubble && prefixRaw && prefixRaw !== "auto" ? prefixRaw : stepId;
+    const mapChildStepId = bubble
+      ? (childStepId: string) => `${bubblePrefix}/${childStepId}`
+      : (_childStepId: string) => stepId;
+
+    // Always wrap the StepRunner to avoid "ghost" child steps when child events
+    // are not bubbled. (The underlying runner emits worker events to the parent sink.)
+    const childStepRunner: StepRunner = new MappedStepRunner(this.stepRunner, mapChildStepId);
+    const childSink: ExecEventSink = bubble
+      ? new SubworkflowBubbleSink(this.sink, mapChildStepId, stepId)
+      : new NoopExecEventSink();
+
+    const exportsMode: "merge" | "replace" =
+      stepDef.exports_mode ?? (stepDef.completion_check ? "replace" : "merge");
+
     let lastChildDefinitionPath: string | undefined;
     let lastEffectiveTimeoutMs: number | undefined;
     let lastSubworkflowMeta: {
@@ -922,18 +1041,27 @@ export class WorkflowExecutor {
           const childCtx = new ContextManager(childContextDir);
           const childCallStack = [...this.workflowCallStack, childLoaded.definitionPath];
 
+          const childEnv: Record<string, string> = {
+            ...(this.env ?? {}),
+            ROBOPPI_SUBWORKFLOW_PARENT_STEP: stepId,
+            ROBOPPI_SUBWORKFLOW_ITERATION: String(state.iteration),
+            ROBOPPI_SUBWORKFLOW_RUN_ID: runId,
+            ...(bubble ? { ROBOPPI_SUBWORKFLOW_EVENT_PREFIX: bubblePrefix } : {}),
+            ROBOPPI_CONVERGENCE_STAGE: String(state.convergenceStage ?? 1),
+          };
+
           const childExecutor = new WorkflowExecutor(
             childDef,
             childCtx,
-            this.stepRunner,
+            childStepRunner,
             this.workspaceDir,
-            this.env,
+            childEnv,
             this.workflowAbortController!.signal,
             this.branchContext
               ? { ...this.branchContext, branchTransitionStep: undefined }
               : undefined,
             this.supervised,
-            new NoopExecEventSink(), // MVP: no child events in parent sink
+            childSink,
             {
               definitionPath: childLoaded.definitionPath,
               workflowCallStack: childCallStack,
@@ -982,10 +1110,10 @@ export class WorkflowExecutor {
 
         // 6. Copy exports (best-effort, even on failure)
         if (stepDef.exports && stepDef.exports.length > 0) {
-          await this.copyExports(stepId, stepDef.exports, childContextDir);
+          await this.copyExports(stepId, stepDef.exports, childContextDir, exportsMode);
         }
 
-        // 8. Map child status to parent step status
+        // Map child status to parent step status
         if (childResult.status === WorkflowStatus.SUCCEEDED) {
           try {
             await this.maybeUpdateExpectedBranchAfterTransition(stepId);
@@ -996,17 +1124,176 @@ export class WorkflowExecutor {
             return;
           }
 
-          state.status = StepStatus.SUCCEEDED;
-          state.completedAt = Date.now();
+          // No completion_check: child success completes the parent step.
+          if (!stepDef.completion_check) {
+            state.status = StepStatus.SUCCEEDED;
+            state.completedAt = Date.now();
+            this.sink.emit({
+              type: "step_state",
+              stepId,
+              status: state.status,
+              iteration: state.iteration,
+              maxIterations: state.maxIterations,
+              completedAt: state.completedAt,
+            });
+            return;
+          }
+
+          // Completion check loop (subworkflow step)
+          state.status = StepStatus.CHECKING;
           this.sink.emit({
             type: "step_state",
             stepId,
             status: state.status,
             iteration: state.iteration,
             maxIterations: state.maxIterations,
-            completedAt: state.completedAt,
           });
-          return;
+          this.sink.emit({
+            type: "step_phase",
+            stepId,
+            phase: "checking",
+            at: Date.now(),
+          });
+          this.notify();
+
+          const checkAbort = this.createStepAbort();
+          let checkResult: CheckResult;
+          try {
+            const effectiveCheck = this.resolveCheckTimeout(stepDef, stepDef.completion_check);
+            checkResult = await this.stepRunner.runCheck(
+              stepId,
+              effectiveCheck,
+              this.workspaceDir,
+              checkAbort,
+              this.env,
+            );
+          } catch (err) {
+            if (this.workflowAbortController!.signal.aborted) return;
+            const msg = err instanceof Error ? err.message : String(err);
+            this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
+            this.handleFailurePolicy(stepId, ErrorClass.FATAL);
+            return;
+          }
+
+          if (this.workflowAbortController!.signal.aborted) return;
+
+          if (checkResult.failed) {
+            const reason = checkResult.reason ? `: ${checkResult.reason}` : "";
+            this.markStepFailed(stepId, `Completion check failed${reason}`);
+            const onFailure = stepDef.on_failure ?? "abort";
+            if (onFailure === "abort") {
+              this.skipDependents(stepId);
+            }
+            return;
+          }
+
+          let effectiveCheckResult: CheckResult = checkResult;
+          if (this.isConvergenceEnabled(stepDef)) {
+            try {
+              effectiveCheckResult = await this.applyConvergenceGuards(
+                stepId,
+                stepDef,
+                state,
+                effectiveCheckResult,
+              );
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.markStepFailed(stepId, `Convergence guard failed: ${msg}`);
+              const onFailure = stepDef.on_failure ?? "abort";
+              if (onFailure === "abort" || onFailure === "retry") {
+                this.skipDependents(stepId);
+              }
+              return;
+            }
+          }
+
+          if (effectiveCheckResult.complete) {
+            state.status = StepStatus.SUCCEEDED;
+            state.completedAt = Date.now();
+            this.sink.emit({
+              type: "step_state",
+              stepId,
+              status: state.status,
+              iteration: state.iteration,
+              maxIterations: state.maxIterations,
+              completedAt: state.completedAt,
+            });
+            return;
+          }
+
+          // Not complete — detect completion_check infrastructure failures early.
+          if (this.isCompletionInfraFailure(effectiveCheckResult)) {
+            const count = (state.completionInfraFailureCount ?? 0) + 1;
+            state.completionInfraFailureCount = count;
+
+            const detail = this.formatCompletionInfraFailure(effectiveCheckResult);
+            state.lastCompletionInfraFailure = detail;
+
+            if (count >= COMPLETION_INFRA_FAILURE_LIMIT) {
+              this.markStepFailed(
+                stepId,
+                `Completion check infrastructure failure repeated (${count}x): ${detail}`,
+              );
+              const onFailure = stepDef.on_failure ?? "abort";
+              if (onFailure === "abort" || onFailure === "retry") {
+                this.skipDependents(stepId);
+              }
+              return;
+            }
+          } else {
+            state.completionInfraFailureCount = 0;
+            state.lastCompletionInfraFailure = undefined;
+          }
+
+          // Convergence Controller: detect stalled identical failure sets and escalate.
+          if (this.isConvergenceEnabled(stepDef)) {
+            const shouldFail = await this.updateConvergenceState(
+              stepId,
+              stepDef,
+              state,
+              effectiveCheckResult,
+            );
+            if (shouldFail) {
+              const onFailure = stepDef.on_failure ?? "abort";
+              if (onFailure === "abort" || onFailure === "retry") {
+                this.skipDependents(stepId);
+              }
+              return;
+            }
+          }
+
+          // Not complete — check iteration limit
+          if (state.iteration >= state.maxIterations) {
+            const onExhausted = stepDef.on_iterations_exhausted ?? "abort";
+            if (onExhausted === "abort") {
+              this.markStepFailed(stepId, "Max iterations exhausted");
+              this.skipDependents(stepId);
+            } else {
+              state.status = StepStatus.INCOMPLETE;
+              state.completedAt = Date.now();
+              this.sink.emit({
+                type: "step_state",
+                stepId,
+                status: state.status,
+                iteration: state.iteration,
+                maxIterations: state.maxIterations,
+                completedAt: state.completedAt,
+              });
+            }
+            return;
+          }
+
+          // Loop: increment iteration and re-run
+          state.iteration++;
+          this.sink.emit({
+            type: "step_state",
+            stepId,
+            status: state.status,
+            iteration: state.iteration,
+            maxIterations: state.maxIterations,
+          });
+          retryCount = 0;
+          continue;
         }
 
         if (childResult.status === WorkflowStatus.CANCELLED) {
@@ -1110,6 +1397,7 @@ export class WorkflowExecutor {
     parentStepId: string,
     exports: ExportRef[],
     childContextDir: string,
+    mode: "merge" | "replace",
   ): Promise<void> {
     const childBase = path.resolve(childContextDir);
     for (const exp of exports) {
@@ -1129,6 +1417,9 @@ export class WorkflowExecutor {
         const srcStat = await stat(srcDir).catch(() => null);
         if (!srcStat) continue; // best-effort: skip missing artifacts
         await mkdir(path.dirname(destDir), { recursive: true });
+        if (mode === "replace") {
+          await rm(destDir, { recursive: true, force: true }).catch(() => {});
+        }
         await cp(srcDir, destDir, { recursive: true });
       } catch {
         // best-effort: don't fail the step if export copy fails

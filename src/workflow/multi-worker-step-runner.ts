@@ -12,6 +12,7 @@ import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { ShellStepRunner } from "./shell-step-runner.js";
 import {
   extractWorkerText,
+  interpolateCompletionCheckId,
   resolveCompletionDecision,
   COMPLETION_CHECK_ID_ENV,
 } from "./completion-decision.js";
@@ -94,13 +95,18 @@ export class MultiWorkerStepRunner implements StepRunner {
 
     const checkStartedAt = Date.now();
     const checkId = generateId();
-    const checkEnv = check.decision_file
-      ? {
-        ...(env ?? {}),
-        [COMPLETION_CHECK_ID_ENV]: checkId,
-      }
-      : env;
-    const resolved = resolveTaskLike(check, workspaceDir, checkEnv);
+
+    const checkEnv = {
+      ...(env ?? {}),
+      [COMPLETION_CHECK_ID_ENV]: checkId,
+    };
+
+    const baseResolved = resolveTaskLike(check, workspaceDir, checkEnv);
+    const resolved = {
+      ...baseResolved,
+      instructions: interpolateCompletionCheckId(baseResolved.instructions, checkId),
+    };
+
     const task = buildWorkerTask(resolved, abortSignal);
     const result = await this.runWorkerTask(stepId, adapter, task);
 
@@ -119,6 +125,7 @@ export class MultiWorkerStepRunner implements StepRunner {
       workspaceDir,
       checkStartedAt,
       checkId,
+      extractWorkerText(result),
     );
     if (this.verbose) {
       process.stderr.write(
@@ -146,7 +153,7 @@ export class MultiWorkerStepRunner implements StepRunner {
       complete: false,
       failed: false,
       errorClass: ErrorClass.RETRYABLE_TRANSIENT,
-      reason: decision.reason ?? "could not parse completion decision (expected COMPLETE/INCOMPLETE marker)",
+      reason: decision.reason ?? "could not parse completion decision",
       decisionSource: decision.source,
       decisionCheckIdMatch: decision.checkIdMatch,
       ...(decision.reasons ? { reasons: decision.reasons } : {}),

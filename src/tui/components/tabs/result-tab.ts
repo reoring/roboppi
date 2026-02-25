@@ -1,5 +1,5 @@
 import type { StepUiState } from "../../state-store.js";
-import { ansiTruncate } from "../../ansi-utils.js";
+import { ansiWrap, sanitizeForTui } from "../../ansi-utils.js";
 
 export function renderResultTab(
   step: StepUiState | undefined,
@@ -44,7 +44,13 @@ export function renderResultTab(
     lines.push(`\x1b[1mArtifacts:\x1b[0m (${r.artifacts.length})`);
     for (const a of r.artifacts.slice(0, 20)) {
       const ref = a.ref ?? "(no ref)";
-      lines.push(`  ${a.type}: ${ref}`);
+      const label = `  ${a.type}: `;
+      const safeRef = sanitizeForTui(ref);
+      const available = Math.max(0, width - label.length);
+      const chunks = ansiWrap(safeRef, available);
+      for (let i = 0; i < chunks.length; i++) {
+        lines.push((i === 0 ? label : " ".repeat(label.length)) + (chunks[i] ?? ""));
+      }
     }
   }
 
@@ -53,8 +59,9 @@ export function renderResultTab(
     lines.push(`\x1b[1mObservations:\x1b[0m`);
     for (const obs of r.observations.slice(0, 10)) {
       if (obs.summary) {
-        const trunc = ansiTruncate(obs.summary, Math.max(0, width - 2), { ellipsis: "..." });
-        lines.push(`  ${trunc}`);
+        const safe = sanitizeForTui(obs.summary);
+        const chunks = ansiWrap(safe, Math.max(0, width - 2));
+        for (const chunk of chunks) lines.push(`  ${chunk}`);
       }
     }
   }

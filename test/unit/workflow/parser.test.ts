@@ -594,5 +594,116 @@ steps:
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
       expect(() => parseWorkflow(yaml)).toThrow(/exports cannot be used on worker steps/);
     });
+
+    it("accepts completion_check on subworkflow steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    workflow: "./child.yaml"
+    bubble_subworkflow_events: true
+    subworkflow_event_prefix: "auto"
+    exports_mode: replace
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        set -e
+        exit 0
+      capabilities: [READ, RUN_COMMANDS]
+    max_iterations: 3
+    on_iterations_exhausted: continue
+    convergence:
+      enabled: true
+      allowed_paths: ["src/**"]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.steps["s"]?.workflow).toBe("./child.yaml");
+      expect(wf.steps["s"]?.max_iterations).toBe(3);
+      expect(wf.steps["s"]?.bubble_subworkflow_events).toBe(true);
+      expect(wf.steps["s"]?.exports_mode).toBe("replace");
+      expect(wf.steps["s"]?.completion_check?.worker).toBe("CUSTOM");
+    });
+
+    it("rejects missing decision_file on subworkflow completion_check (non-CUSTOM)", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    workflow: "./child.yaml"
+    completion_check:
+      worker: OPENCODE
+      instructions: "check"
+      capabilities: [READ]
+    max_iterations: 2
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/decision_file/);
+    });
+
+    it("rejects bubble_subworkflow_events on worker steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+    bubble_subworkflow_events: true
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/bubble_subworkflow_events cannot be used on worker steps/);
+    });
+
+    it("rejects subworkflow_event_prefix on worker steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+    subworkflow_event_prefix: "x"
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/subworkflow_event_prefix cannot be used on worker steps/);
+    });
+
+    it("rejects exports_mode on worker steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+    exports_mode: replace
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/exports_mode cannot be used on worker steps/);
+    });
+
+    it("rejects invalid exports_mode on subworkflow steps", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+steps:
+  s:
+    workflow: "./child.yaml"
+    exports_mode: nope
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/exports_mode must be "merge" or "replace"/);
+    });
   });
 });

@@ -4,7 +4,8 @@ import type { TuiStateStore } from "./state-store.js";
 import { renderHeader } from "./components/header.js";
 import { renderStepList } from "./components/step-list.js";
 import { renderDetailPane } from "./components/detail-pane.js";
-import { ansiFit, sanitizeForTui } from "./ansi-utils.js";
+import { ansiFit, sanitizeForTui, stripAnsi } from "./ansi-utils.js";
+import { copyToClipboard } from "./clipboard.js";
 
 export class WorkflowTui {
   private renderer: TuiRenderer;
@@ -12,6 +13,7 @@ export class WorkflowTui {
   private readonly abortController = new AbortController();
   private finished = false;
   private dismissResolve: (() => void) | null = null;
+  private toast: { message: string; until: number } | null = null;
 
   constructor(
     private readonly store: TuiStateStore,
@@ -32,6 +34,10 @@ export class WorkflowTui {
 
     // Render loop at ~30fps, only when dirty
     this.renderTimer = setInterval(() => {
+      if (this.toast && Date.now() > this.toast.until) {
+        this.toast = null;
+        this.store.dirty = true;
+      }
       if (this.store.dirty) {
         this.store.dirty = false;
         this.renderFrame();
@@ -69,6 +75,18 @@ export class WorkflowTui {
 
   private handleKey(key: string): void {
     const state = this.store.state;
+
+    // y - copy visible tab contents
+    if (key === "y") {
+      const text = this.getVisibleDetailText();
+      const res = copyToClipboard(text);
+      this.toast = {
+        message: res.ok ? `Copied (${state.selectedTab})` : "Copy failed",
+        until: Date.now() + 2000,
+      };
+      this.store.dirty = true;
+      return;
+    }
 
     // Ctrl+C
     if (key === "\x03") {
@@ -174,7 +192,7 @@ export class WorkflowTui {
 
     try {
       const { columns = 80, rows = 24 } = process.stderr;
-      const header = renderHeader(state, columns);
+      const header = this.renderHeaderWithToast(state, columns);
       const contentHeight = Math.max(0, rows - header.split("\n").length);
 
       const sepWidth = 3; // space + separator + space
@@ -205,6 +223,43 @@ export class WorkflowTui {
     } catch {
       // Ignore render errors
     }
+  }
+
+  private renderHeaderWithToast(state: typeof this.store.state, columns: number): string {
+    const base = renderHeader(state, columns);
+    if (!this.toast) return base;
+
+    const lines = base.split("\n");
+    if (lines.length < 2) return base;
+
+    const toast = `\x1b[32m${sanitizeForTui(this.toast.message)}\x1b[0m`;
+    const l2 = (lines[1] ?? "").replace(/[ \t]+$/g, "");
+    lines[1] = ansiFit(`${l2}  ${toast}`, Math.max(0, columns));
+    return lines.join("\n");
+  }
+
+  private getVisibleDetailText(): string {
+    const state = this.store.state;
+    const { columns = 80, rows = 24 } = process.stderr;
+    const header = this.renderHeaderWithToast(state, columns);
+    const contentHeight = Math.max(0, rows - header.split("\n").length);
+
+    const sepWidth = 3;
+    const minRight = 16;
+    let leftWidth = Math.min(Math.max(24, Math.floor(columns * 0.3)), 40);
+    leftWidth = Math.min(leftWidth, Math.max(10, columns - sepWidth - minRight));
+    const rightWidth = Math.max(10, columns - leftWidth - sepWidth);
+
+    const detail = renderDetailPane(state, rightWidth, contentHeight);
+    const plain = stripAnsi(detail);
+
+    const normalized = plain
+      .split("\n")
+      .map((l) => l.replace(/[ \t]+$/g, ""))
+      .join("\n")
+      .replace(/\n+$/g, "\n");
+
+    return normalized;
   }
 }
 
