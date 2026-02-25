@@ -84,7 +84,7 @@ jobs:
             bun_target: bun-linux-x64
             platform: linux-x64
             exe: roboppi
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm64
             bun_target: bun-linux-arm64
             platform: linux-arm64
             exe: roboppi
@@ -92,7 +92,7 @@ jobs:
             bun_target: bun-darwin-arm64
             platform: macos-arm64
             exe: roboppi
-          - os: macos-latest
+          - os: macos-13
             bun_target: bun-darwin-x64
             platform: macos-x64
             exe: roboppi
