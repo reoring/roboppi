@@ -4,7 +4,7 @@
 
 関連:
 
-- docs/issues/completion-check-decision-stability.ja.md
+- docs/issues/0003-completion-check-decision-stability.ja.md
 - issues/completion-check-check-id-templating.ja.md
 
 ## 問題

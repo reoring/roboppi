@@ -4,7 +4,7 @@
 
 関連:
 
-- docs/issues/completion-check-decision-stability.ja.md
+- docs/issues/0003-completion-check-decision-stability.ja.md
 
 ## 問題
 

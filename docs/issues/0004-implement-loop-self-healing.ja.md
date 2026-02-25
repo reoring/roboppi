@@ -169,6 +169,6 @@ workflow に `allowed_paths` を定義し、範囲外変更を検出したら `I
 
 ## 関連
 
-- 先行 issue: `docs/issues/completion-check-decision-stability.ja.md`
+- 先行 issue: `docs/issues/0003-completion-check-decision-stability.ja.md`
   - 判定パース安定化を扱う
   - 本 issue はその次段として、収束制御と自律修復性を扱う
