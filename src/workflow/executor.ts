@@ -11,6 +11,7 @@ import type {
   StepState,
   ConvergenceDef,
   ExportRef,
+  StallPolicy,
 } from "./types.js";
 import { WorkflowStatus, StepStatus, isSubworkflowStep } from "./types.js";
 import { validateDag } from "./dag-validator.js";
@@ -25,6 +26,12 @@ import { NoopExecEventSink } from "../tui/noop-sink.js";
 import { loadChildWorkflow } from "./workflow-loader.js";
 import { assertNoRecursion, resolveMaxNestingDepth, SubworkflowRecursionError, SubworkflowDepthError } from "./recursion-guard.js";
 import type { AgentCatalog } from "./agent-catalog.js";
+import {
+  SentinelController,
+  SENTINEL_ABORT_REASON,
+  type SentinelGuard,
+} from "./sentinel/sentinel-controller.js";
+import { createTelemetrySink } from "./sentinel/telemetry-sink.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -269,6 +276,11 @@ export class WorkflowExecutor {
   private notifyResolve: (() => void) | null = null;
   private pendingNotification = false;
 
+  // Sentinel controller (when enabled)
+  private sentinelController: SentinelController | null = null;
+  private effectiveSink: ExecEventSink | null = null;
+  private telemetrySink: import("./sentinel/telemetry-sink.js").TelemetrySink | null = null;
+
   // Subworkflow options
   private readonly definitionPath?: string;
   private readonly workflowCallStack: string[];
@@ -320,7 +332,39 @@ export class WorkflowExecutor {
       startedAt,
       this.buildWorkflowMetaExtras(),
     );
-    this.sink.emit({
+
+    // 2b. Initialize Sentinel controller if enabled (before workflow_started
+    //     so that TelemetrySink captures the event in state.json).
+    const sentinelConfig = this.definition.sentinel;
+    if (sentinelConfig?.enabled) {
+      // Wrap the sink with telemetry recording.  TelemetrySink forwards to
+      // the original sink, so events still reach the TUI.
+      this.telemetrySink = createTelemetrySink(
+        this.sink,
+        this.contextManager.contextDir,
+        sentinelConfig,
+      );
+      const telemetrySink = this.telemetrySink;
+
+      // Composite sink: telemetry + sentinel activity tracking.
+      this.effectiveSink = {
+        emit: (event: ExecEvent) => {
+          telemetrySink.emit(event);
+          this.sentinelController?.onEvent(event);
+        },
+      };
+
+      this.sentinelController = new SentinelController(
+        sentinelConfig,
+        this.contextManager.contextDir,
+        this.effectiveSink,
+        workflowId,
+        this.definition.name,
+        this.workspaceDir,
+      );
+    }
+
+    this.emitSink.emit({
       type: "workflow_started",
       workflowId,
       name: this.definition.name,
@@ -383,15 +427,18 @@ export class WorkflowExecutor {
       }
     } finally {
       clearTimeout(timeoutId);
+      this.sentinelController?.stopAll();
       if (this.abortSignal) {
         this.abortSignal.removeEventListener("abort", onExternalAbort);
       }
       completedAt = Date.now();
-      this.sink.emit({
+      this.emitSink.emit({
         type: "workflow_finished",
         status: workflowStatus,
         completedAt,
       });
+      // Flush debounced telemetry state.json so the final snapshot is written.
+      await this.telemetrySink?.flush();
       await this.contextManager.writeWorkflowMeta({
         id: workflowId,
         name: this.definition.name,
@@ -500,7 +547,7 @@ export class WorkflowExecutor {
 
       if (deps.length === 0) {
         state.status = StepStatus.READY;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -530,7 +577,7 @@ export class WorkflowExecutor {
 
       if (shouldSkip) {
         state.status = StepStatus.SKIPPED;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -540,7 +587,7 @@ export class WorkflowExecutor {
         this.notify();
       } else if (allResolved) {
         state.status = StepStatus.READY;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -571,7 +618,7 @@ export class WorkflowExecutor {
     state.startedAt = Date.now();
     this.runningCount++;
 
-    this.sink.emit({
+    this.emitSink.emit({
       type: "step_state",
       stepId,
       status: state.status,
@@ -579,7 +626,7 @@ export class WorkflowExecutor {
       maxIterations: state.maxIterations,
       startedAt: state.startedAt,
     });
-    this.sink.emit({
+    this.emitSink.emit({
       type: "step_phase",
       stepId,
       phase: "executing",
@@ -632,7 +679,7 @@ export class WorkflowExecutor {
 
         // Run the main worker
         state.status = StepStatus.RUNNING;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -642,7 +689,22 @@ export class WorkflowExecutor {
         });
         this.notify();
 
-        const stepAbort = this.createStepAbort();
+        const { controller: stepAbortController, cleanup: stepAbortCleanup } = this.createStepAbortController();
+        const stepAbort = stepAbortController.signal;
+
+        // Start sentinel guard if stall policy is configured
+        const stepStallPolicy = this.resolveStallPolicy(stepDef.stall);
+        let sentinelGuard: SentinelGuard | null = null;
+        if (stepStallPolicy && this.sentinelController) {
+          sentinelGuard = this.sentinelController.guardStep(
+            stepId,
+            state.iteration,
+            stepStallPolicy,
+            stepAbortController,
+            this.env,
+          );
+        }
+
         let result: StepRunResult;
         try {
           const effectiveStepDef = this.applyConvergenceToStepDef(stepId, stepDef, state);
@@ -655,10 +717,46 @@ export class WorkflowExecutor {
           );
           lastStepResult = result;
         } catch (_err) {
-          if (this.workflowAbortController!.signal.aborted) return;
-          this.markStepFailed(stepId, "Worker execution threw an error", ErrorClass.FATAL);
-          this.handleFailurePolicy(stepId, ErrorClass.FATAL);
-          return;
+          // Check if this was a sentinel abort
+          if (this.isSentinelAbort(stepAbortController)) {
+            const trigger = sentinelGuard?.getLastTrigger();
+            const actionCfg = this.resolveActionConfig(stepStallPolicy, trigger);
+            const errorClass = this.resolveSentinelErrorClass(actionCfg);
+            result = { status: "FAILED", errorClass };
+            lastStepResult = result;
+          } else {
+            sentinelGuard?.stop();
+            if (this.workflowAbortController!.signal.aborted) return;
+            this.markStepFailed(stepId, "Worker execution threw an error", ErrorClass.FATAL);
+            this.handleFailurePolicy(stepId, ErrorClass.FATAL);
+            return;
+          }
+        } finally {
+          sentinelGuard?.stop();
+          stepAbortCleanup();
+        }
+
+        // If Sentinel aborted the step, map the outcome deterministically even
+        // when the underlying runner returns a cancellation result (no throw).
+        if (this.isSentinelAbort(stepAbortController)) {
+          const trigger = sentinelGuard?.getLastTrigger();
+          const actionCfg = this.resolveActionConfig(stepStallPolicy, trigger);
+          const errorClass = this.resolveSentinelErrorClass(actionCfg);
+          const reason = trigger?.reason;
+          result = {
+            ...result,
+            status: "FAILED",
+            errorClass,
+            ...(reason
+              ? {
+                  observations: [
+                    ...(result.observations ?? []),
+                    { summary: `Sentinel: ${reason}` },
+                  ],
+                }
+              : {}),
+          };
+          lastStepResult = result;
         }
 
         // Check abort after async operation
@@ -715,7 +813,7 @@ export class WorkflowExecutor {
 
         const collectOutputsIfDefined = async () => {
           if (stepDef.outputs && stepDef.outputs.length > 0) {
-            this.sink.emit({
+            this.emitSink.emit({
               type: "step_phase",
               stepId,
               phase: "collecting_outputs",
@@ -730,7 +828,7 @@ export class WorkflowExecutor {
           await collectOutputsIfDefined();
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_state",
             stepId,
             status: state.status,
@@ -743,14 +841,14 @@ export class WorkflowExecutor {
 
         // Run completion check
         state.status = StepStatus.CHECKING;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
           iteration: state.iteration,
           maxIterations: state.maxIterations,
         });
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_phase",
           stepId,
           phase: "checking",
@@ -758,7 +856,24 @@ export class WorkflowExecutor {
         });
         this.notify();
 
-        const checkAbort = this.createStepAbort();
+        const { controller: checkAbortController, cleanup: checkAbortCleanup } = this.createStepAbortController();
+        const checkAbort = checkAbortController.signal;
+
+        // Start sentinel guard for the check phase
+        const checkStallPolicy = this.resolveStallPolicy(
+          stepDef.completion_check.stall ?? stepDef.stall,
+        );
+        let checkSentinelGuard: SentinelGuard | null = null;
+        if (checkStallPolicy && this.sentinelController) {
+          checkSentinelGuard = this.sentinelController.guardCheck(
+            stepId,
+            state.iteration,
+            checkStallPolicy,
+            checkAbortController,
+            this.env,
+          );
+        }
+
         let checkResult: CheckResult;
         try {
           const effectiveCheck = this.resolveCheckTimeout(stepDef, stepDef.completion_check);
@@ -770,13 +885,68 @@ export class WorkflowExecutor {
             this.env,
           );
         } catch (err) {
-          if (this.workflowAbortController!.signal.aborted) return;
-          const msg = err instanceof Error ? err.message : String(err);
+          // Check if this was a sentinel abort on the check
+          if (this.isSentinelAbort(checkAbortController)) {
+            const trigger = checkSentinelGuard?.getLastTrigger();
+            const actionCfg = this.resolveActionConfig(checkStallPolicy, trigger);
+            const asIncomplete = actionCfg?.as_incomplete === true;
+            if (asIncomplete) {
+              checkResult = {
+                complete: false,
+                failed: false,
+                reason: trigger?.reason ?? "Sentinel stall detected during completion check",
+                fingerprints: trigger?.fingerprints,
+                reasons: trigger?.reasons,
+              };
+            } else {
+              checkSentinelGuard?.stop();
+              const errorClass = this.resolveSentinelErrorClass(actionCfg);
+              await collectOutputsIfDefined();
+              this.markStepFailed(stepId, "Sentinel stall during completion check", errorClass);
+              this.handleFailurePolicy(stepId, errorClass);
+              return;
+            }
+          } else {
+            checkSentinelGuard?.stop();
+            if (this.workflowAbortController!.signal.aborted) return;
+            const msg = err instanceof Error ? err.message : String(err);
 
-          await collectOutputsIfDefined();
-          this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
-          this.handleFailurePolicy(stepId, ErrorClass.FATAL);
-          return;
+            await collectOutputsIfDefined();
+            this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
+            this.handleFailurePolicy(stepId, ErrorClass.FATAL);
+            return;
+          }
+        } finally {
+          checkSentinelGuard?.stop();
+          checkAbortCleanup();
+        }
+
+        // If Sentinel aborted the completion check, map it into INCOMPLETE (when
+        // configured) even when the runner returns `failed=true` on cancellation.
+        if (this.isSentinelAbort(checkAbortController)) {
+          const trigger = checkSentinelGuard?.getLastTrigger();
+          const postActionCfg = this.resolveActionConfig(checkStallPolicy, trigger);
+          const asIncomplete = postActionCfg?.as_incomplete === true;
+
+          if (asIncomplete) {
+            checkResult = {
+              complete: false,
+              failed: false,
+              reason: trigger?.reason ?? "Sentinel stall detected during completion check",
+              fingerprints: trigger?.fingerprints,
+              reasons: trigger?.reasons,
+            };
+          } else {
+            const errorClass = this.resolveSentinelErrorClass(postActionCfg);
+            await collectOutputsIfDefined();
+            this.markStepFailed(
+              stepId,
+              `Sentinel ${trigger?.kind ?? "stall"} during completion check`,
+              errorClass,
+            );
+            this.handleFailurePolicy(stepId, errorClass);
+            return;
+          }
         }
 
         if (this.workflowAbortController!.signal.aborted) return;
@@ -818,7 +988,7 @@ export class WorkflowExecutor {
         if (effectiveCheckResult.complete) {
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_state",
             stepId,
             status: state.status,
@@ -881,7 +1051,7 @@ export class WorkflowExecutor {
           } else {
             state.status = StepStatus.INCOMPLETE;
             state.completedAt = Date.now();
-            this.sink.emit({
+            this.emitSink.emit({
               type: "step_state",
               stepId,
               status: state.status,
@@ -895,7 +1065,7 @@ export class WorkflowExecutor {
 
         // Loop: increment iteration and re-run
         state.iteration++;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -975,7 +1145,7 @@ export class WorkflowExecutor {
         }
 
         state.status = StepStatus.RUNNING;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -1128,7 +1298,7 @@ export class WorkflowExecutor {
           if (!stepDef.completion_check) {
             state.status = StepStatus.SUCCEEDED;
             state.completedAt = Date.now();
-            this.sink.emit({
+            this.emitSink.emit({
               type: "step_state",
               stepId,
               status: state.status,
@@ -1141,14 +1311,14 @@ export class WorkflowExecutor {
 
           // Completion check loop (subworkflow step)
           state.status = StepStatus.CHECKING;
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_state",
             stepId,
             status: state.status,
             iteration: state.iteration,
             maxIterations: state.maxIterations,
           });
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_phase",
             stepId,
             phase: "checking",
@@ -1156,7 +1326,24 @@ export class WorkflowExecutor {
           });
           this.notify();
 
-          const checkAbort = this.createStepAbort();
+          const { controller: subCheckAbortController, cleanup: subCheckAbortCleanup } = this.createStepAbortController();
+          const checkAbort = subCheckAbortController.signal;
+
+          // Sentinel guard for subworkflow completion check
+          const subCheckStallPolicy = this.resolveStallPolicy(
+            stepDef.completion_check.stall ?? stepDef.stall,
+          );
+          let subCheckGuard: SentinelGuard | null = null;
+          if (subCheckStallPolicy && this.sentinelController) {
+            subCheckGuard = this.sentinelController.guardCheck(
+              stepId,
+              state.iteration,
+              subCheckStallPolicy,
+              subCheckAbortController,
+              this.env,
+            );
+          }
+
           let checkResult: CheckResult;
           try {
             const effectiveCheck = this.resolveCheckTimeout(stepDef, stepDef.completion_check);
@@ -1168,11 +1355,61 @@ export class WorkflowExecutor {
               this.env,
             );
           } catch (err) {
-            if (this.workflowAbortController!.signal.aborted) return;
-            const msg = err instanceof Error ? err.message : String(err);
-            this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
-            this.handleFailurePolicy(stepId, ErrorClass.FATAL);
-            return;
+            if (this.isSentinelAbort(subCheckAbortController)) {
+              const trigger = subCheckGuard?.getLastTrigger();
+              const actionCfg = this.resolveActionConfig(subCheckStallPolicy, trigger);
+              const asIncomplete = actionCfg?.as_incomplete === true;
+              if (asIncomplete) {
+                checkResult = {
+                  complete: false,
+                  failed: false,
+                  reason: trigger?.reason ?? "Sentinel stall detected during completion check",
+                  fingerprints: trigger?.fingerprints,
+                  reasons: trigger?.reasons,
+                };
+              } else {
+                subCheckGuard?.stop();
+                const errorClass = this.resolveSentinelErrorClass(actionCfg);
+                this.markStepFailed(stepId, "Sentinel stall during completion check", errorClass);
+                this.handleFailurePolicy(stepId, errorClass);
+                return;
+              }
+            } else {
+              subCheckGuard?.stop();
+              if (this.workflowAbortController!.signal.aborted) return;
+              const msg = err instanceof Error ? err.message : String(err);
+              this.markStepFailed(stepId, `Completion check threw an error: ${msg}`, ErrorClass.FATAL);
+              this.handleFailurePolicy(stepId, ErrorClass.FATAL);
+              return;
+            }
+          } finally {
+            subCheckGuard?.stop();
+            subCheckAbortCleanup();
+          }
+
+          if (this.isSentinelAbort(subCheckAbortController)) {
+            const trigger = subCheckGuard?.getLastTrigger();
+            const subPostActionCfg = this.resolveActionConfig(subCheckStallPolicy, trigger);
+            const asIncomplete = subPostActionCfg?.as_incomplete === true;
+
+            if (asIncomplete) {
+              checkResult = {
+                complete: false,
+                failed: false,
+                reason: trigger?.reason ?? "Sentinel stall detected during completion check",
+                fingerprints: trigger?.fingerprints,
+                reasons: trigger?.reasons,
+              };
+            } else {
+              const errorClass = this.resolveSentinelErrorClass(subPostActionCfg);
+              this.markStepFailed(
+                stepId,
+                `Sentinel ${trigger?.kind ?? "stall"} during completion check`,
+                errorClass,
+              );
+              this.handleFailurePolicy(stepId, errorClass);
+              return;
+            }
           }
 
           if (this.workflowAbortController!.signal.aborted) return;
@@ -1210,7 +1447,7 @@ export class WorkflowExecutor {
           if (effectiveCheckResult.complete) {
             state.status = StepStatus.SUCCEEDED;
             state.completedAt = Date.now();
-            this.sink.emit({
+            this.emitSink.emit({
               type: "step_state",
               stepId,
               status: state.status,
@@ -1271,7 +1508,7 @@ export class WorkflowExecutor {
             } else {
               state.status = StepStatus.INCOMPLETE;
               state.completedAt = Date.now();
-              this.sink.emit({
+              this.emitSink.emit({
                 type: "step_state",
                 stepId,
                 status: state.status,
@@ -1285,7 +1522,7 @@ export class WorkflowExecutor {
 
           // Loop: increment iteration and re-run
           state.iteration++;
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_state",
             stepId,
             status: state.status,
@@ -1299,7 +1536,7 @@ export class WorkflowExecutor {
         if (childResult.status === WorkflowStatus.CANCELLED) {
           state.status = StepStatus.CANCELLED;
           state.completedAt = Date.now();
-          this.sink.emit({
+          this.emitSink.emit({
             type: "step_state",
             stepId,
             status: state.status,
@@ -1875,7 +2112,7 @@ export class WorkflowExecutor {
     state.completedAt = Date.now();
     state.error = error;
     state.errorClass = errorClass;
-    this.sink.emit({
+    this.emitSink.emit({
       type: "step_state",
       stepId,
       status: state.status,
@@ -1913,7 +2150,7 @@ export class WorkflowExecutor {
       const deps = stepDef.depends_on ?? [];
       if (deps.includes(failedStepId)) {
         state.status = StepStatus.SKIPPED;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -1934,7 +2171,7 @@ export class WorkflowExecutor {
           const depState = this.steps[depId];
           if (depState && depState.status === StepStatus.SKIPPED) {
             state.status = StepStatus.SKIPPED;
-            this.sink.emit({
+            this.emitSink.emit({
               type: "step_state",
               stepId,
               status: state.status,
@@ -1958,7 +2195,7 @@ export class WorkflowExecutor {
       if (state.status === StepStatus.RUNNING || state.status === StepStatus.CHECKING) {
         state.status = StepStatus.CANCELLED;
         state.completedAt = Date.now();
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -1971,7 +2208,7 @@ export class WorkflowExecutor {
         state.status === StepStatus.READY
       ) {
         state.status = StepStatus.SKIPPED;
-        this.sink.emit({
+        this.emitSink.emit({
           type: "step_state",
           stepId,
           status: state.status,
@@ -2098,9 +2335,34 @@ export class WorkflowExecutor {
     context.expectedCurrentBranch = next;
   }
 
-  private createStepAbort(): AbortSignal {
-    // Link to workflow-level abort
-    return this.workflowAbortController!.signal;
+  /**
+   * Create a per-step AbortController linked to the workflow-level abort.
+   * Returns the controller so sentinel can abort individual steps.
+   */
+  private createStepAbortController(): { controller: AbortController; cleanup: () => void } {
+    const ac = new AbortController();
+    const onWorkflowAbort = () => ac.abort();
+    if (this.workflowAbortController!.signal.aborted) {
+      ac.abort();
+      return { controller: ac, cleanup: () => {} };
+    }
+    this.workflowAbortController!.signal.addEventListener(
+      "abort",
+      onWorkflowAbort,
+      { once: true },
+    );
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      this.workflowAbortController?.signal.removeEventListener(
+        "abort",
+        onWorkflowAbort,
+      );
+    };
+    // Also clean up when step is aborted (propagation already happened).
+    ac.signal.addEventListener("abort", cleanup, { once: true });
+    return { controller: ac, cleanup };
   }
 
   /**
@@ -2121,6 +2383,95 @@ export class WorkflowExecutor {
 
     // Express as a plain ms duration string so resolveTaskLike can parse it.
     return { ...check, timeout: `${checkTimeoutMs}ms` };
+  }
+
+  // -----------------------------------------------------------------------
+  // Sentinel helpers
+  // -----------------------------------------------------------------------
+
+  /** Get the effective event sink (telemetry-wrapped when sentinel is active). */
+  private get emitSink(): ExecEventSink {
+    return this.effectiveSink ?? this.sink;
+  }
+
+  /**
+   * Resolve effective stall policy: returns the policy if it's enabled,
+   * or null if stall guarding is not configured/enabled.
+   *
+   * When no step-level `stall:` is defined but `sentinel.defaults` provides
+   * detection config (e.g. `no_output_timeout`), a synthetic policy is created
+   * so that the step is auto-guarded.  Steps can opt out via `stall: { enabled: false }`.
+   */
+  private resolveStallPolicy(policy: StallPolicy | undefined): StallPolicy | null {
+    // If explicitly disabled, skip.
+    if (policy?.enabled === false) return null;
+
+    const defaults = this.definition.sentinel?.defaults;
+
+    // No step-level policy: try to synthesize from workflow-level defaults.
+    if (!policy) {
+      if (!defaults) return null;
+      const synthetic: StallPolicy = {};
+      if (defaults.no_output_timeout) synthetic.no_output_timeout = defaults.no_output_timeout;
+      if (defaults.activity_source) synthetic.activity_source = defaults.activity_source;
+      // Only guard if there's at least one effective detection mechanism.
+      // probe_only without a probe means no watcher would be created — skip.
+      if (!synthetic.no_output_timeout) return null;
+      if (synthetic.activity_source === "probe_only") return null;
+      return synthetic;
+    }
+
+    // Step-level policy exists: merge with workflow defaults.
+    // Check for detection mechanisms, including workflow-level defaults.
+    const effectiveNoOutputTimeout =
+      policy.no_output_timeout ?? defaults?.no_output_timeout;
+    if (!effectiveNoOutputTimeout && !policy.probe) return null;
+    // probe_only without a probe is a no-op guard — skip.
+    const prelimActivitySource = policy.activity_source ?? defaults?.activity_source;
+    if (prelimActivitySource === "probe_only" && !policy.probe) return null;
+    // Merge workflow-level defaults if step-level is absent.
+    const merged = { ...policy };
+    if (!policy.no_output_timeout && effectiveNoOutputTimeout) {
+      merged.no_output_timeout = effectiveNoOutputTimeout;
+    }
+    const effectiveActivitySource =
+      policy.activity_source ?? defaults?.activity_source;
+    if (!policy.activity_source && effectiveActivitySource) {
+      merged.activity_source = effectiveActivitySource;
+    }
+    return merged;
+  }
+
+  /** Check whether a step abort was caused by sentinel. */
+  private isSentinelAbort(ac: AbortController): boolean {
+    return ac.signal.aborted && ac.signal.reason === SENTINEL_ABORT_REASON;
+  }
+
+  /** Select the action config (on_stall or on_terminal) based on trigger kind. */
+  private resolveActionConfig(
+    stallPolicy: StallPolicy | null | undefined,
+    trigger: { kind?: string } | null | undefined,
+  ): StallPolicy["on_stall"] | StallPolicy["on_terminal"] | undefined {
+    if (!stallPolicy) return undefined;
+    return trigger?.kind === "terminal"
+      ? stallPolicy.on_terminal
+      : stallPolicy.on_stall;
+  }
+
+  /** Map sentinel stall action config to an ErrorClass. */
+  private resolveSentinelErrorClass(
+    actionConfig: StallPolicy["on_stall"] | StallPolicy["on_terminal"] | undefined,
+  ): ErrorClass {
+    if (!actionConfig) return ErrorClass.RETRYABLE_TRANSIENT;
+
+    if (!actionConfig.error_class) {
+      // Default mapping when error_class is omitted.
+      if (actionConfig.action === "fail") return ErrorClass.NON_RETRYABLE;
+      return ErrorClass.RETRYABLE_TRANSIENT;
+    }
+    // Map string to ErrorClass enum
+    const ec = actionConfig.error_class as keyof typeof ErrorClass;
+    return ErrorClass[ec] ?? ErrorClass.RETRYABLE_TRANSIENT;
   }
 }
 

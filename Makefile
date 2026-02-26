@@ -27,12 +27,12 @@ build: ## Build a single binary (roboppi)
 	$(BUN) $(BUN_FLAGS) build $(BUN_BUILD_FLAGS) --compile $(SRC) --outfile $(BIN)
 
 test: ## Run all tests (repo scope)
-	$(BUN) $(BUN_FLAGS) test test/unit test/integration tests/at
+	$(BUN) $(BUN_FLAGS) test test/unit tests/unit test/integration tests/at
 
 tests: test ## Alias for `make test`
 
 test-unit: ## Run unit tests only
-	$(BUN) $(BUN_FLAGS) test test/unit
+	$(BUN) $(BUN_FLAGS) test test/unit tests/unit
 
 test-integration: ## Run integration tests only
 	$(BUN) $(BUN_FLAGS) test test/integration
