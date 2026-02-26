@@ -55,80 +55,30 @@ export class ProbeRunner {
         env: { ...process.env, ...(this.env ?? {}) },
       });
 
-      // Hard timeout: kill the probe if it exceeds the deadline.
-      // Kill the entire process group (negative PID) with SIGKILL to ensure
-      // child processes spawned by the shell are also terminated — otherwise
-      // orphaned children keep the pipe open and block stream reads.
-      const timeoutId = setTimeout(() => {
-        try {
-          process.kill(-proc.pid, "SIGKILL");
-        } catch {
-          // Process group kill may fail (e.g. process already exited, or not
-          // a process group leader).  Fall back to killing the direct child.
-          try { proc.kill(9); } catch { /* already dead */ }
-        }
-      }, this.timeoutMs);
+      // Race the actual work against a hard deadline.  Even if process kill
+      // fails to close pipes (e.g. orphaned children keep them open), the
+      // timeout branch resolves immediately so the caller never hangs.
+      const TIMEOUT_SENTINEL = Symbol("timeout");
+      const timeoutPromise = new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+        setTimeout(() => resolve(TIMEOUT_SENTINEL), this.timeoutMs);
+      });
 
-      // Read stdout and stderr concurrently to avoid deadlocks.
-      // readBoundedDrain reads up to maxBytes into memory, then drains the
-      // remainder without storing it.  This prevents pipe-full blocking when
-      // the process emits more data than the limit.
-      const [stdoutChunks, stderrText] = await Promise.all([
-        this.readBoundedDrain(
-          proc.stdout as ReadableStream<Uint8Array>,
-          MAX_PROBE_OUTPUT_BYTES,
-          proc,
-        ),
-        this.readBoundedStringDrain(
-          proc.stderr as ReadableStream<Uint8Array>,
-          MAX_PROBE_STDERR_BYTES,
-          proc,
-        ),
-      ]);
+      const workPromise = this.runInner(proc, ts);
+      const result = await Promise.race([workPromise, timeoutPromise]);
 
-      // Wait for process to exit and get exit code, then clear the timeout.
-      // Clearing AFTER exit ensures the hard timeout stays active until the
-      // process is fully reaped (avoids hanging on proc.exited).
-      const exitCode = await proc.exited;
-      clearTimeout(timeoutId);
-
-      const bounded = new TextDecoder()
-        .decode(Buffer.concat(stdoutChunks.chunks))
-        .slice(0, MAX_PROBE_OUTPUT_BYTES);
-
-      // Probe MUST emit valid JSON.
-      let output: ProbeOutput;
-      try {
-        output = JSON.parse(bounded.trim());
-      } catch {
+      if (result === TIMEOUT_SENTINEL) {
+        // Best-effort kill — don't await anything that might hang.
+        try { process.kill(-proc.pid, "SIGKILL"); } catch { /* ignore */ }
+        try { proc.kill(9); } catch { /* ignore */ }
         return {
           success: false,
           digest: "",
-          error: "probe output is not valid JSON",
-          exitCode,
-          stderr: stderrText || undefined,
+          error: "probe timed out",
           ts,
         };
       }
 
-      // Compute digest: prefer explicit `digest` field from the probe, fall
-      // back to a hash of the normalised JSON.
-      const digest = output.digest ?? this.computeDigest(output);
-
-      // Check exit code when require_zero_exit is enabled
-      if (this.requireZeroExit && exitCode !== 0) {
-        return {
-          success: false,
-          output,  // Include parsed output for diagnostic purposes
-          digest,
-          error: `probe exited with non-zero code ${exitCode} (require_zero_exit is enabled)`,
-          exitCode,
-          stderr: stderrText || undefined,
-          ts,
-        };
-      }
-
-      return { success: true, output, digest, exitCode, ts };
+      return result;
     } catch (err) {
       return {
         success: false,
@@ -137,6 +87,66 @@ export class ProbeRunner {
         ts,
       };
     }
+  }
+
+  /** Inner implementation that reads stdout/stderr and waits for exit. */
+  private async runInner(
+    proc: ReturnType<typeof Bun.spawn>,
+    ts: number,
+  ): Promise<ProbeResult> {
+    // Read stdout and stderr concurrently to avoid deadlocks.
+    const [stdoutChunks, stderrText] = await Promise.all([
+      this.readBoundedDrain(
+        proc.stdout as ReadableStream<Uint8Array>,
+        MAX_PROBE_OUTPUT_BYTES,
+        proc,
+      ),
+      this.readBoundedStringDrain(
+        proc.stderr as ReadableStream<Uint8Array>,
+        MAX_PROBE_STDERR_BYTES,
+        proc,
+      ),
+    ]);
+
+    const exitCode = await proc.exited;
+
+    const bounded = new TextDecoder()
+      .decode(Buffer.concat(stdoutChunks.chunks))
+      .slice(0, MAX_PROBE_OUTPUT_BYTES);
+
+    // Probe MUST emit valid JSON.
+    let output: ProbeOutput;
+    try {
+      output = JSON.parse(bounded.trim());
+    } catch {
+      return {
+        success: false,
+        digest: "",
+        error: "probe output is not valid JSON",
+        exitCode,
+        stderr: stderrText || undefined,
+        ts,
+      };
+    }
+
+    // Compute digest: prefer explicit `digest` field from the probe, fall
+    // back to a hash of the normalised JSON.
+    const digest = output.digest ?? this.computeDigest(output);
+
+    // Check exit code when require_zero_exit is enabled
+    if (this.requireZeroExit && exitCode !== 0) {
+      return {
+        success: false,
+        output,  // Include parsed output for diagnostic purposes
+        digest,
+        error: `probe exited with non-zero code ${exitCode} (require_zero_exit is enabled)`,
+        exitCode,
+        stderr: stderrText || undefined,
+        ts,
+      };
+    }
+
+    return { success: true, output, digest, exitCode, ts };
   }
 
   /**
