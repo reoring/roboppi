@@ -2,6 +2,86 @@ import type { ErrorClass } from "../types/common.js";
 
 export type DurationString = string; // "200ms", "5m", "30s", "2h", "1h30m"
 
+// ---------------------------------------------------------------------------
+// Sentinel – workflow-level configuration
+// ---------------------------------------------------------------------------
+
+export interface SentinelTelemetryConfig {
+  events_file?: string;
+  state_file?: string;
+  include_worker_output?: boolean;
+}
+
+export interface SentinelInterruptConfig {
+  strategy: "cancel";
+}
+
+export interface SentinelDefaultsConfig {
+  no_output_timeout?: DurationString;
+  activity_source?: "worker_event" | "any_event" | "probe_only";
+  interrupt?: SentinelInterruptConfig;
+}
+
+export interface SentinelConfig {
+  enabled?: boolean;
+  telemetry?: SentinelTelemetryConfig;
+  defaults?: SentinelDefaultsConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Stall policy – step-level guard consumed by Sentinel
+// ---------------------------------------------------------------------------
+
+export interface StallProbeConfig {
+  interval: DurationString;
+  timeout?: DurationString;
+  command: string;
+  stall_threshold: number;
+  /** Whether to capture probe stderr in probe.jsonl. Default: false (opt-in). */
+  capture_stderr?: boolean;
+  /** When true, probe success requires exit_code === 0 AND valid JSON.
+   *  Default: false (JSON-only, exit code is recorded but does not affect success).
+   */
+  require_zero_exit?: boolean;
+  /**
+   * Action when probe consecutively fails (non-JSON, timeout, non-zero exit, etc.).
+   * - "ignore" (default): probe failures are logged but don't trigger actions
+   * - "stall": treat consecutive failures as a stall condition (triggers on_stall)
+   * - "terminal": treat consecutive failures as terminal (triggers on_terminal)
+   */
+  on_probe_error?: "ignore" | "stall" | "terminal";
+  /**
+   * Number of consecutive probe failures before triggering `on_probe_error` action.
+   * Default: 3. Must be >= 1.
+   */
+  probe_error_threshold?: number;
+}
+
+export interface StallActionConfig {
+  action: "interrupt" | "fail" | "ignore";
+  error_class?: string;
+  fingerprint_prefix?: string[];
+  as_incomplete?: boolean;
+}
+
+export interface StallPolicy {
+  enabled?: boolean;
+  no_output_timeout?: DurationString;
+  /** Controls which event timestamps drive no_output_timeout.
+   *  - "worker_event" (default): uses worker stdout/stderr event timestamps
+   *  - "any_event": uses the most recent of worker_event, step_phase, step_state
+   *  - "probe_only": disables timer-based no_output_timeout; rely on probe
+   */
+  activity_source?: "worker_event" | "any_event" | "probe_only";
+  probe?: StallProbeConfig;
+  on_stall?: StallActionConfig;
+  on_terminal?: StallActionConfig;
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowDefinition
+// ---------------------------------------------------------------------------
+
 export interface WorkflowDefinition {
   name: string;
   version: "1";
@@ -15,6 +95,8 @@ export interface WorkflowDefinition {
   branch_transition_step?: string;
   /** Optional explicit expected work branch at startup. */
   expected_work_branch?: string;
+  /** Optional: Sentinel autonomous oversight configuration. */
+  sentinel?: SentinelConfig;
   steps: Record<string, StepDefinition>;
 }
 
@@ -69,6 +151,9 @@ export interface StepDefinition {
 
   /** Optional: convergence control for completion_check loops (opt-in). */
   convergence?: ConvergenceDef;
+
+  /** Optional: stall guard policy consumed by Sentinel. */
+  stall?: StallPolicy;
 }
 
 export function isWorkerStep(step: StepDefinition): step is StepDefinition & {
@@ -160,6 +245,9 @@ export interface CompletionCheckDef {
    * - INCOMPLETE / FAIL    => incomplete
    */
   decision_file?: string;
+
+  /** Optional: stall guard policy consumed by Sentinel. */
+  stall?: StallPolicy;
 }
 
 export interface InputRef {

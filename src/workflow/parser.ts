@@ -2,12 +2,15 @@ import YAML from "yaml";
 import path from "node:path";
 import type { WorkflowDefinition, StepDefinition, CompletionCheckDef } from "./types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
+import { ErrorClass } from "../types/common.js";
+import { parseDuration } from "./duration.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
 const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
 
 const RESERVED_STEP_IDS = new Set([
   "_subworkflows",
+  "_workflow",
   "_workflow.json",
   "_meta.json",
   "_resolved.json",
@@ -20,6 +23,7 @@ const RESERVED_ARTIFACT_NAMES = new Set([
   "_meta.json",
   "_resolved.json",
   "_convergence",
+  "_stall",
 ]);
 
 function assertValidStepId(stepId: string): void {
@@ -137,6 +141,173 @@ function validateConvergence(value: unknown, stepId: string): void {
         throw new WorkflowParseError(`steps.${stepId}.convergence.stages[].stage is required`);
       }
       validateOptionalString(st["append_instructions"], `steps.${stepId}.convergence.stages[].append_instructions`);
+    }
+  }
+}
+
+const VALID_STALL_ACTIONS = new Set(["interrupt", "fail", "ignore"]);
+const VALID_ERROR_CLASSES = new Set<string>(Object.values(ErrorClass));
+
+function validateStallAction(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`${path} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  if (typeof obj["action"] !== "string" || !VALID_STALL_ACTIONS.has(obj["action"])) {
+    throw new WorkflowParseError(
+      `${path}.action must be one of: ${[...VALID_STALL_ACTIONS].join(", ")} (got "${String(obj["action"])}")`,
+    );
+  }
+
+  validateOptionalString(obj["error_class"], `${path}.error_class`);
+  if (obj["error_class"] !== undefined && !VALID_ERROR_CLASSES.has(obj["error_class"] as string)) {
+    throw new WorkflowParseError(
+      `${path}.error_class must be one of: ${[...VALID_ERROR_CLASSES].join(", ")} (got "${String(obj["error_class"])}")`,
+    );
+  }
+  validateOptionalStringArray(obj["fingerprint_prefix"], `${path}.fingerprint_prefix`);
+  validateOptionalBoolean(obj["as_incomplete"], `${path}.as_incomplete`);
+}
+
+function validateStallPolicy(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`${path} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], `${path}.enabled`);
+  validateOptionalString(obj["no_output_timeout"], `${path}.no_output_timeout`);
+  if (typeof obj["no_output_timeout"] === "string") {
+    try {
+      parseDuration(obj["no_output_timeout"]);
+    } catch {
+      throw new WorkflowParseError(
+        `${path}.no_output_timeout: invalid duration "${obj["no_output_timeout"]}". Use formats like "30s", "5m", "1h30m"`,
+      );
+    }
+  }
+
+  const VALID_ACTIVITY_SOURCES = new Set(["worker_event", "any_event", "probe_only"]);
+  if (obj["activity_source"] !== undefined) {
+    if (typeof obj["activity_source"] !== "string" || !VALID_ACTIVITY_SOURCES.has(obj["activity_source"])) {
+      throw new WorkflowParseError(
+        `${path}.activity_source must be one of: ${[...VALID_ACTIVITY_SOURCES].join(", ")} (got "${String(obj["activity_source"])}")`,
+      );
+    }
+  }
+
+  // Validate probe sub-object
+  if (obj["probe"] !== undefined) {
+    if (typeof obj["probe"] !== "object" || obj["probe"] === null || Array.isArray(obj["probe"])) {
+      throw new WorkflowParseError(`${path}.probe must be an object`);
+    }
+    const probe = obj["probe"] as Record<string, unknown>;
+
+    assertString(probe["interval"], `${path}.probe.interval`);
+    try {
+      parseDuration(probe["interval"] as string);
+    } catch {
+      throw new WorkflowParseError(
+        `${path}.probe.interval: invalid duration "${String(probe["interval"])}". Use formats like "10s", "1m", "30s"`,
+      );
+    }
+    validateOptionalString(probe["timeout"], `${path}.probe.timeout`);
+    if (typeof probe["timeout"] === "string") {
+      try {
+        parseDuration(probe["timeout"]);
+      } catch {
+        throw new WorkflowParseError(
+          `${path}.probe.timeout: invalid duration "${probe["timeout"]}". Use formats like "5s", "30s", "1m"`,
+        );
+      }
+    }
+    assertString(probe["command"], `${path}.probe.command`);
+
+    if (typeof probe["stall_threshold"] !== "number" || !Number.isFinite(probe["stall_threshold"])) {
+      throw new WorkflowParseError(`"${path}.probe.stall_threshold" must be a finite number`);
+    }
+    if (probe["stall_threshold"] < 1) {
+      throw new WorkflowParseError(`"${path}.probe.stall_threshold" must be >= 1`);
+    }
+    validateOptionalBoolean(probe["capture_stderr"], `${path}.probe.capture_stderr`);
+    validateOptionalBoolean(probe["require_zero_exit"], `${path}.probe.require_zero_exit`);
+
+    const VALID_PROBE_ERROR_ACTIONS = new Set(["ignore", "stall", "terminal"]);
+    if (probe["on_probe_error"] !== undefined) {
+      if (typeof probe["on_probe_error"] !== "string" || !VALID_PROBE_ERROR_ACTIONS.has(probe["on_probe_error"])) {
+        throw new WorkflowParseError(
+          `${path}.probe.on_probe_error must be one of: ${[...VALID_PROBE_ERROR_ACTIONS].join(", ")} (got "${String(probe["on_probe_error"])}")`,
+        );
+      }
+    }
+    validateOptionalNumber(probe["probe_error_threshold"], `${path}.probe.probe_error_threshold`, { min: 1 });
+  }
+
+  // Validate on_stall and on_terminal
+  validateStallAction(obj["on_stall"], `${path}.on_stall`);
+  validateStallAction(obj["on_terminal"], `${path}.on_terminal`);
+}
+
+function validateSentinel(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError("sentinel must be an object");
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], "sentinel.enabled");
+
+  // Validate telemetry sub-object
+  if (obj["telemetry"] !== undefined) {
+    if (typeof obj["telemetry"] !== "object" || obj["telemetry"] === null || Array.isArray(obj["telemetry"])) {
+      throw new WorkflowParseError("sentinel.telemetry must be an object");
+    }
+    const tel = obj["telemetry"] as Record<string, unknown>;
+    validateOptionalString(tel["events_file"], "sentinel.telemetry.events_file");
+    validateOptionalString(tel["state_file"], "sentinel.telemetry.state_file");
+    validateOptionalBoolean(tel["include_worker_output"], "sentinel.telemetry.include_worker_output");
+  }
+
+  // Validate defaults sub-object
+  if (obj["defaults"] !== undefined) {
+    if (typeof obj["defaults"] !== "object" || obj["defaults"] === null || Array.isArray(obj["defaults"])) {
+      throw new WorkflowParseError("sentinel.defaults must be an object");
+    }
+    const defs = obj["defaults"] as Record<string, unknown>;
+    validateOptionalString(defs["no_output_timeout"], "sentinel.defaults.no_output_timeout");
+    if (typeof defs["no_output_timeout"] === "string") {
+      try {
+        parseDuration(defs["no_output_timeout"]);
+      } catch {
+        throw new WorkflowParseError(
+          `sentinel.defaults.no_output_timeout: invalid duration "${defs["no_output_timeout"]}". Use formats like "30s", "5m", "1h30m"`,
+        );
+      }
+    }
+
+    const VALID_ACTIVITY_SOURCES = new Set(["worker_event", "any_event", "probe_only"]);
+    if (defs["activity_source"] !== undefined) {
+      if (typeof defs["activity_source"] !== "string" || !VALID_ACTIVITY_SOURCES.has(defs["activity_source"])) {
+        throw new WorkflowParseError(
+          `sentinel.defaults.activity_source must be one of: ${[...VALID_ACTIVITY_SOURCES].join(", ")} (got "${String(defs["activity_source"])}")`,
+        );
+      }
+    }
+
+    // Validate interrupt sub-object
+    if (defs["interrupt"] !== undefined) {
+      if (typeof defs["interrupt"] !== "object" || defs["interrupt"] === null || Array.isArray(defs["interrupt"])) {
+        throw new WorkflowParseError("sentinel.defaults.interrupt must be an object");
+      }
+      const intr = defs["interrupt"] as Record<string, unknown>;
+      if (intr["strategy"] !== "cancel") {
+        throw new WorkflowParseError(
+          `sentinel.defaults.interrupt.strategy must be "cancel" (got "${String(intr["strategy"])}")`,
+        );
+      }
     }
   }
 }
@@ -259,6 +430,10 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   if (obj["worker"] !== "CUSTOM") {
     assertString(obj["decision_file"], `steps.${stepId}.completion_check.decision_file`);
   }
+
+  // Validate stall policy (Sentinel guard, opt-in)
+  validateStallPolicy(obj["stall"], `steps.${stepId}.completion_check.stall`);
+
   return obj as unknown as CompletionCheckDef;
 }
 
@@ -397,6 +572,9 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
     // Validate convergence config (opt-in)
     validateConvergence(obj["convergence"], stepId);
 
+    // Validate stall policy (Sentinel guard, opt-in)
+    validateStallPolicy(obj["stall"], `steps.${stepId}.stall`);
+
     // Validate on_iterations_exhausted enum
     if (obj["on_iterations_exhausted"] !== undefined) {
       if (!["abort", "continue"].includes(obj["on_iterations_exhausted"] as string)) {
@@ -508,6 +686,9 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   // Validate convergence config (opt-in)
   validateConvergence(obj["convergence"], stepId);
 
+  // Validate stall policy (Sentinel guard, opt-in)
+  validateStallPolicy(obj["stall"], `steps.${stepId}.stall`);
+
   // Validate on_failure enum
   if (obj["on_failure"] !== undefined) {
     if (!["retry", "continue", "abort"].includes(obj["on_failure"] as string)) {
@@ -566,6 +747,9 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
   validateOptionalString(doc["branch_transition_step"], "branch_transition_step");
   validateOptionalString(doc["expected_work_branch"], "expected_work_branch");
 
+  // Validate sentinel config (opt-in)
+  validateSentinel(doc["sentinel"]);
+
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');
   }
@@ -607,6 +791,9 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
       typeof doc["expected_work_branch"] === "string"
         ? doc["expected_work_branch"]
         : undefined,
+    sentinel: doc["sentinel"] !== undefined
+      ? (doc["sentinel"] as WorkflowDefinition["sentinel"])
+      : undefined,
     steps: validatedSteps,
   };
 }
