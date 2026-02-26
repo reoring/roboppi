@@ -56,10 +56,18 @@ export class ProbeRunner {
       });
 
       // Hard timeout: kill the probe if it exceeds the deadline.
-      // Use SIGKILL to ensure the process (and any children sharing the pipe)
-      // is terminated immediately — SIGTERM may leave orphaned children that
-      // keep the pipe open and block stream reads.
-      const timeoutId = setTimeout(() => proc.kill(9), this.timeoutMs);
+      // Kill the entire process group (negative PID) with SIGKILL to ensure
+      // child processes spawned by the shell are also terminated — otherwise
+      // orphaned children keep the pipe open and block stream reads.
+      const timeoutId = setTimeout(() => {
+        try {
+          process.kill(-proc.pid, "SIGKILL");
+        } catch {
+          // Process group kill may fail (e.g. process already exited, or not
+          // a process group leader).  Fall back to killing the direct child.
+          try { proc.kill(9); } catch { /* already dead */ }
+        }
+      }, this.timeoutMs);
 
       // Read stdout and stderr concurrently to avoid deadlocks.
       // readBoundedDrain reads up to maxBytes into memory, then drains the
