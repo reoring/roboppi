@@ -10,6 +10,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { supportsChildBunStdinPipe } from "../../test/helpers/supervised-ipc-capability.js";
 
 type CliExit = {
   code: number | null;
@@ -36,6 +37,9 @@ function createCleanEnv(extra?: Record<string, string | undefined>): NodeJS.Proc
     "ROBOPPI_AGENTS_FILE",
     "ROBOPPI_CORE_ENTRYPOINT",
     "ROBOPPI_SUPERVISED_IPC_TRANSPORT",
+    "ROBOPPI_IPC_SOCKET_PATH",
+    "ROBOPPI_IPC_SOCKET_HOST",
+    "ROBOPPI_IPC_SOCKET_PORT",
     "ROBOPPI_KEEPALIVE",
     "ROBOPPI_KEEPALIVE_INTERVAL",
     "ROBOPPI_IPC_TRACE",
@@ -305,6 +309,10 @@ describe("CLI E2E (bun run src/cli.ts ...)", () => {
   it(
     "TC-WF-01: workflow (supervised default) runs hello-world",
     async () => {
+      if (!(await supportsChildBunStdinPipe())) {
+        return;
+      }
+
       const dir = await mkdtemp(path.join(tmpdir(), "cli-e2e-wf-"));
       try {
         const ws = path.join(dir, "ws");
@@ -436,6 +444,10 @@ describe("CLI E2E (bun run src/cli.ts ...)", () => {
   it(
     "TC-SRV-01: Core IPC server returns JSONL ack on stdout",
     async () => {
+      if (!(await supportsChildBunStdinPipe())) {
+        return;
+      }
+
       const env = createCleanEnv();
       const { child, waitForExit, getStdout, getStderr } = spawnCli([], { env });
 

@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { JsonLinesTransport } from "../../../src/ipc/json-lines-transport.js";
 import { IpcProtocol, validateMessage } from "../../../src/ipc/protocol.js";
-import { IpcDisconnectError, IpcStoppedError, IpcTimeoutError } from "../../../src/ipc/errors.js";
+import {
+  IpcDisconnectError,
+  IpcRequestReplacedError,
+  IpcStoppedError,
+  IpcTimeoutError,
+} from "../../../src/ipc/errors.js";
 import type {
   SubmitJobMessage,
   CancelJobMessage,
@@ -499,6 +504,31 @@ describe("IpcProtocol", () => {
 
       // Handler should NOT be called since the message was consumed by correlation
       expect(handlerCalled).toBe(false);
+
+      await closeInput();
+      await protocol.stop();
+    });
+
+    test("duplicate requestId rejects replaced waiter and keeps newer waiter", async () => {
+      const { protocol, feedInput, closeInput } = createTestProtocol({ requestTimeoutMs: 1000 });
+      protocol.start();
+
+      const firstWaiter = protocol.waitForResponse("req-dup", 1000);
+      const secondWaiter = protocol.waitForResponse("req-dup", 1000);
+
+      await expect(firstWaiter).rejects.toThrow(IpcRequestReplacedError);
+
+      await feedInput(JSON.stringify({
+        type: "ack",
+        requestId: "req-dup",
+        jobId: "job-dup",
+      }) + "\n");
+
+      await expect(secondWaiter).resolves.toEqual({
+        type: "ack",
+        requestId: "req-dup",
+        jobId: "job-dup",
+      });
 
       await closeInput();
       await protocol.stop();

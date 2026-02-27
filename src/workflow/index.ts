@@ -8,3 +8,8 @@ export * from "./shell-step-runner.js";
 export * from "./branch-context.js";
 export * from "./agent-catalog.js";
 export * from "./resolve-worker-task.js";
+export * from "./management/types.js";
+export * from "./management/management-controller.js";
+export * from "./management/worker-engine.js";
+export * from "./management/pi-sdk-engine.js";
+export * from "./management/engine-factory.js";

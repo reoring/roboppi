@@ -32,6 +32,9 @@ import {
   type SentinelGuard,
 } from "./sentinel/sentinel-controller.js";
 import { createTelemetrySink } from "./sentinel/telemetry-sink.js";
+import { ManagementController } from "./management/management-controller.js";
+import { ManagementTelemetrySink } from "./management/management-telemetry.js";
+import type { ManagementHook } from "./management/types.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -69,6 +72,7 @@ const DEFAULT_CONVERGENCE_STALL_THRESHOLD = 2;
 const DEFAULT_CONVERGENCE_MAX_STAGE = 3;
 const CONVERGENCE_ARTIFACT_DIR = "_convergence";
 const MAX_CONVERGENCE_SIGNAL_ITEMS = 40;
+const DEFAULT_PRE_STEP_HOOK_CONCURRENCY = 2;
 
 export interface StepRunner {
   runStep(
@@ -98,6 +102,7 @@ const TERMINAL_STATUSES = new Set<StepStatus>([
   StepStatus.INCOMPLETE,
   StepStatus.SKIPPED,
   StepStatus.CANCELLED,
+  StepStatus.OMITTED,
 ]);
 
 function isTerminal(status: StepStatus): boolean {
@@ -210,6 +215,7 @@ function depAllowsProgress(
 ): boolean {
   if (depState.status === StepStatus.SUCCEEDED) return true;
   if (depState.status === StepStatus.INCOMPLETE) return true;
+  if (depState.status === StepStatus.OMITTED) return true;
   if (
     depState.status === StepStatus.FAILED &&
     depDef.on_failure === "continue"
@@ -239,6 +245,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Returns true if the event originates from a management worker (step ID
+ *  prefixed with `_management:`).  These events must not flow through the
+ *  main TUI / sentinel telemetry sinks (§4.12 / R-13). */
+function isManagementEvent(event: ExecEvent): boolean {
+  const stepId = (event as { stepId?: string }).stepId;
+  return typeof stepId === "string" && stepId.startsWith("_management:");
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowExecutor
 // ---------------------------------------------------------------------------
@@ -261,7 +275,7 @@ export class WorkflowExecutor {
   private readonly workflowTimeoutMs: number;
   private runningCount = 0;
   private workflowAbortController: AbortController | null = null;
-  private abortReason: "timeout" | "external" | null = null;
+  private abortReason: "timeout" | "external" | "management" | null = null;
   private workflowStartedAt: number | null = null;
 
   // Internal: latest convergence signals per step (not persisted in StepState).
@@ -280,6 +294,15 @@ export class WorkflowExecutor {
   private sentinelController: SentinelController | null = null;
   private effectiveSink: ExecEventSink | null = null;
   private telemetrySink: import("./sentinel/telemetry-sink.js").TelemetrySink | null = null;
+
+  // Management controller (when enabled)
+  private managementController: ManagementController | null = null;
+  private managementTelemetry: ManagementTelemetrySink | null = null;
+  private readonly managementOverlays: Record<string, string | undefined> = {};
+  private readonly stepTimeoutOverrides: Record<string, number> = {};
+  private readonly preStepHookConcurrency: number;
+  private preStepHookInFlight = 0;
+  private readonly preStepHookDone = new Set<string>();
 
   // Subworkflow options
   private readonly definitionPath?: string;
@@ -307,6 +330,13 @@ export class WorkflowExecutor {
     this.workflowCallStack = options?.workflowCallStack ?? (this.definitionPath ? [this.definitionPath] : []);
     this.agentCatalog = options?.agentCatalog;
     this.maxNestingDepth = resolveMaxNestingDepth(options?.maxNestingDepth);
+    const basePreStepConcurrency = Number.isFinite(this.concurrency)
+      ? Math.max(1, Math.floor(this.concurrency))
+      : DEFAULT_PRE_STEP_HOOK_CONCURRENCY;
+    this.preStepHookConcurrency = Math.min(
+      DEFAULT_PRE_STEP_HOOK_CONCURRENCY,
+      basePreStepConcurrency,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -347,8 +377,11 @@ export class WorkflowExecutor {
       const telemetrySink = this.telemetrySink;
 
       // Composite sink: telemetry + sentinel activity tracking.
+      // Filter out management worker events (prefixed _management:) so they
+      // don't leak into the main TUI / sentinel telemetry (§4.12/R-13).
       this.effectiveSink = {
         emit: (event: ExecEvent) => {
+          if (isManagementEvent(event)) return;
           telemetrySink.emit(event);
           this.sentinelController?.onEvent(event);
         },
@@ -362,6 +395,35 @@ export class WorkflowExecutor {
         this.definition.name,
         this.workspaceDir,
       );
+    }
+
+    // 2c. Initialize Management controller if enabled (after sentinel so
+    //     we don't create a duplicate ManagementTelemetrySink when Sentinel
+    //     already provides telemetry).
+    const managementConfig = this.definition.management;
+    if (managementConfig?.enabled) {
+      this.managementController = new ManagementController(
+        this.contextManager.contextDir,
+        managementConfig,
+        this.stepRunner,
+        this.workspaceDir,
+        this.env,
+      );
+
+      // If sentinel is NOT enabled, create ManagementTelemetrySink for state.json
+      if (!sentinelConfig?.enabled) {
+        this.managementTelemetry = new ManagementTelemetrySink(
+          this.sink,
+          this.contextManager.contextDir,
+        );
+
+        this.effectiveSink = {
+          emit: (event: ExecEvent) => {
+            if (isManagementEvent(event)) return;
+            this.managementTelemetry!.emit(event);
+          },
+        };
+      }
     }
 
     this.emitSink.emit({
@@ -419,9 +481,11 @@ export class WorkflowExecutor {
     } catch (err) {
       executionError = err;
       if (this.workflowAbortController.signal.aborted) {
-        workflowStatus = this.abortReason === "external"
-          ? WorkflowStatus.CANCELLED
-          : WorkflowStatus.TIMED_OUT;
+        if (this.abortReason === "external" || this.abortReason === "management") {
+          workflowStatus = WorkflowStatus.CANCELLED;
+        } else {
+          workflowStatus = WorkflowStatus.TIMED_OUT;
+        }
       } else {
         workflowStatus = WorkflowStatus.FAILED;
       }
@@ -439,6 +503,9 @@ export class WorkflowExecutor {
       });
       // Flush debounced telemetry state.json so the final snapshot is written.
       await this.telemetrySink?.flush();
+      await this.managementTelemetry?.flush();
+      // Dispose management engine (e.g. PiSdkEngine sessions) to prevent leaks.
+      await this.managementController?.stop();
       await this.contextManager.writeWorkflowMeta({
         id: workflowId,
         name: this.definition.name,
@@ -605,7 +672,24 @@ export class WorkflowExecutor {
   private launchReadySteps(): void {
     for (const [stepId, state] of Object.entries(this.steps)) {
       if (state.status !== StepStatus.READY) continue;
-      if (this.runningCount >= this.concurrency) break;
+      if (state.managementPending) continue;
+
+      // pre_step hook: runs BEFORE RUNNING transition, does NOT consume concurrency
+      if (
+        this.managementController &&
+        this.isManagementHookEnabled(stepId, "pre_step") &&
+        !this.preStepHookDone.has(stepId)
+      ) {
+        if (this.preStepHookInFlight >= this.preStepHookConcurrency) {
+          continue;
+        }
+        this.invokePreStepHook(stepId).catch(() => {});
+        continue;
+      }
+
+      if (this.runningCount >= this.concurrency) {
+        continue;
+      }
 
       this.launchStep(stepId);
     }
@@ -640,6 +724,107 @@ export class WorkflowExecutor {
   }
 
   // -----------------------------------------------------------------------
+  // Management hooks
+  // -----------------------------------------------------------------------
+
+  private isManagementHookEnabled(stepId: string, hook: ManagementHook): boolean {
+    if (!this.managementController) return false;
+    if (this.managementController.shouldSkipHook(
+      this.workflowStartedAt ?? Date.now(),
+      this.workflowTimeoutMs,
+    )) {
+      return false;
+    }
+    return this.managementController.isHookEnabled(hook, this.stepDefs[stepId]);
+  }
+
+  private async invokePreStepHook(stepId: string): Promise<void> {
+    const state = this.steps[stepId]!;
+    state.managementPending = true;
+    this.preStepHookInFlight++;
+    this.preStepHookDone.add(stepId);
+
+    try {
+      const stepDef = this.stepDefs[stepId]!;
+      const contextHint = stepDef.management?.context_hint;
+
+      const directive = await this.managementController!.invokeHook(
+        "pre_step",
+        stepId,
+        state.status,
+        this.steps,
+        this.workflowAbortController!.signal,
+        { contextHint },
+      );
+
+      if (this.workflowAbortController!.signal.aborted) return;
+
+      if (directive.action === "skip" && state.status === StepStatus.READY) {
+        state.status = StepStatus.OMITTED;
+        state.completedAt = Date.now();
+        this.emitSink.emit({
+          type: "step_state",
+          stepId,
+          status: state.status,
+          iteration: state.iteration,
+          maxIterations: state.maxIterations,
+          completedAt: state.completedAt,
+        });
+        this.notify();
+        return;
+      }
+
+      if (directive.action === "abort_workflow") {
+        this.abortReason = "management";
+        this.workflowAbortController!.abort();
+        return;
+      }
+
+      if (directive.action === "annotate") {
+        this.emitManagementAnnotation("pre_step", stepId, directive.message);
+      }
+
+      if (directive.action === "modify_instructions") {
+        const append = directive.append;
+        this.managementOverlays[stepId] = append;
+      } else if (directive.action === "proceed") {
+        // Clear any previous management overlay
+        this.managementOverlays[stepId] = undefined;
+      }
+
+      if (directive.action === "adjust_timeout") {
+        this.stepTimeoutOverrides[stepId] = parseDuration(directive.timeout);
+      }
+    } finally {
+      state.managementPending = false;
+      this.preStepHookInFlight = Math.max(0, this.preStepHookInFlight - 1);
+      this.notify();
+    }
+
+    // Proceed: launch the step normally
+    if (!this.workflowAbortController!.signal.aborted &&
+        this.steps[stepId]!.status === StepStatus.READY &&
+        this.runningCount < this.concurrency) {
+      this.launchStep(stepId);
+    }
+  }
+
+  private emitManagementAnnotation(hook: ManagementHook, stepId: string, message: string): void {
+    const text = message.trim();
+    if (!text) return;
+
+    this.emitSink.emit({
+      type: "warning",
+      ts: Date.now(),
+      message: `[management:${hook}] ${stepId}: ${text}`,
+      data: {
+        hook,
+        stepId,
+      },
+    });
+  }
+
+  // -----------------------------------------------------------------------
   // Step lifecycle — runs in background
   // -----------------------------------------------------------------------
 
@@ -658,6 +843,15 @@ export class WorkflowExecutor {
 
     try {
       // Main loop: handles both completion_check iterations and retries
+      //
+      // Known limitation (pre_step per-iteration gap):
+      // The management `pre_step` hook fires once per step when the DAG
+      // scheduler picks it up as READY, but NOT before each iteration of
+      // this while loop (completion_check iterations / retries).  This
+      // means the management overlay is "replaced per pre_step hook
+      // invocation" rather than per iteration.  A proper fix would add a
+      // `pre_iteration` hook call at the top of this loop, but that is a
+      // larger change — tracked separately.
       // eslint-disable-next-line no-constant-condition
       while (true) {
         // If workflow was aborted (timeout), bail out — status already set by handleWorkflowTimeout
@@ -707,7 +901,8 @@ export class WorkflowExecutor {
 
         let result: StepRunResult;
         try {
-          const effectiveStepDef = this.applyConvergenceToStepDef(stepId, stepDef, state);
+          let effectiveStepDef = this.applyConvergenceToStepDef(stepId, stepDef, state);
+          effectiveStepDef = this.applyManagementOverlay(stepId, effectiveStepDef);
           result = await this.stepRunner.runStep(
             stepId,
             effectiveStepDef,
@@ -757,6 +952,43 @@ export class WorkflowExecutor {
               : {}),
           };
           lastStepResult = result;
+        }
+
+        // Management on_stall hook: when both Sentinel and management are
+        // enabled, invoke management agent INSTEAD of applying Sentinel's
+        // static action (design doc §4.11).
+        if (this.isSentinelAbort(stepAbortController) &&
+            this.managementController &&
+            this.isManagementHookEnabled(stepId, "on_stall")) {
+          const stallDirective = await this.managementController.invokeHook(
+            "on_stall",
+            stepId,
+            state.status,
+            this.steps,
+            this.workflowAbortController!.signal,
+            { stallEvent: sentinelGuard?.getLastTrigger() },
+          );
+
+          if (this.workflowAbortController!.signal.aborted) return;
+
+          if (stallDirective.action === "annotate") {
+            this.emitManagementAnnotation("on_stall", stepId, stallDirective.message);
+          }
+
+          if (stallDirective.action === "retry") {
+            if (stallDirective.modify_instructions) {
+              this.managementOverlays[stepId] = stallDirective.modify_instructions;
+            }
+            continue; // re-run step within the iteration loop
+          }
+
+          if (stallDirective.action === "abort_workflow") {
+            this.abortReason = "management";
+            this.workflowAbortController!.abort();
+            return;
+          }
+
+          // proceed / annotate / other → fall through to sentinel's static action
         }
 
         // Check abort after async operation
@@ -985,6 +1217,34 @@ export class WorkflowExecutor {
           }
         }
 
+        // post_check hook: after completion_check returns, before acting on result
+        if (this.managementController && this.isManagementHookEnabled(stepId, "post_check")) {
+          try {
+            const postCheckDirective = await this.managementController.invokeHook(
+              "post_check",
+              stepId,
+              state.status,
+              this.steps,
+              this.workflowAbortController!.signal,
+              { checkResult: effectiveCheckResult },
+            );
+            if (postCheckDirective.action === "annotate") {
+              this.emitManagementAnnotation("post_check", stepId, postCheckDirective.message);
+            }
+            if (postCheckDirective.action === "force_complete") {
+              effectiveCheckResult = { ...effectiveCheckResult, complete: true, failed: false };
+            } else if (postCheckDirective.action === "force_incomplete") {
+              effectiveCheckResult = { ...effectiveCheckResult, complete: false, failed: false };
+            } else if (postCheckDirective.action === "abort_workflow") {
+              this.abortReason = "management";
+              this.workflowAbortController!.abort();
+              return;
+            }
+          } catch {
+            // post_check hook failure is non-fatal
+          }
+        }
+
         if (effectiveCheckResult.complete) {
           state.status = StepStatus.SUCCEEDED;
           state.completedAt = Date.now();
@@ -1076,6 +1336,27 @@ export class WorkflowExecutor {
       }
     } finally {
       this.runningCount--;
+
+      // post_step hook: after step reaches terminal state, before metadata write
+      if (this.managementController && isTerminal(state.status) &&
+          this.isManagementHookEnabled(stepId, "post_step")) {
+        try {
+          const postStepDirective = await this.managementController.invokeHook(
+            "post_step",
+            stepId,
+            state.status,
+            this.steps,
+            this.workflowAbortController!.signal,
+          );
+          if (postStepDirective.action === "annotate") {
+            this.emitManagementAnnotation("post_step", stepId, postStepDirective.message);
+          }
+          // post_step annotate/proceed don't change terminal status (v1)
+        } catch {
+          // post_step hook failure is non-fatal
+        }
+      }
+
       await this.writeStepResolvedMeta(stepId, state, stepDef, retryCount, lastStepResult);
       this.notify();
     }
@@ -1758,6 +2039,31 @@ export class WorkflowExecutor {
     return this.resolveConvergenceConfig(stepDef) !== null;
   }
 
+  private applyManagementOverlay(
+    stepId: string,
+    stepDef: StepDefinition,
+  ): StepDefinition {
+    const overlay = this.managementOverlays[stepId];
+    const timeoutMs = this.stepTimeoutOverrides[stepId];
+
+    let result = stepDef;
+
+    if (overlay) {
+      const prefix = "[Management Agent]";
+      const mgmtBlock = `${prefix}\n${overlay.trim()}`;
+      result = {
+        ...result,
+        instructions: (result.instructions ?? "").trimEnd() + "\n\n" + mgmtBlock + "\n",
+      };
+    }
+
+    if (timeoutMs !== undefined) {
+      result = { ...result, timeout: `${timeoutMs}ms` };
+    }
+
+    return result;
+  }
+
   private applyConvergenceToStepDef(
     stepId: string,
     stepDef: StepDefinition,
@@ -2229,9 +2535,10 @@ export class WorkflowExecutor {
 
   private computeWorkflowStatus(): WorkflowStatus {
     if (this.workflowAbortController?.signal.aborted) {
-      return this.abortReason === "external"
-        ? WorkflowStatus.CANCELLED
-        : WorkflowStatus.TIMED_OUT;
+      if (this.abortReason === "external" || this.abortReason === "management") {
+        return WorkflowStatus.CANCELLED;
+      }
+      return WorkflowStatus.TIMED_OUT;
     }
 
     const states = Object.values(this.steps);

@@ -1,4 +1,5 @@
 import type { ErrorClass } from "../types/common.js";
+import type { ManagementConfig, StepManagementConfig } from "./management/types.js";
 
 export type DurationString = string; // "200ms", "5m", "30s", "2h", "1h30m"
 
@@ -97,6 +98,8 @@ export interface WorkflowDefinition {
   expected_work_branch?: string;
   /** Optional: Sentinel autonomous oversight configuration. */
   sentinel?: SentinelConfig;
+  /** Optional: Management Agent configuration. */
+  management?: ManagementConfig;
   steps: Record<string, StepDefinition>;
 }
 
@@ -154,6 +157,9 @@ export interface StepDefinition {
 
   /** Optional: stall guard policy consumed by Sentinel. */
   stall?: StallPolicy;
+
+  /** Optional: step-level management agent overrides. */
+  management?: StepManagementConfig;
 }
 
 export function isWorkerStep(step: StepDefinition): step is StepDefinition & {
@@ -281,6 +287,8 @@ export enum StepStatus {
   INCOMPLETE = "INCOMPLETE",
   SKIPPED = "SKIPPED",
   CANCELLED = "CANCELLED",
+  /** Management agent chose to skip; does NOT block downstream. */
+  OMITTED = "OMITTED",
 }
 
 export interface StepState {
@@ -307,6 +315,9 @@ export interface StepState {
 
   /** Last computed stall key (hash). */
   convergenceLastStallKey?: string;
+
+  /** Internal flag: management pre_step hook is in progress. */
+  managementPending?: boolean;
 }
 
 export interface WorkflowState {
