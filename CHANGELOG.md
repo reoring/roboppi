@@ -9,10 +9,21 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Added
 
 - Supervised workflow TUI now streams worker events to `2: Logs` in real time (stdout/stderr/progress/patch) via IPC `job_event` messages.
+- Workflow Management Agent: optional supervisor hooks (`pre_step`, `pre_check`, `post_check`, `on_stall`) that can annotate, skip, adjust timeouts, or abort workflows based on step state.
+- Management hook event isolation: management worker events are written to per-invocation JSONL under `context/_management/` and do not leak into the main workflow telemetry/TUI stream.
+- Example self-dev workflow for iterating on the management-agent implementation review (`examples/workflow-management-agent-impl-review-loop.yaml`) + bootstrap helper (`scripts/self-dev/workflow-management-agent-impl-review/bootstrap.sh`).
 
 ### Changed
 
 - In supervised + TUI mode, stdout/stderr forwarding to `2: Logs` is enabled by default; set `ROBOPPI_TUI_STREAM_STDIO=0` to forward progress/patch only.
+- Workflow parsing for `steps.<id>.management` is stricter: unknown keys are rejected, and step-level per-hook overrides are supported.
+- Claude Code adapter uses `--output-format stream-json` automatically for streaming tasks when configured for JSON output.
+- Worker tasks accept optional `variant` hints (plumbed through to adapters that support it).
+- Embedded Pi SDK management engine is read-only in v1 (no command execution/edit/write tools) to preserve mechanism/policy separation.
+
+### Fixed
+
+- Branch verification no longer leaks ambient `BASE_BRANCH`-related environment into isolated workflow runs.
 
 ## [0.1.5] - 2026-02-25
 
