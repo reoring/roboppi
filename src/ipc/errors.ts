@@ -28,6 +28,16 @@ export class IpcTimeoutError extends Error {
   }
 }
 
+export class IpcRequestReplacedError extends Error {
+  readonly requestId: string;
+
+  constructor(requestId: string) {
+    super(`IPC request ${requestId} was replaced by a newer waiter`);
+    this.name = "IpcRequestReplacedError";
+    this.requestId = requestId;
+  }
+}
+
 export class IpcStoppedError extends Error {
   readonly requestId: string;
 

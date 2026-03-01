@@ -11,6 +11,7 @@ export interface WorkerTaskJobPayload {
   workspaceRef: string;
   instructions: string;
   model?: string;
+  variant?: string;
   capabilities: WorkerCapability[];
   outputMode: OutputMode;
   budget: {
@@ -41,6 +42,9 @@ export function isWorkerTaskJobPayload(value: unknown): value is WorkerTaskJobPa
   if (typeof v.workerTaskId !== "string") return false;
   if (typeof v.workspaceRef !== "string") return false;
   if (typeof v.instructions !== "string") return false;
+
+  if (v.model !== undefined && typeof v.model !== "string") return false;
+  if (v.variant !== undefined && typeof v.variant !== "string") return false;
 
   // workerKind must be a known enum value
   if (typeof v.workerKind !== "string" || !VALID_WORKER_KINDS.has(v.workerKind)) return false;

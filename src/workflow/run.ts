@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseWorkflow } from "./parser.js";
 import { loadAgentCatalog } from "./workflow-loader.js";
+import { supportsChildBunStdinPipe } from "./supervised-ipc-capability.js";
 import { validateDag } from "./dag-validator.js";
 import { ContextManager } from "./context-manager.js";
 import { WorkflowExecutor } from "./executor.js";
@@ -360,11 +361,17 @@ Options:
 
     // Default supervised IPC transport.
     //
-    // Some non-interactive runners exhibit broken stdio pipes between parent/child
-    // processes. Use the socket transport by default in non-interactive mode.
+    // Probe child-stdio reliability first. If unavailable, prefer socket mode
+    // (Supervisor already falls back socket -> tcp -> stdio at runtime).
     // (Override via ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp.)
     if (supervised && process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT === undefined) {
-      process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = isNonInteractive() ? "socket" : "stdio";
+      const supportsStdio = await supportsChildBunStdinPipe();
+      process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = supportsStdio ? "stdio" : "socket";
+      if (!supportsStdio) {
+        process.stderr.write(
+          "[workflow] Bun child-stdio probe failed; defaulting supervised IPC transport to socket\n",
+        );
+      }
     }
 
     // TUI setup

@@ -25,8 +25,15 @@ import type {
   Job,
 } from "../types/index.js";
 import type { WorkerEvent } from "../worker/worker-adapter.js";
+import { Effect } from "effect";
+import { runEffectPromise, withTimeout } from "../core/effect-concurrency.js";
 import { JsonLinesTransport } from "./json-lines-transport.js";
-import { IpcDisconnectError, IpcStoppedError, IpcTimeoutError } from "./errors.js";
+import {
+  IpcDisconnectError,
+  IpcRequestReplacedError,
+  IpcStoppedError,
+  IpcTimeoutError,
+} from "./errors.js";
 
 type InboundType = InboundMessage["type"];
 type OutboundType = OutboundMessage["type"];
@@ -53,9 +60,9 @@ export class IpcProtocol {
   private readonly pendingRequests = new Map<
     string,
     {
+      promise: Promise<unknown>;
       resolve: (msg: unknown) => void;
       reject: (err: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
     }
   >();
   private running = false;
@@ -98,11 +105,9 @@ export class IpcProtocol {
     this.transport.on("close", () => {
       // Reject all pending requests immediately; callers shouldn't wait for
       // requestTimeoutMs when the stream is already closed.
-      for (const [requestId, pending] of this.pendingRequests) {
-        clearTimeout(pending.timer);
-        pending.reject(new IpcDisconnectError(`IPC transport closed (requestId=${requestId})`));
-      }
-      this.pendingRequests.clear();
+      this.rejectPendingRequests(
+        (requestId) => new IpcDisconnectError(`IPC transport closed (requestId=${requestId})`),
+      );
     });
 
     this.transport.start();
@@ -114,11 +119,7 @@ export class IpcProtocol {
     this.running = false;
 
     // Reject all pending requests
-    for (const [requestId, pending] of this.pendingRequests) {
-      clearTimeout(pending.timer);
-      pending.reject(new IpcStoppedError(requestId));
-    }
-    this.pendingRequests.clear();
+    this.rejectPendingRequests((requestId) => new IpcStoppedError(requestId));
 
     await this.transport.close();
   }
@@ -239,19 +240,36 @@ export class IpcProtocol {
   /** Wait for a response message with a matching requestId (for request/response correlation). */
   waitForResponse(requestId: string, timeoutMs?: number): Promise<unknown> {
     const timeout = timeoutMs ?? this.requestTimeoutMs;
-    const p = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new IpcTimeoutError(requestId, timeout));
-      }, timeout);
+    const pending = createPendingRequest();
+    const previous = this.pendingRequests.get(requestId);
+    if (previous) {
+      // Reject the replaced waiter immediately to surface request-id collisions
+      // early instead of leaving the previous caller waiting for timeout.
+      previous.reject(new IpcRequestReplacedError(requestId));
+    }
+    this.pendingRequests.set(requestId, pending);
 
-      this.pendingRequests.set(requestId, { resolve, reject, timer });
-    });
+    const waitForMessage = Effect.tryPromise<unknown, Error>({
+      try: () => pending.promise,
+      catch: (cause) => {
+        if (cause instanceof Error) return cause;
+        return new Error(String(cause));
+      },
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          const current = this.pendingRequests.get(requestId);
+          if (current === pending) {
+            this.pendingRequests.delete(requestId);
+          }
+        }),
+      ),
+    );
 
-    // Prevent unhandled rejection crashes if callers create a waiter but never await it.
-    // (We still return the original promise so callers can observe the rejection.)
-    p.catch(() => {});
-    return p;
+    return runEffectPromise(
+      withTimeout(waitForMessage, timeout, () => new IpcTimeoutError(requestId, timeout)),
+      { suppressUnhandledRejection: true },
+    );
   }
 
   private dispatch(raw: unknown): void {
@@ -273,7 +291,6 @@ export class IpcProtocol {
     if (typeof msg["requestId"] === "string") {
       const pending = this.pendingRequests.get(msg["requestId"]);
       if (pending) {
-        clearTimeout(pending.timer);
         this.pendingRequests.delete(msg["requestId"]);
         pending.resolve(raw);
         return;
@@ -294,6 +311,36 @@ export class IpcProtocol {
       }
     }
   }
+
+  private rejectPendingRequests(errorForRequest: (requestId: string) => Error): void {
+    for (const [requestId, pending] of this.pendingRequests) {
+      this.pendingRequests.delete(requestId);
+      pending.reject(errorForRequest(requestId));
+    }
+  }
+}
+
+function createPendingRequest(): {
+  promise: Promise<unknown>;
+  resolve: (msg: unknown) => void;
+  reject: (err: Error) => void;
+} {
+  let resolveFn: ((msg: unknown) => void) | null = null;
+  let rejectFn: ((err: Error) => void) | null = null;
+  const promise = new Promise<unknown>((resolve, reject) => {
+    resolveFn = resolve;
+    rejectFn = (err: Error) => reject(err);
+  });
+
+  return {
+    promise,
+    resolve: (msg: unknown) => {
+      resolveFn?.(msg);
+    },
+    reject: (err: Error) => {
+      rejectFn?.(err);
+    },
+  };
 }
 
 /**

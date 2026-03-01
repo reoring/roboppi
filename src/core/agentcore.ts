@@ -275,6 +275,7 @@ export class AgentCore {
       workspaceRef: payload.workspaceRef,
       instructions: payload.instructions,
       ...(payload.model ? { model: payload.model } : {}),
+      ...(payload.variant ? { variant: payload.variant } : {}),
       capabilities: payload.capabilities,
       outputMode: payload.outputMode,
       budget: payload.budget,

@@ -249,7 +249,7 @@ export class Supervisor {
           }
         }
         await this.cleanupSocketArtifacts();
-        return this.spawnCoreTcp(childEnv);
+        return this.spawnCoreTcp(childEnv, true);
       }
       throw err;
     }
@@ -257,9 +257,6 @@ export class Supervisor {
     // Ensure Core selects the Unix socket path mode.
     delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
     delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
-    delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
-    delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
-    childEnv.ROBOPPI_IPC_SOCKET_PATH = socketPath;
     childEnv.ROBOPPI_IPC_SOCKET_PATH = socketPath;
 
     const core = this.resolveCoreCommand();
@@ -351,7 +348,10 @@ export class Supervisor {
     return ipc;
   }
 
-  private async spawnCoreTcp(childEnv: Record<string, string>): Promise<IpcProtocol> {
+  private async spawnCoreTcp(
+    childEnv: Record<string, string>,
+    allowStdioFallback: boolean = false,
+  ): Promise<IpcProtocol> {
     // TCP loopback transport for supervised mode.
     // Intended as a fallback for environments where Unix domain sockets are blocked.
 
@@ -362,23 +362,43 @@ export class Supervisor {
 
     const host = "127.0.0.1";
 
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-      const onListening = () => {
-        cleanup();
-        resolve();
-      };
-      const cleanup = () => {
-        server.off("error", onError);
-        server.off("listening", onListening);
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-      server.listen({ host, port: 0 });
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const onListening = () => {
+          cleanup();
+          resolve();
+        };
+        const cleanup = () => {
+          server.off("error", onError);
+          server.off("listening", onListening);
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen({ host, port: 0 });
+      });
+    } catch (err) {
+      if (allowStdioFallback) {
+        if (process.env.ROBOPPI_IPC_TRACE === "1") {
+          try {
+            process.stderr.write(
+              `[IPC][supervisor] tcp listen failed; falling back to stdio (${err instanceof Error ? err.message : String(err)})\n`,
+            );
+          } catch {
+            // ignore
+          }
+        }
+        await this.cleanupSocketArtifacts();
+        delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
+        delete childEnv.ROBOPPI_IPC_SOCKET_HOST;
+        delete childEnv.ROBOPPI_IPC_SOCKET_PORT;
+        return this.spawnCoreStdio(childEnv);
+      }
+      throw err;
+    }
 
     const addr = server.address();
     if (!addr || typeof addr === "string") {
@@ -387,9 +407,6 @@ export class Supervisor {
 
     // Ensure Core selects the TCP mode.
     delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
-    delete childEnv.ROBOPPI_IPC_SOCKET_PATH;
-    childEnv.ROBOPPI_IPC_SOCKET_HOST = addr.address || host;
-    childEnv.ROBOPPI_IPC_SOCKET_PORT = String(addr.port);
     childEnv.ROBOPPI_IPC_SOCKET_HOST = addr.address || host;
     childEnv.ROBOPPI_IPC_SOCKET_PORT = String(addr.port);
 

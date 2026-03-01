@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import type { StepDefinition, CompletionCheckDef } from "./types.js";
 import type { StepRunner, StepRunResult, CheckResult } from "./executor.js";
 import { ErrorClass } from "../types/common.js";
+import type { ExecEventSink } from "../tui/exec-event.js";
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -18,6 +19,7 @@ export class ShellStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    _sink?: ExecEventSink,
   ): Promise<StepRunResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[36m[step:${stepId}]\x1b[0m Running...\n`);
@@ -70,6 +72,7 @@ export class ShellStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    _sink?: ExecEventSink,
   ): Promise<CheckResult> {
     if (this.verbose) {
       process.stderr.write(`\x1b[33m[check:${stepId}]\x1b[0m Running completion check...\n`);

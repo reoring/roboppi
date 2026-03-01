@@ -16,6 +16,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { supportsChildBunStdinPipe } from "../../test/helpers/supervised-ipc-capability.js";
 
 type CliExit = { code: number | null; signal: NodeJS.Signals | null };
 type CliResult = CliExit & { stdout: string; stderr: string };
@@ -30,6 +31,9 @@ function createCleanEnv(extra?: Record<string, string | undefined>): NodeJS.Proc
     "ROBOPPI_AGENTS_FILE",
     "ROBOPPI_CORE_ENTRYPOINT",
     "ROBOPPI_SUPERVISED_IPC_TRANSPORT",
+    "ROBOPPI_IPC_SOCKET_PATH",
+    "ROBOPPI_IPC_SOCKET_HOST",
+    "ROBOPPI_IPC_SOCKET_PORT",
     "ROBOPPI_KEEPALIVE",
     "ROBOPPI_KEEPALIVE_INTERVAL",
     "ROBOPPI_IPC_TRACE",
@@ -59,7 +63,7 @@ function spawnCli(args: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: str
   const env = options?.env ?? createCleanEnv();
   const cwd = options?.cwd ?? REPO_ROOT;
 
-  const child = spawn(process.execPath, ["run", "src/cli.ts", ...args], {
+  const child = spawn(process.execPath, ["run", "src/cli.ts", "--", ...args], {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -130,6 +134,9 @@ async function runCli(
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
+    // Avoid hangs on a still-open stdin pipe.
+    child.stdin.end();
+
     const exit = await Promise.race([
       waitForExit(),
       new Promise<CliExit>((resolve) => {
@@ -242,6 +249,10 @@ describe("CLI E2E: subworkflow invocation (modes)", () => {
   it(
     "direct supervised (supervised + stdio transport)",
     async () => {
+      if (!(await supportsChildBunStdinPipe())) {
+        return;
+      }
+
       const dir = await mkdtemp(path.join(tmpdir(), "cli-e2e-subwf-supervised-stdio-"));
       try {
         const ws = path.join(dir, "ws");
@@ -266,6 +277,10 @@ describe("CLI E2E: subworkflow invocation (modes)", () => {
   it(
     "supervised (supervised + socket transport)",
     async () => {
+      if (!(await supportsChildBunStdinPipe())) {
+        return;
+      }
+
       const dir = await mkdtemp(path.join(tmpdir(), "cli-e2e-subwf-supervised-socket-"));
       try {
         const ws = path.join(dir, "ws");

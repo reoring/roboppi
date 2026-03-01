@@ -133,14 +133,16 @@ describe("buildArgs", () => {
     expect(args[printIdx + 1]).toBe("Fix the bug in main.ts");
   });
 
-  test("includes --output-format json when outputFormat is json", () => {
+  test("uses --output-format stream-json in STREAM mode when outputFormat is json", () => {
     const task = makeTask();
     const config = makeDefaultConfig();
     const args = buildArgs(task, config);
 
     expect(args).toContain("--output-format");
     const fmtIdx = args.indexOf("--output-format");
-    expect(args[fmtIdx + 1]).toBe("json");
+    expect(args[fmtIdx + 1]).toBe("stream-json");
+    expect(args).toContain("--verbose");
+    expect(args).toContain("--include-partial-messages");
   });
 
   test("omits --output-format when outputFormat is text", () => {

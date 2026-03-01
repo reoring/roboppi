@@ -43,6 +43,7 @@ export interface ResolvedWorkerTaskDef {
   workspaceRef: string;
   instructions: string;
   model?: string;
+  variant?: string;
   capabilities: WorkerCapability[];
   timeoutMs: number;
   maxSteps?: number;
@@ -63,6 +64,7 @@ type TaskLikeDef = {
   max_steps?: StepDefinition["max_steps"];
   max_command_time?: StepDefinition["max_command_time"];
   model?: StepDefinition["model"];
+  variant?: StepDefinition["variant"];
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +130,7 @@ export function resolveTaskLike(
     capabilities: toWorkerCapabilities(def.capabilities ?? []),
     timeoutMs,
     ...(def.model ? { model: def.model } : {}),
+    ...(def.variant ? { variant: def.variant } : {}),
     ...(def.max_steps !== undefined ? { maxSteps: def.max_steps } : {}),
     ...(maxCommandTimeMs !== undefined ? { maxCommandTimeMs } : {}),
     ...(env ? { env } : {}),
@@ -159,6 +162,7 @@ export function buildWorkerTask(
     capabilities: resolved.capabilities,
     outputMode: OutputMode.BATCH,
     ...(resolved.model ? { model: resolved.model } : {}),
+    ...(resolved.variant ? { variant: resolved.variant } : {}),
     budget: {
       deadlineAt,
       ...(resolved.maxSteps !== undefined

@@ -5,6 +5,8 @@ export type { IpcProtocolOptions } from "./protocol.js";
 export {
   IpcParseError,
   IpcDisconnectError,
+  IpcRequestReplacedError,
+  IpcStoppedError,
   IpcTimeoutError,
   IpcBufferOverflowError,
   IpcSerializeError,

@@ -1,6 +1,8 @@
 import YAML from "yaml";
 import path from "node:path";
 import type { WorkflowDefinition, StepDefinition, CompletionCheckDef } from "./types.js";
+import type { ManagementConfig, ManagementAgentConfig, StepManagementConfig } from "./management/types.js";
+import { VALID_MANAGEMENT_HOOKS, VALID_ENGINE_TYPES } from "./management/types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
 import { ErrorClass } from "../types/common.js";
 import { parseDuration } from "./duration.js";
@@ -15,6 +17,7 @@ const RESERVED_STEP_IDS = new Set([
   "_meta.json",
   "_resolved.json",
   "_convergence",
+  "_management",
 ]);
 
 // Names reserved within a step context directory.
@@ -24,6 +27,7 @@ const RESERVED_ARTIFACT_NAMES = new Set([
   "_resolved.json",
   "_convergence",
   "_stall",
+  "_management",
 ]);
 
 function assertValidStepId(stepId: string): void {
@@ -423,6 +427,7 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
+  validateOptionalString(obj["variant"], `steps.${stepId}.completion_check.variant`);
 
   // For non-shell completion checks, a machine-readable decision file is required.
   // CUSTOM checks use exit-code semantics and do not need decision_file.
@@ -575,6 +580,12 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
     // Validate stall policy (Sentinel guard, opt-in)
     validateStallPolicy(obj["stall"], `steps.${stepId}.stall`);
 
+    // Validate step-level management overrides
+    const stepMgmt = validateStepManagement(obj["management"], stepId);
+    if (stepMgmt !== undefined) {
+      obj["management"] = stepMgmt;
+    }
+
     // Validate on_iterations_exhausted enum
     if (obj["on_iterations_exhausted"] !== undefined) {
       if (!["abort", "continue"].includes(obj["on_iterations_exhausted"] as string)) {
@@ -598,6 +609,7 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   validateWorker(obj["worker"], `steps.${stepId}.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.model`);
+  validateOptionalString(obj["variant"], `steps.${stepId}.variant`);
 
   if (obj["exports"] !== undefined) {
     throw new WorkflowParseError(
@@ -689,6 +701,12 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   // Validate stall policy (Sentinel guard, opt-in)
   validateStallPolicy(obj["stall"], `steps.${stepId}.stall`);
 
+  // Validate step-level management overrides
+  const stepMgmt2 = validateStepManagement(obj["management"], stepId);
+  if (stepMgmt2 !== undefined) {
+    obj["management"] = stepMgmt2;
+  }
+
   // Validate on_failure enum
   if (obj["on_failure"] !== undefined) {
     if (!["retry", "continue", "abort"].includes(obj["on_failure"] as string)) {
@@ -708,6 +726,194 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   }
 
   return obj as unknown as StepDefinition;
+}
+
+function validateManagementAgent(value: unknown, fieldPrefix: string, agents?: AgentCatalog): ManagementAgentConfig {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`${fieldPrefix} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  const hasWorker = obj["worker"] !== undefined;
+  const hasAgent = obj["agent"] !== undefined;
+
+  if (hasWorker && hasAgent) {
+    throw new WorkflowParseError(
+      `${fieldPrefix}: "worker" and "agent" are mutually exclusive`,
+    );
+  }
+
+  if (hasWorker) {
+    validateWorker(obj["worker"], `${fieldPrefix}.worker`);
+  }
+  if (hasAgent) {
+    assertString(obj["agent"], `${fieldPrefix}.agent`);
+    const agentId = (obj["agent"] as string).trim();
+    if (!agents) {
+      throw new WorkflowParseError(
+        `${fieldPrefix}.agent is set to "${agentId}", but no agent catalog was provided (use --agents or set ROBOPPI_AGENTS_FILE)`,
+      );
+    }
+    if (!agents[agentId]) {
+      throw new WorkflowParseError(`${fieldPrefix}.agent references unknown agent "${agentId}"`);
+    }
+  }
+
+  // Engine type validation
+  if (obj["engine"] !== undefined) {
+    assertString(obj["engine"], `${fieldPrefix}.engine`);
+    if (!VALID_ENGINE_TYPES.has(obj["engine"] as string)) {
+      throw new WorkflowParseError(
+        `${fieldPrefix}.engine: invalid value "${obj["engine"]}". Valid values: ${[...VALID_ENGINE_TYPES].join(", ")}`,
+      );
+    }
+  }
+
+  validateOptionalString(obj["model"], `${fieldPrefix}.model`);
+  if (obj["capabilities"] !== undefined) {
+    validateCapabilities(obj["capabilities"], `${fieldPrefix}.capabilities`);
+  }
+  if (obj["timeout"] !== undefined) {
+    assertString(obj["timeout"], `${fieldPrefix}.timeout`);
+    try {
+      parseDuration(obj["timeout"] as string);
+    } catch {
+      throw new WorkflowParseError(
+        `${fieldPrefix}.timeout: invalid duration "${obj["timeout"]}". Use formats like "30s", "5m", "1h30m"`,
+      );
+    }
+  }
+  validateOptionalString(obj["base_instructions"], `${fieldPrefix}.base_instructions`);
+  validateOptionalString(obj["workspace"], `${fieldPrefix}.workspace`);
+  validateOptionalNumber(obj["max_steps"], `${fieldPrefix}.max_steps`, { min: 1 });
+  if (obj["max_command_time"] !== undefined) {
+    assertString(obj["max_command_time"], `${fieldPrefix}.max_command_time`);
+    try {
+      parseDuration(obj["max_command_time"] as string);
+    } catch {
+      throw new WorkflowParseError(
+        `${fieldPrefix}.max_command_time: invalid duration "${obj["max_command_time"]}". Use formats like "30s", "5m"`,
+      );
+    }
+  }
+
+  return obj as unknown as ManagementAgentConfig;
+}
+
+function validateManagementHooks(value: unknown, fieldPrefix: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`${fieldPrefix} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!VALID_MANAGEMENT_HOOKS.has(key as any)) {
+      throw new WorkflowParseError(
+        `${fieldPrefix} contains unknown hook "${key}". Valid hooks: ${[...VALID_MANAGEMENT_HOOKS].join(", ")}`,
+      );
+    }
+    if (typeof obj[key] !== "boolean") {
+      throw new WorkflowParseError(`${fieldPrefix}.${key} must be a boolean`);
+    }
+  }
+}
+
+function validateManagement(value: unknown, agents?: AgentCatalog): ManagementConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError("management must be an object");
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], "management.enabled");
+
+  if (obj["enabled"] === true && obj["agent"] === undefined) {
+    throw new WorkflowParseError(
+      "management.agent is required when management.enabled is true",
+    );
+  }
+
+  if (obj["agent"] !== undefined) {
+    validateManagementAgent(obj["agent"], "management.agent", agents);
+  }
+
+  if (obj["hooks"] !== undefined) {
+    validateManagementHooks(obj["hooks"], "management.hooks");
+  }
+
+  if (obj["periodic_interval"] !== undefined) {
+    assertString(obj["periodic_interval"], "management.periodic_interval");
+    try {
+      parseDuration(obj["periodic_interval"] as string);
+    } catch {
+      throw new WorkflowParseError(
+        `management.periodic_interval: invalid duration "${obj["periodic_interval"]}". Use formats like "2m", "30s"`,
+      );
+    }
+  }
+
+  if (obj["max_consecutive_interventions"] !== undefined) {
+    if (typeof obj["max_consecutive_interventions"] !== "number" || !Number.isFinite(obj["max_consecutive_interventions"])) {
+      throw new WorkflowParseError("management.max_consecutive_interventions must be a finite number");
+    }
+    if (obj["max_consecutive_interventions"] < 1) {
+      throw new WorkflowParseError("management.max_consecutive_interventions must be >= 1");
+    }
+  }
+
+  if (obj["min_remaining_time"] !== undefined) {
+    assertString(obj["min_remaining_time"], "management.min_remaining_time");
+    try {
+      parseDuration(obj["min_remaining_time"] as string);
+    } catch {
+      throw new WorkflowParseError(
+        `management.min_remaining_time: invalid duration "${obj["min_remaining_time"]}". Use formats like "2m", "30s"`,
+      );
+    }
+  }
+
+  return obj as unknown as ManagementConfig;
+}
+
+function validateStepManagement(value: unknown, stepId: string): StepManagementConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`steps.${stepId}.management must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  // Reject unknown keys to prevent silent typos.
+  const allowed = new Set<string>([
+    "enabled",
+    "context_hint",
+    ...[...VALID_MANAGEMENT_HOOKS],
+  ]);
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new WorkflowParseError(
+        `steps.${stepId}.management contains unknown key "${key}". Valid keys: ${[...allowed].join(", ")}`,
+      );
+    }
+  }
+
+  if (obj["enabled"] !== undefined) {
+    if (typeof obj["enabled"] !== "boolean") {
+      throw new WorkflowParseError(`steps.${stepId}.management.enabled must be a boolean`);
+    }
+  }
+
+  if (obj["context_hint"] !== undefined) {
+    if (typeof obj["context_hint"] !== "string") {
+      throw new WorkflowParseError(`steps.${stepId}.management.context_hint must be a string`);
+    }
+  }
+
+  for (const hook of VALID_MANAGEMENT_HOOKS) {
+    if (obj[hook] !== undefined && typeof obj[hook] !== "boolean") {
+      throw new WorkflowParseError(`steps.${stepId}.management.${hook} must be a boolean`);
+    }
+  }
+
+  return obj as unknown as StepManagementConfig;
 }
 
 const MAX_YAML_SIZE = 1024 * 1024; // 1MB
@@ -749,6 +955,9 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
 
   // Validate sentinel config (opt-in)
   validateSentinel(doc["sentinel"]);
+
+  // Validate management config (opt-in)
+  const managementConfig = validateManagement(doc["management"], options.agents);
 
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');
@@ -794,6 +1003,7 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
     sentinel: doc["sentinel"] !== undefined
       ? (doc["sentinel"] as WorkflowDefinition["sentinel"])
       : undefined,
+    management: managementConfig,
     steps: validatedSteps,
   };
 }

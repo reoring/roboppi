@@ -115,16 +115,7 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
 
   const stdin = ipcSocket
     ? (Readable.toWeb(ipcSocket) as unknown as ReadableStream<Uint8Array>)
-    : (() => {
-        // Prefer Bun's native stdin stream, but fall back to Node's process.stdin stream
-        // when Bun stdin stream plumbing differs in some environments.
-        const bunStdin = Bun.stdin as { stream?: () => ReadableStream<Uint8Array> } | undefined;
-        if (bunStdin?.stream) {
-          return bunStdin.stream() as ReadableStream<Uint8Array>;
-        }
-
-        return Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>;
-      })();
+    : resolveStdioInput();
 
   const stdout = ipcSocket
     ? (Writable.toWeb(ipcSocket) as unknown as WritableStream<Uint8Array>)
@@ -212,4 +203,21 @@ export function startCoreRuntime(options: CoreRuntimeOptions = {}): void {
     socketHost: ipcSocketKind === "tcp" ? resolvedIpcHost : undefined,
     socketPort: ipcSocketKind === "tcp" ? resolvedIpcPort : undefined,
   });
+}
+
+function resolveStdioInput(): ReadableStream<Uint8Array> {
+  // Prefer Node's stdin stream for child-process IPC reliability.
+  // Some environments can drop input when using Bun.stdin.stream().
+  try {
+    return Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>;
+  } catch {
+    // fall through
+  }
+
+  const bunStdin = Bun.stdin as { stream?: () => ReadableStream<Uint8Array> } | undefined;
+  if (bunStdin?.stream) {
+    return bunStdin.stream() as ReadableStream<Uint8Array>;
+  }
+
+  throw new Error("Failed to initialize IPC stdin stream");
 }
