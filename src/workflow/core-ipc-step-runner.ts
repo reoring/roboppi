@@ -74,6 +74,7 @@ export class CoreIpcStepRunner implements StepRunner {
   private ipc: IpcProtocol | null = null;
   private readonly waiters = new Map<UUID, { resolve: (m: JobCompletedMessage) => void }>();
   private readonly jobStepMap = new Map<UUID, string>();
+  private readonly jobSinkMap = new Map<UUID, ExecEventSink>();
 
   constructor(options: CoreIpcStepRunnerOptions = {}) {
     this.verbose = options.verbose ?? false;
@@ -120,6 +121,7 @@ export class CoreIpcStepRunner implements StepRunner {
     this.ipc = null;
     this.waiters.clear();
     this.jobStepMap.clear();
+    this.jobSinkMap.clear();
   }
 
   async runStep(
@@ -128,10 +130,12 @@ export class CoreIpcStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    sinkOverride?: ExecEventSink,
   ): Promise<StepRunResult> {
     const task = resolveTaskLike(step, workspaceDir, env);
 
-    const result = await this.runWorkerTask(stepId, task, abortSignal);
+    const sink = sinkOverride ?? this.sink;
+    const result = await this.runWorkerTask(stepId, task, abortSignal, sink);
 
     if (result.status === WorkerStatus.SUCCEEDED) {
       return {
@@ -161,6 +165,7 @@ export class CoreIpcStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    sinkOverride?: ExecEventSink,
   ): Promise<CheckResult> {
     const checkStartedAt = Date.now();
     const checkId = generateId();
@@ -175,7 +180,8 @@ export class CoreIpcStepRunner implements StepRunner {
       ...baseTask,
       instructions: interpolateCompletionCheckId(baseTask.instructions, checkId),
     };
-    const result = await this.runWorkerTask(stepId, task, abortSignal);
+    const sink = sinkOverride ?? this.sink;
+    const result = await this.runWorkerTask(stepId, task, abortSignal, sink);
 
     if (check.worker === "CUSTOM") {
       // Shell completion check semantics:
@@ -281,7 +287,8 @@ export class CoreIpcStepRunner implements StepRunner {
   private onJobEvent(msg: JobEventMessage): void {
     const stepId = this.jobStepMap.get(msg.jobId);
     if (!stepId) return; // unknown job, ignore
-    this.sink.emit({
+    const sink = this.jobSinkMap.get(msg.jobId) ?? this.sink;
+    sink.emit({
       type: "worker_event",
       stepId,
       ts: msg.ts,
@@ -299,6 +306,7 @@ export class CoreIpcStepRunner implements StepRunner {
     stepId: string,
     task: ResolvedWorkerTaskDef,
     parentAbort: AbortSignal,
+    sink: ExecEventSink,
   ): Promise<WorkerResult> {
     const startedAt = Date.now();
     const ipc = await this.ensureIpc();
@@ -308,6 +316,7 @@ export class CoreIpcStepRunner implements StepRunner {
     const placeholderDeadlineAt = Date.now() + task.timeoutMs;
     const job = this.buildWorkerJob({ ...task, deadlineAt: placeholderDeadlineAt });
     this.jobStepMap.set(job.jobId, stepId);
+    this.jobSinkMap.set(job.jobId, sink);
     const completionPromise = this.waitForJobCompleted(job.jobId);
 
     const cancelReason = `step:${stepId} aborted`;
@@ -334,7 +343,7 @@ export class CoreIpcStepRunner implements StepRunner {
     try {
       await this.submitJob(ipc, job, parentAbort);
       submitted = true;
-      this.sink.emit({ type: "step_phase", stepId, phase: "submitting_job", at: Date.now() });
+      sink.emit({ type: "step_phase", stepId, phase: "submitting_job", at: Date.now() });
 
       const deadlineAt = Date.now() + task.timeoutMs;
       // Update job payload budget to reflect the post-ack execution deadline.
@@ -342,9 +351,9 @@ export class CoreIpcStepRunner implements StepRunner {
       const payload = job.payload as { budget: { deadlineAt: number } };
       payload.budget.deadlineAt = deadlineAt;
 
-      this.sink.emit({ type: "step_phase", stepId, phase: "waiting_permit", at: Date.now() });
+      sink.emit({ type: "step_phase", stepId, phase: "waiting_permit", at: Date.now() });
       await this.requestPermitUntilGranted(ipc, job, deadlineAt, parentAbort);
-      this.sink.emit({ type: "step_phase", stepId, phase: "executing", at: Date.now() });
+      sink.emit({ type: "step_phase", stepId, phase: "executing", at: Date.now() });
 
       execScoped = createScopedAbort(parentAbort, deadlineAt);
       onExecAbort = () => {
@@ -380,7 +389,7 @@ export class CoreIpcStepRunner implements StepRunner {
         if (result.durationMs === 0) result.durationMs = wallTimeMs;
       }
 
-      this.sink.emit({ type: "worker_result", stepId, ts: Date.now(), result });
+      sink.emit({ type: "worker_result", stepId, ts: Date.now(), result });
 
       if (this.verbose) {
         const text = extractWorkerText(result);
@@ -424,7 +433,7 @@ export class CoreIpcStepRunner implements StepRunner {
         errorClass,
       };
     } finally {
-      this.sink.emit({ type: "step_phase", stepId, phase: "finalizing", at: Date.now() });
+      sink.emit({ type: "step_phase", stepId, phase: "finalizing", at: Date.now() });
       parentAbort.removeEventListener("abort", onParentAbort);
       if (execScoped && onExecAbort) {
         execScoped.signal.removeEventListener("abort", onExecAbort);
@@ -434,6 +443,7 @@ export class CoreIpcStepRunner implements StepRunner {
       // without receiving a job_completed (e.g. abort, timeout, IPC error).
       this.waiters.delete(job.jobId);
       this.jobStepMap.delete(job.jobId);
+      this.jobSinkMap.delete(job.jobId);
     }
   }
 
@@ -447,6 +457,7 @@ export class CoreIpcStepRunner implements StepRunner {
       workspaceRef: task.workspaceRef,
       instructions: task.instructions,
       ...(task.model ? { model: task.model } : {}),
+      ...(task.variant ? { variant: task.variant } : {}),
       capabilities: task.capabilities,
       outputMode: this.tuiEnabled ? OutputMode.STREAM : OutputMode.BATCH,
       budget: {

@@ -68,7 +68,9 @@ function spawnCli(args: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: str
   const env = options?.env ?? createCleanEnv();
   const cwd = options?.cwd ?? REPO_ROOT;
 
-  const child = spawn(process.execPath, ["run", "src/cli.ts", ...args], {
+  // NOTE: Use `--` to ensure Bun forwards positional args (e.g. "run")
+  // to the CLI script, rather than interpreting them as Bun subcommands.
+  const child = spawn(process.execPath, ["run", "src/cli.ts", "--", ...args], {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -142,7 +144,8 @@ async function runCli(args: string[], options?: { stdin?: string; timeoutMs?: nu
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     if (options?.stdin !== undefined) {
-      child.stdin.write(options.stdin);
+      child.stdin.end(options.stdin);
+    } else {
       child.stdin.end();
     }
 
@@ -295,6 +298,11 @@ describe("CLI E2E (bun run src/cli.ts ...)", () => {
     async () => {
       const runRes = await runCli(["run"], { timeoutMs: 20_000 });
       const agentRes = await runCli(["agent"], { timeoutMs: 20_000 });
+
+      expect(runRes.signal).toBeNull();
+      expect(agentRes.signal).toBeNull();
+      expect(runRes.code).not.toBeNull();
+      expect(agentRes.code).not.toBeNull();
 
       expect(runRes.code).not.toBe(0);
       expect(agentRes.code).not.toBe(0);

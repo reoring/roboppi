@@ -27,6 +27,7 @@ import type {
   HookContext,
 } from "./types.js";
 import { DEFAULT_PROCEED_DIRECTIVE, VALID_MANAGEMENT_ACTIONS } from "./types.js";
+import { validateDirectiveShape } from "./directive-validator.js";
 
 // ---------------------------------------------------------------------------
 // Types for the Pi SDK (minimal subset we depend on)
@@ -83,39 +84,16 @@ function buildPiTools(
   workspaceDir: string,
   piModule: any,
 ): unknown[] {
-  const caps = new Set(capabilities);
-  const tools: unknown[] = [];
+  // Policy/mechanism separation: PiSdkEngine runs in-process, so do not expose
+  // general-purpose command execution tools here. Keep management Pi sessions
+  // strictly read-only regardless of declared capabilities.
+  void capabilities; // intentionally ignored
 
-  if (caps.has("EDIT") || caps.has("RUN_COMMANDS")) {
-    // Full coding tools: read, bash, edit, write
-    if (piModule?.createCodingTools) {
-      tools.push(...piModule.createCodingTools(workspaceDir));
-    } else {
-      // Fallback: stub tools for testing / when Pi SDK unavailable
-      tools.push(stubTool("read"), stubTool("bash"), stubTool("edit"), stubTool("write"));
-    }
-  } else if (caps.has("RUN_TESTS")) {
-    // Read + restricted bash
-    if (piModule?.createReadOnlyTools) {
-      tools.push(...piModule.createReadOnlyTools(workspaceDir));
-    } else {
-      tools.push(stubTool("read"), stubTool("grep"), stubTool("find"), stubTool("ls"));
-    }
-    if (piModule?.createBashTool) {
-      tools.push(piModule.createBashTool(workspaceDir));
-    } else {
-      tools.push(stubTool("bash"));
-    }
-  } else if (caps.has("READ")) {
-    // Read-only tools: read, grep, find, ls
-    if (piModule?.createReadOnlyTools) {
-      tools.push(...piModule.createReadOnlyTools(workspaceDir));
-    } else {
-      tools.push(stubTool("read"), stubTool("grep"), stubTool("find"), stubTool("ls"));
-    }
+  if (piModule?.createReadOnlyTools) {
+    return [...piModule.createReadOnlyTools(workspaceDir)];
   }
 
-  return tools;
+  return [stubTool("read"), stubTool("grep"), stubTool("find"), stubTool("ls")];
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +360,7 @@ export class PiSdkEngine implements ManagementAgentEngine {
       },
       execute: async (_toolCallId: string, params: Record<string, unknown>) => {
         const hookId = params.hook_id as string;
-        const directive = params.directive as ManagementDirective;
+        const directiveRaw = params.directive;
         const reasoning = params.reasoning as string | undefined;
         const confidence = params.confidence as number | undefined;
 
@@ -394,15 +372,20 @@ export class PiSdkEngine implements ManagementAgentEngine {
           };
         }
 
-        // Validate action
-        if (directive && typeof directive.action === "string" &&
-            VALID_MANAGEMENT_ACTIONS.has(directive.action as ManagementAction)) {
-          this.capturedHookId = hookId;
-          this.capturedDirective = directive;
-          this.capturedMeta = {
-            ...(reasoning ? { reasoning } : {}),
-            ...(confidence !== undefined ? { confidence } : {}),
-          };
+        // Validate directive shape (required fields, bounds). If invalid, do not
+        // capture a decision (engine will fall back to proceed).
+        const shape = validateDirectiveShape(directiveRaw);
+        if (shape.valid) {
+          const directive = shape.directive as ManagementDirective;
+          if (typeof directive.action === "string" &&
+              VALID_MANAGEMENT_ACTIONS.has(directive.action as ManagementAction)) {
+            this.capturedHookId = hookId;
+            this.capturedDirective = directive;
+            this.capturedMeta = {
+              ...(reasoning ? { reasoning } : {}),
+              ...(confidence !== undefined ? { confidence } : {}),
+            };
+          }
         }
 
         return {

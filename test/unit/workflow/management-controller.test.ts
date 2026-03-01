@@ -177,4 +177,84 @@ describe("ManagementController", () => {
       await controller.stop();
     }
   });
+
+  it("records engine meta (reasoning/confidence) in decisions log when present", async () => {
+    const contextDir = await makeTempDir();
+
+    const engine: ManagementAgentEngine = {
+      async invokeHook(): Promise<ManagementAgentEngineResult> {
+        return {
+          directive: { action: "proceed" },
+          source: "decided",
+          meta: { reasoning: "looks safe", confidence: 0.9 },
+        };
+      },
+      async dispose(): Promise<void> {},
+    };
+
+    const controller = new ManagementController(
+      contextDir,
+      buildConfig(),
+      engine,
+    );
+
+    try {
+      await controller.invokeHook(
+        "pre_step",
+        "A",
+        StepStatus.READY,
+        buildSteps(),
+        new AbortController().signal,
+      );
+
+      const entries = await readDecisions(contextDir);
+      expect(entries.length).toBe(1);
+      expect(entries[0]!.reasoning).toBe("looks safe");
+      expect(entries[0]!.confidence).toBe(0.9);
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it("max_consecutive_interventions bypass resets streak so hooks resume", async () => {
+    const contextDir = await makeTempDir();
+
+    let engineCalls = 0;
+    const engine: ManagementAgentEngine = {
+      async invokeHook(): Promise<ManagementAgentEngineResult> {
+        engineCalls++;
+        return {
+          directive: { action: "modify_instructions", append: "x" },
+          source: "decided",
+        };
+      },
+      async dispose(): Promise<void> {},
+    };
+
+    const cfg: ManagementConfig = {
+      ...buildConfig(),
+      max_consecutive_interventions: 2,
+    };
+
+    const controller = new ManagementController(
+      contextDir,
+      cfg,
+      engine,
+    );
+
+    try {
+      const steps = buildSteps();
+      const signal = new AbortController().signal;
+
+      await controller.invokeHook("pre_step", "A", StepStatus.READY, steps, signal);
+      await controller.invokeHook("pre_step", "A", StepStatus.READY, steps, signal);
+      await controller.invokeHook("pre_step", "A", StepStatus.READY, steps, signal); // bypass
+      await controller.invokeHook("pre_step", "A", StepStatus.READY, steps, signal); // resumes
+
+      // 1st + 2nd + 4th should call engine, 3rd should bypass.
+      expect(engineCalls).toBe(3);
+    } finally {
+      await controller.stop();
+    }
+  });
 });

@@ -10,6 +10,7 @@ import { mkdtemp, rm, readFile, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseWorkflow } from "../../src/workflow/parser.js";
+import { parseAgentCatalog } from "../../src/workflow/agent-catalog.js";
 import { ContextManager } from "../../src/workflow/context-manager.js";
 import {
   WorkflowExecutor,
@@ -687,12 +688,14 @@ steps:
 
       const { state: _state2 } = await executeYaml(yaml, runner, dir);
 
-      // pre_step hook fires once (at launchStep, before the first iteration).
-      // Subsequent iterations reuse the same overlay from the initial pre_step.
-      // Verify the first iteration has the management overlay from call 1.
-      expect(capturedInstructions.length).toBeGreaterThanOrEqual(1);
-      const iter1Instructions = capturedInstructions[0]!;
-      expect(iter1Instructions).toContain("MGMT_OVERLAY_ITER_1");
+      expect(capturedInstructions.length).toBeGreaterThanOrEqual(3);
+
+      // Iteration 1: overlay from call 1
+      expect(capturedInstructions[0]!).toContain("MGMT_OVERLAY_ITER_1");
+      // Iteration 2: overlay from call 2 (replacement)
+      expect(capturedInstructions[1]!).toContain("MGMT_OVERLAY_ITER_2");
+      // Iteration 3+: proceed should clear overlay
+      expect(capturedInstructions[2]!).not.toContain("MGMT_OVERLAY_ITER_");
     });
   });
 
@@ -1856,6 +1859,476 @@ steps:
           event.message.includes("Step completed with observations"),
       );
       expect(annotationWarning).toBeDefined();
+    });
+  });
+
+  describe("P1: pre_check hook modifies completion_check instructions", () => {
+    it("should apply management overlay to completion_check instructions", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "30s"
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_check: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "do work"
+    capabilities: [READ]
+    max_iterations: 2
+    completion_check:
+      worker: CODEX_CLI
+      instructions: "CHECK BASE"
+      capabilities: [READ]
+      decision_file: decision.txt
+`;
+
+      let capturedCheckInstructions: string | null = null;
+
+      const runner = new MockStepRunner(
+        async (_stepId, _step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            const inputPath = env[ENV_MANAGEMENT_INPUT_FILE]!;
+            const input = JSON.parse(await readFile(inputPath, "utf-8"));
+            if (input.hook === "pre_check") {
+              await writeDecisionFile(decisionPath, {
+                hook_id: hookId,
+                hook: "pre_check",
+                step_id: input.step_id,
+                directive: { action: "modify_instructions", append: "CHECK OVERLAY" },
+              });
+            } else {
+              await writeDecisionFile(decisionPath, {
+                hook_id: hookId,
+                hook: input.hook,
+                step_id: input.step_id,
+                directive: { action: "proceed" },
+              });
+            }
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+        async (_stepId, check) => {
+          capturedCheckInstructions = check.instructions;
+          return { complete: true, failed: false };
+        },
+      );
+
+      const { state } = await executeYaml(yaml, runner, dir);
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+      expect(capturedCheckInstructions).not.toBeNull();
+      expect(capturedCheckInstructions!).toContain("CHECK BASE");
+      expect(capturedCheckInstructions!).toContain("[Management Agent]");
+      expect(capturedCheckInstructions!).toContain("CHECK OVERLAY");
+    });
+
+    it("should apply management adjust_timeout override to completion_check timeout", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "30s"
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_check: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "do work"
+    capabilities: [READ]
+    max_iterations: 2
+    completion_check:
+      worker: CODEX_CLI
+      instructions: "CHECK BASE"
+      timeout: "1s"
+      capabilities: [READ]
+      decision_file: decision.txt
+`;
+
+      let capturedCheckTimeout: string | undefined;
+
+      const runner = new MockStepRunner(
+        async (_stepId, _step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            const inputPath = env[ENV_MANAGEMENT_INPUT_FILE]!;
+            const input = JSON.parse(await readFile(inputPath, "utf-8"));
+            if (input.hook === "pre_check") {
+              await writeDecisionFile(decisionPath, {
+                hook_id: hookId,
+                hook: "pre_check",
+                step_id: input.step_id,
+                directive: { action: "adjust_timeout", timeout: "2m", reason: "slow" },
+              });
+            } else {
+              await writeDecisionFile(decisionPath, {
+                hook_id: hookId,
+                hook: input.hook,
+                step_id: input.step_id,
+                directive: { action: "proceed" },
+              });
+            }
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+        async (_stepId, check) => {
+          capturedCheckTimeout = check.timeout;
+          return { complete: true, failed: false };
+        },
+      );
+
+      const { state } = await executeYaml(yaml, runner, dir);
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+      expect(capturedCheckTimeout).toBe("120000ms");
+    });
+  });
+
+  describe("P1: step-level per-hook overrides", () => {
+    it("should enable pre_step for a step even when workflow default is false", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "10m"
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_step: false
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "work A"
+    capabilities: [READ]
+    management:
+      pre_step: true
+  B:
+    worker: CODEX_CLI
+    instructions: "work B"
+    capabilities: [READ]
+`;
+
+      const hookStepIds: string[] = [];
+
+      const runner = new MockStepRunner(
+        async (_stepId, _step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            const inputPath = env[ENV_MANAGEMENT_INPUT_FILE]!;
+            const input = JSON.parse(await readFile(inputPath, "utf-8"));
+            hookStepIds.push(input.step_id);
+            await writeDecisionFile(decisionPath, {
+              hook_id: hookId,
+              hook: input.hook,
+              step_id: input.step_id,
+              directive: { action: "proceed" },
+            });
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+      );
+
+      const { state, contextDir } = await executeYaml(yaml, runner, dir);
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+      expect(hookStepIds).toContain("A");
+      expect(hookStepIds).not.toContain("B");
+
+      const invDirs = await listInvDirs(contextDir);
+      expect(invDirs.length).toBe(1);
+    });
+
+    it("should disable pre_step for a step when step override is false", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "10m"
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_step: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "work A"
+    capabilities: [READ]
+    management:
+      pre_step: false
+  B:
+    worker: CODEX_CLI
+    instructions: "work B"
+    capabilities: [READ]
+`;
+
+      const hookStepIds: string[] = [];
+
+      const runner = new MockStepRunner(
+        async (_stepId, _step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            const inputPath = env[ENV_MANAGEMENT_INPUT_FILE]!;
+            const input = JSON.parse(await readFile(inputPath, "utf-8"));
+            hookStepIds.push(input.step_id);
+            await writeDecisionFile(decisionPath, {
+              hook_id: hookId,
+              hook: input.hook,
+              step_id: input.step_id,
+              directive: { action: "proceed" },
+            });
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+      );
+
+      const { state, contextDir } = await executeYaml(yaml, runner, dir);
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+      expect(hookStepIds).not.toContain("A");
+      expect(hookStepIds).toContain("B");
+
+      const invDirs = await listInvDirs(contextDir);
+      expect(invDirs.length).toBe(1);
+    });
+  });
+
+  describe("P1: management agent catalog resolution", () => {
+    it("should resolve management.agent.agent profile into an effective agent config", async () => {
+      const dir = await makeTmpDir();
+      const agents = parseAgentCatalog(`
+version: "1"
+agents:
+  mgr:
+    worker: CLAUDE_CODE
+    model: openai/gpt-5.2
+    capabilities: [READ]
+    base_instructions: |
+      CATALOG BASE
+`);
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "10m"
+management:
+  enabled: true
+  agent:
+    agent: mgr
+    timeout: "5s"
+    base_instructions: "WF BASE"
+  hooks:
+    pre_step: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "work A"
+    capabilities: [READ]
+`;
+
+      let capturedMgmtStepDef: StepDefinition | null = null;
+
+      const runner = new MockStepRunner(
+        async (_stepId, step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            capturedMgmtStepDef = step;
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            await writeDecisionFile(decisionPath, {
+              hook_id: hookId,
+              hook: "pre_step",
+              step_id: "A",
+              directive: { action: "proceed" },
+            });
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+      );
+
+      const definition = parseWorkflow(yaml, { agents });
+      const contextDir = path.join(dir, "context");
+      const ctx = new ContextManager(contextDir);
+      const executor = new WorkflowExecutor(
+        definition,
+        ctx,
+        runner,
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { agentCatalog: agents },
+      );
+      const state = await executor.execute();
+
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+      expect(capturedMgmtStepDef).not.toBeNull();
+      expect(capturedMgmtStepDef!.worker).toBe("CLAUDE_CODE");
+      expect(capturedMgmtStepDef!.model).toBe("openai/gpt-5.2");
+      expect(capturedMgmtStepDef!.capabilities).toEqual(["READ"]);
+      expect(capturedMgmtStepDef!.instructions).toContain("CATALOG BASE");
+      expect(capturedMgmtStepDef!.instructions).toContain("WF BASE");
+    });
+  });
+
+  describe("P2: workflow meta persists management abort reason", () => {
+    it("should persist abortReason=management and management_abort_reason", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "10m"
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_step: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "do work"
+    capabilities: [READ]
+`;
+
+      const runner = new MockStepRunner(
+        async (_stepId, _step, _callIndex, _abortSignal, env) => {
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            await writeDecisionFile(decisionPath, {
+              hook_id: hookId,
+              hook: "pre_step",
+              step_id: "A",
+              directive: { action: "abort_workflow", reason: "because" },
+            });
+            return { status: "SUCCEEDED" };
+          }
+          return { status: "SUCCEEDED" };
+        },
+      );
+
+      const { state, contextDir } = await executeYaml(yaml, runner, dir);
+      expect(state.status).toBe(WorkflowStatus.CANCELLED);
+
+      const meta = JSON.parse(
+        await readFile(path.join(contextDir, "_workflow.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      expect(meta.abortReason).toBe("management");
+      expect(meta.management_abort_reason).toBe("because");
+    });
+  });
+
+  describe("P0: management worker events do not leak into main telemetry", () => {
+    it("should not write _management step events into _workflow/events.jsonl", async () => {
+      const dir = await makeTmpDir();
+
+      const yaml = `
+name: test
+version: "1"
+timeout: "10m"
+sentinel:
+  enabled: true
+management:
+  enabled: true
+  agent:
+    worker: OPENCODE
+    capabilities: [READ]
+    timeout: "5s"
+  hooks:
+    pre_step: true
+steps:
+  A:
+    worker: CODEX_CLI
+    instructions: "do work"
+    capabilities: [READ]
+`;
+
+      const runner: StepRunner = {
+        runStep: async (
+          stepId: string,
+          _step: StepDefinition,
+          _workspaceDir: string,
+          _abortSignal: AbortSignal,
+          env?: Record<string, string>,
+          sink?: ExecEventSink,
+        ) => {
+          // Emit a worker_event to whichever sink we were given.
+          sink?.emit({
+            type: "worker_event",
+            stepId,
+            ts: Date.now(),
+            event: { type: "stdout", data: `hello:${stepId}` } as any,
+          } as any);
+
+          if (env?.[ENV_MANAGEMENT_DECISION_FILE]) {
+            const hookId = env[ENV_MANAGEMENT_HOOK_ID]!;
+            const decisionPath = env[ENV_MANAGEMENT_DECISION_FILE]!;
+            await writeDecisionFile(decisionPath, {
+              hook_id: hookId,
+              hook: "pre_step",
+              step_id: "A",
+              directive: { action: "proceed" },
+            });
+          }
+          return { status: "SUCCEEDED" } as any;
+        },
+        runCheck: async () => ({ complete: true, failed: false } as any),
+      };
+
+      const definition = parseWorkflow(yaml);
+      const contextDir = path.join(dir, "context");
+      const ctx = new ContextManager(contextDir);
+      const executor = new WorkflowExecutor(definition, ctx, runner, dir);
+      const state = await executor.execute();
+
+      expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
+
+      const eventsPath = path.join(contextDir, "_workflow", "events.jsonl");
+      const content = await readFile(eventsPath, "utf-8");
+      expect(content).not.toContain("_management:");
+
+      const invDirs = await listInvDirs(contextDir);
+      expect(invDirs.length).toBeGreaterThanOrEqual(1);
+      const workerOut = await readFile(
+        path.join(contextDir, "_management", "inv", invDirs[0]!, "worker.jsonl"),
+        "utf-8",
+      );
+      expect(workerOut).toContain('"type":"worker_event"');
     });
   });
 });

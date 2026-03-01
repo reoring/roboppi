@@ -1,5 +1,5 @@
 import { WorkerStatus, ErrorClass } from "../../types/index.js";
-import { WorkerKind, WorkerCapability } from "../../types/index.js";
+import { WorkerKind, WorkerCapability, OutputMode } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
 import type { WorkerResult, Artifact, Observation } from "../../types/index.js";
 import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
@@ -10,7 +10,7 @@ export interface ClaudeCodeAdapterConfig {
   claudeCommand?: string;
   defaultArgs?: string[];
   gracePeriodMs?: number;
-  outputFormat?: "json" | "text";
+  outputFormat?: "json" | "text" | "stream-json";
 }
 
 export function mapCapabilitiesToAllowedTools(
@@ -63,8 +63,22 @@ export function buildArgs(
   args.push("--print", task.instructions);
 
   // Output format
-  if (config.outputFormat === "json") {
+  // - For streaming tasks (TUI), prefer Claude's `stream-json` to emit events
+  //   incrementally; otherwise logs can be empty until the process exits.
+  // - Preserve legacy config behavior for non-streaming tasks.
+  const effectiveOutputFormat =
+    config.outputFormat === "json" && task.outputMode === OutputMode.STREAM
+      ? "stream-json"
+      : config.outputFormat;
+
+  if (effectiveOutputFormat === "json") {
     args.push("--output-format", "json");
+  } else if (effectiveOutputFormat === "stream-json") {
+    args.push("--output-format", "stream-json");
+    // Claude CLI requires --verbose when using --print with stream-json.
+    args.push("--verbose");
+    // Best-effort: include partial chunks so the TUI gets incremental updates.
+    args.push("--include-partial-messages");
   }
 
   // Allowed tools from capabilities

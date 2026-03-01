@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 
 let cachedProbe: Promise<boolean> | null = null;
@@ -24,8 +23,20 @@ export async function supportsChildBunStdinPipe(): Promise<boolean> {
       "process.stdin.resume();" +
       "setTimeout(() => process.exit(2), 1200);";
 
-    const child = spawn(process.execPath, ["-e", script], {
-      stdio: ["pipe", "pipe", "ignore"],
+    // IMPORTANT: use Bun.spawn here to match the actual supervised runner,
+    // which spawns the Core process via Bun.spawn (ProcessManager).
+    // The stdin-pipe issue can differ between node:child_process.spawn and Bun.spawn.
+    const bunAny = (globalThis as unknown as { Bun?: typeof Bun }).Bun;
+    if (!bunAny) {
+      resolve(false);
+      return;
+    }
+
+    const child = bunAny.spawn({
+      cmd: [process.execPath, "-e", script],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
       env: { ...process.env },
     });
 
@@ -42,20 +53,36 @@ export async function supportsChildBunStdinPipe(): Promise<boolean> {
       resolve(value);
     };
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (stdout.includes(token)) {
-        finish(true);
+    // Read stdout until token observed or timeout.
+    const decoder = new TextDecoder();
+    const reader = child.stdout.getReader();
+    void (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          stdout += decoder.decode(value, { stream: true });
+          if (stdout.includes(token)) {
+            finish(true);
+            return;
+          }
+        }
+      } catch {
+        finish(false);
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // ignore
+        }
       }
-    });
-    child.once("error", () => finish(false));
-    child.once("exit", () => {
       finish(stdout.includes(token));
-    });
+    })();
 
     try {
-      child.stdin.write(`${token}\n`);
+      child.stdin.write(new TextEncoder().encode(`${token}\n`));
+      child.stdin.flush();
+      child.stdin.end();
     } catch {
       finish(false);
       return;

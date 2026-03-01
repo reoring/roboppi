@@ -39,6 +39,17 @@ export class HookContextBuilder {
       hook_id: hookId,
       hook,
       step_id: stepId,
+      paths: {
+        context_dir: this.contextDir,
+        workflow_state_file: path.join(this.contextDir, "_workflow", "state.json"),
+        management_decisions_log: path.join(this.contextDir, "_management", "decisions.jsonl"),
+        management_inv_dir: invDir,
+        step_dir: path.join(this.contextDir, stepId),
+        step_meta_file: path.join(this.contextDir, stepId, "_meta.json"),
+        step_resolved_file: path.join(this.contextDir, stepId, "_resolved.json"),
+        convergence_dir: path.join(this.contextDir, stepId, "_convergence"),
+        stall_dir: path.join(this.contextDir, stepId, "_stall"),
+      },
       workflow_state: {
         steps: Object.fromEntries(
           Object.entries(steps).map(([id, s]) => [

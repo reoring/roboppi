@@ -110,6 +110,12 @@ export interface ManagementConfig {
 export interface StepManagementConfig {
   enabled?: boolean;
   context_hint?: string;
+  pre_step?: boolean;
+  post_step?: boolean;
+  pre_check?: boolean;
+  post_check?: boolean;
+  on_stall?: boolean;
+  periodic?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +126,18 @@ export interface HookContext {
   hook_id: string;
   hook: ManagementHook;
   step_id: string;
+  /** File/directory pointers to reduce filesystem scanning by the agent. */
+  paths?: {
+    context_dir: string;
+    workflow_state_file: string;
+    management_decisions_log: string;
+    management_inv_dir: string;
+    step_dir: string;
+    step_meta_file: string;
+    step_resolved_file: string;
+    convergence_dir: string;
+    stall_dir: string;
+  };
   workflow_state: {
     steps: Record<string, {
       status: string;
@@ -169,6 +187,8 @@ export interface DecisionsLogEntry {
   wallTimeMs: number;
   source: "file-json" | "none" | "decided" | "tool-call" | "fallback";
   reason?: string;
+  reasoning?: string;
+  confidence?: number;
 }
 
 // ---------------------------------------------------------------------------

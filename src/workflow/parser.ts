@@ -427,6 +427,7 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
+  validateOptionalString(obj["variant"], `steps.${stepId}.completion_check.variant`);
 
   // For non-shell completion checks, a machine-readable decision file is required.
   // CUSTOM checks use exit-code semantics and do not need decision_file.
@@ -608,6 +609,7 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   validateWorker(obj["worker"], `steps.${stepId}.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.capabilities`);
   validateOptionalString(obj["model"], `steps.${stepId}.model`);
+  validateOptionalString(obj["variant"], `steps.${stepId}.variant`);
 
   if (obj["exports"] !== undefined) {
     throw new WorkflowParseError(
@@ -726,7 +728,7 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   return obj as unknown as StepDefinition;
 }
 
-function validateManagementAgent(value: unknown, fieldPrefix: string): ManagementAgentConfig {
+function validateManagementAgent(value: unknown, fieldPrefix: string, agents?: AgentCatalog): ManagementAgentConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WorkflowParseError(`${fieldPrefix} must be an object`);
   }
@@ -746,6 +748,15 @@ function validateManagementAgent(value: unknown, fieldPrefix: string): Managemen
   }
   if (hasAgent) {
     assertString(obj["agent"], `${fieldPrefix}.agent`);
+    const agentId = (obj["agent"] as string).trim();
+    if (!agents) {
+      throw new WorkflowParseError(
+        `${fieldPrefix}.agent is set to "${agentId}", but no agent catalog was provided (use --agents or set ROBOPPI_AGENTS_FILE)`,
+      );
+    }
+    if (!agents[agentId]) {
+      throw new WorkflowParseError(`${fieldPrefix}.agent references unknown agent "${agentId}"`);
+    }
   }
 
   // Engine type validation
@@ -806,7 +817,7 @@ function validateManagementHooks(value: unknown, fieldPrefix: string): void {
   }
 }
 
-function validateManagement(value: unknown): ManagementConfig | undefined {
+function validateManagement(value: unknown, agents?: AgentCatalog): ManagementConfig | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WorkflowParseError("management must be an object");
@@ -822,7 +833,7 @@ function validateManagement(value: unknown): ManagementConfig | undefined {
   }
 
   if (obj["agent"] !== undefined) {
-    validateManagementAgent(obj["agent"], "management.agent");
+    validateManagementAgent(obj["agent"], "management.agent", agents);
   }
 
   if (obj["hooks"] !== undefined) {
@@ -870,6 +881,20 @@ function validateStepManagement(value: unknown, stepId: string): StepManagementC
   }
   const obj = value as Record<string, unknown>;
 
+  // Reject unknown keys to prevent silent typos.
+  const allowed = new Set<string>([
+    "enabled",
+    "context_hint",
+    ...[...VALID_MANAGEMENT_HOOKS],
+  ]);
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new WorkflowParseError(
+        `steps.${stepId}.management contains unknown key "${key}". Valid keys: ${[...allowed].join(", ")}`,
+      );
+    }
+  }
+
   if (obj["enabled"] !== undefined) {
     if (typeof obj["enabled"] !== "boolean") {
       throw new WorkflowParseError(`steps.${stepId}.management.enabled must be a boolean`);
@@ -879,6 +904,12 @@ function validateStepManagement(value: unknown, stepId: string): StepManagementC
   if (obj["context_hint"] !== undefined) {
     if (typeof obj["context_hint"] !== "string") {
       throw new WorkflowParseError(`steps.${stepId}.management.context_hint must be a string`);
+    }
+  }
+
+  for (const hook of VALID_MANAGEMENT_HOOKS) {
+    if (obj[hook] !== undefined && typeof obj[hook] !== "boolean") {
+      throw new WorkflowParseError(`steps.${stepId}.management.${hook} must be a boolean`);
     }
   }
 
@@ -926,7 +957,7 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
   validateSentinel(doc["sentinel"]);
 
   // Validate management config (opt-in)
-  const managementConfig = validateManagement(doc["management"]);
+  const managementConfig = validateManagement(doc["management"], options.agents);
 
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');

@@ -311,6 +311,66 @@ describe("WorkerEngine", () => {
     }
   });
 
+  it("TC-PI-W-08: WorkerEngine isolates management events via sink override", async () => {
+    const mainEvents: unknown[] = [];
+    const mainSink = {
+      emit: (event: unknown) => {
+        mainEvents.push(event);
+      },
+    };
+
+    const stepRunner = {
+      runStep: async (
+        stepId: string,
+        _stepDef: unknown,
+        _workspace: string,
+        _signal: AbortSignal,
+        _env?: Record<string, string>,
+        sinkOverride?: { emit: (e: unknown) => void },
+      ) => {
+        const sink = sinkOverride ?? mainSink;
+        sink.emit({ type: "worker_event", stepId, ts: Date.now(), event: { type: "stdout", data: "hi" } });
+        sink.emit({ type: "worker_result", stepId, ts: Date.now(), result: { status: "SUCCEEDED" } });
+        return { status: "SUCCEEDED" };
+      },
+      runCheck: async () => ({ complete: true, failed: false }),
+    };
+
+    const engine = new WorkerEngine({
+      contextDir: tmpDir,
+      stepRunner: stepRunner as any,
+      workspaceDir: tmpDir,
+      agentConfig: {
+        worker: "OPENCODE",
+        capabilities: ["READ"],
+      },
+    });
+
+    const ctx = makeHookContext({ hook_id: "hook-iso" });
+    const controller = new AbortController();
+    await engine.invokeHook({
+      hook: "pre_step",
+      hookId: "hook-iso",
+      hookStartedAt: Date.now(),
+      context: ctx,
+      budget: { deadlineAt: Date.now() + 30_000 },
+      abortSignal: controller.signal,
+    });
+
+    // Management worker events should not go to the main sink.
+    expect(mainEvents.length).toBe(0);
+
+    // They should be written to _management/inv/<hookId>/worker.jsonl.
+    const outPath = path.join(tmpDir, "_management", "inv", "hook-iso", "worker.jsonl");
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      text = await readFile(outPath, "utf-8").catch(() => "");
+      if (text.trim()) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(text).toContain('"type":"worker_event"');
+  });
+
   // TC-PI-W-05
   it("TC-PI-W-05: invokeHook returns proceed on timeout", async () => {
     // Make the step runner hang until abort
@@ -719,7 +779,7 @@ describe("PiSdkEngine", () => {
   });
 
   // TC-PI-P-10
-  it("TC-PI-P-10: PiSdkEngine maps EDIT capability to codingTools", async () => {
+  it("TC-PI-P-10: PiSdkEngine remains read-only even when EDIT is requested", async () => {
     const engine = new PiSdkEngine({
       contextDir: tmpDir,
       workspaceDir: tmpDir,
@@ -745,9 +805,11 @@ describe("PiSdkEngine", () => {
     const callArgs = mockPi.mockCreateAgentSession.mock.calls[0]![0];
     expect(callArgs.tools).toBeDefined();
     const toolNames = callArgs.tools.map((t: any) => t.name);
-    // Coding tools include: read, bash, edit, write
-    expect(toolNames).toContain("edit");
-    expect(toolNames).toContain("write");
+    // Policy/mechanism separation: PiSdkEngine never exposes edit/write/bash.
+    expect(toolNames).toContain("read");
+    expect(toolNames).not.toContain("edit");
+    expect(toolNames).not.toContain("write");
+    expect(toolNames).not.toContain("bash");
   });
 
   // TC-PI-P-11
@@ -870,6 +932,86 @@ describe("PiSdkEngine", () => {
     expect(promptText).toContain("step-xyz");
     // Should mention the decision tool requirement
     expect(promptText).toContain("roboppi_management_decision");
+  });
+
+  it("TC-PI-P-14: PiSdkEngine rejects invalid skip directive (missing reason)", async () => {
+    mockPi.session.prompt.mockImplementation(async () => {
+      const decisionTool = mockPi.registeredTools.find(
+        (t) => t.name === "roboppi_management_decision",
+      );
+      if (decisionTool) {
+        await decisionTool.execute("call-1", {
+          hook_id: "hook-invalid-skip",
+          hook: "pre_step",
+          step_id: "s1",
+          directive: { action: "skip" },
+        });
+      }
+    });
+
+    const engine = new PiSdkEngine({
+      contextDir: tmpDir,
+      workspaceDir: tmpDir,
+      agentConfig: {
+        model: "claude-sonnet-4-5",
+        capabilities: ["READ"],
+      },
+      createAgentSession: mockPi.mockCreateAgentSession,
+    });
+
+    const ctx = makeHookContext({ hook_id: "hook-invalid-skip" });
+    const controller = new AbortController();
+
+    const result = await engine.invokeHook({
+      hook: "pre_step",
+      hookId: "hook-invalid-skip",
+      hookStartedAt: Date.now(),
+      context: ctx,
+      budget: { deadlineAt: Date.now() + 30_000 },
+      abortSignal: controller.signal,
+    });
+
+    expect(result.directive).toEqual({ action: "proceed" });
+  });
+
+  it("TC-PI-P-15: PiSdkEngine rejects invalid adjust_timeout directive (missing timeout)", async () => {
+    mockPi.session.prompt.mockImplementation(async () => {
+      const decisionTool = mockPi.registeredTools.find(
+        (t) => t.name === "roboppi_management_decision",
+      );
+      if (decisionTool) {
+        await decisionTool.execute("call-1", {
+          hook_id: "hook-invalid-timeout",
+          hook: "pre_step",
+          step_id: "s1",
+          directive: { action: "adjust_timeout", reason: "need more" },
+        });
+      }
+    });
+
+    const engine = new PiSdkEngine({
+      contextDir: tmpDir,
+      workspaceDir: tmpDir,
+      agentConfig: {
+        model: "claude-sonnet-4-5",
+        capabilities: ["READ"],
+      },
+      createAgentSession: mockPi.mockCreateAgentSession,
+    });
+
+    const ctx = makeHookContext({ hook_id: "hook-invalid-timeout" });
+    const controller = new AbortController();
+
+    const result = await engine.invokeHook({
+      hook: "pre_step",
+      hookId: "hook-invalid-timeout",
+      hookStartedAt: Date.now(),
+      context: ctx,
+      budget: { deadlineAt: Date.now() + 30_000 },
+      abortSignal: controller.signal,
+    });
+
+    expect(result.directive).toEqual({ action: "proceed" });
   });
 });
 

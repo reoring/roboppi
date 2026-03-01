@@ -62,7 +62,9 @@ export class MultiWorkerStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    sinkOverride?: ExecEventSink,
   ): Promise<StepRunResult> {
+    const sink = sinkOverride ?? this.sink;
     if (step.worker === "CUSTOM") {
       return this.shell.runStep(stepId, step, workspaceDir, abortSignal, env);
     }
@@ -74,7 +76,7 @@ export class MultiWorkerStepRunner implements StepRunner {
 
     const resolved = resolveTaskLike(step, workspaceDir, env);
     const task = buildWorkerTask(resolved, abortSignal);
-    return this.runViaAdapter(stepId, adapter, task);
+    return this.runViaAdapter(stepId, adapter, task, sink);
   }
 
   async runCheck(
@@ -83,7 +85,9 @@ export class MultiWorkerStepRunner implements StepRunner {
     workspaceDir: string,
     abortSignal: AbortSignal,
     env?: Record<string, string>,
+    sinkOverride?: ExecEventSink,
   ): Promise<CheckResult> {
+    const sink = sinkOverride ?? this.sink;
     if (check.worker === "CUSTOM") {
       return this.shell.runCheck(stepId, check, workspaceDir, abortSignal, env);
     }
@@ -108,7 +112,7 @@ export class MultiWorkerStepRunner implements StepRunner {
     };
 
     const task = buildWorkerTask(resolved, abortSignal);
-    const result = await this.runWorkerTask(stepId, adapter, task);
+    const result = await this.runWorkerTask(stepId, adapter, task, sink);
 
     if (result.status !== WorkerStatus.SUCCEEDED) {
       const reason = summarizeWorkerFailure(result);
@@ -165,10 +169,11 @@ export class MultiWorkerStepRunner implements StepRunner {
     stepId: string,
     adapter: WorkerAdapter,
     task: WorkerTask,
+    sink: ExecEventSink,
   ): Promise<StepRunResult> {
-    const result = await this.runWorkerTask(stepId, adapter, task);
+    const result = await this.runWorkerTask(stepId, adapter, task, sink);
 
-    this.sink.emit({
+    sink.emit({
       type: "worker_result",
       stepId,
       ts: Date.now(),
@@ -201,6 +206,7 @@ export class MultiWorkerStepRunner implements StepRunner {
     stepId: string,
     adapter: WorkerAdapter,
     task: WorkerTask,
+    sink: ExecEventSink,
   ): Promise<WorkerResult> {
     const scoped = createScopedAbort(task.abortSignal, task.budget.deadlineAt);
 
@@ -236,7 +242,7 @@ export class MultiWorkerStepRunner implements StepRunner {
     const streamDone = (async () => {
       try {
         for await (const ev of adapter.streamEvents(handle)) {
-          this.sink.emit({
+          sink.emit({
             type: "worker_event",
             stepId,
             ts: Date.now(),

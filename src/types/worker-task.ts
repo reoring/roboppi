@@ -33,6 +33,8 @@ export interface WorkerTask {
   instructions: string;
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
+  /** Optional model variant / reasoning effort hint (worker-specific). */
+  variant?: string;
   capabilities: WorkerCapability[];
   outputMode: OutputMode;
   budget: WorkerBudget;
