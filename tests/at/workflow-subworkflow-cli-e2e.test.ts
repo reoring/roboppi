@@ -63,7 +63,7 @@ function spawnCli(args: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: str
   const env = options?.env ?? createCleanEnv();
   const cwd = options?.cwd ?? REPO_ROOT;
 
-  const child = spawn(process.execPath, ["run", "src/cli.ts", ...args], {
+  const child = spawn(process.execPath, ["run", "src/cli.ts", "--", ...args], {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -134,6 +134,9 @@ async function runCli(
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
+    // Avoid hangs on a still-open stdin pipe.
+    child.stdin.end();
+
     const exit = await Promise.race([
       waitForExit(),
       new Promise<CliExit>((resolve) => {

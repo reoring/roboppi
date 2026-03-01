@@ -119,6 +119,8 @@ export interface StepDefinition {
   worker?: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
+  /** Optional model variant / reasoning-effort hint (worker-specific). */
+  variant?: string;
   workspace?: string;
   instructions?: string;
   capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
@@ -231,6 +233,8 @@ export interface CompletionCheckDef {
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
+  /** Optional model variant / reasoning-effort hint (worker-specific). */
+  variant?: string;
   instructions: string;
   capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
   timeout?: DurationString;

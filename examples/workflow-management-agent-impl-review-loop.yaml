@@ -1,0 +1,186 @@
+# Roboppi Self-Dev Loop: fix management agent review findings
+#
+# This workflow turns the implementation review doc into a TODO, then loops:
+#   implement -> (tests + review verdict) -> fix ... until PASS.
+#
+# Run (from the Roboppi repo root):
+#   bun run src/workflow/run.ts examples/workflow-management-agent-impl-review-loop.yaml --workspace . --verbose
+
+name: workflow-management-agent-impl-review-loop
+version: "1"
+description: "Roboppi self-dev: resolve management-agent implementation review findings"
+timeout: "300m"
+concurrency: 1
+create_branch: true
+branch_transition_step: "branch"
+
+steps:
+  bootstrap:
+    description: "Initialize loop state (.roboppi-loop/*)."
+    worker: CUSTOM
+    instructions: |
+      bash "${ROBOPPI_ROOT:-.}/scripts/self-dev/workflow-management-agent-impl-review/bootstrap.sh"
+    capabilities: [READ, EDIT, RUN_COMMANDS]
+    timeout: "2m"
+
+  branch:
+    description: "Create or reuse a working branch"
+    worker: CUSTOM
+    depends_on: [bootstrap]
+    instructions: |
+      bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/branch.sh"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "1m"
+
+  todo:
+    description: "Convert implementation review doc into TODO checklist"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    depends_on: [branch]
+    instructions: |
+      You are OpenCode.
+
+      Task: Convert the implementation review findings into a concrete TODO checklist.
+
+      Read:
+      - .roboppi-loop/request.md
+      - docs/features/workflow-management-agent-implementation-review.md
+
+      Note: do not rely on file-globbing for dot-directories; `.roboppi-loop/*`
+      may not be discoverable via glob in some tool environments. Read/write
+      the paths directly.
+
+      Write/update:
+      - .roboppi-loop/todo.md
+
+      Requirements:
+      - Use Markdown checklist items: "- [ ] ..."
+      - Group by P0/P1/P2 severity.
+      - Include file paths and symbols when possible.
+      - Include explicit test tasks (at least: make typecheck, make test-all).
+      - If a finding is already fixed, include a task to confirm + update the review doc.
+    capabilities: [READ, EDIT]
+    timeout: "20m"
+    on_failure: retry
+    max_retries: 2
+
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/todo-check.sh"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "30s"
+
+    max_iterations: 3
+    on_iterations_exhausted: abort
+    outputs:
+      - name: todo
+        path: ".roboppi-loop/todo.md"
+        type: review
+
+  implement:
+    description: "Implement fixes; run tests+review in completion_check; repeat until PASS"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    depends_on: [todo]
+    instructions: |
+      You are Claude Code.
+
+      Important: you are running as Claude Code via Roboppi.
+      - Read `.roboppi-loop/request.md` and `.roboppi-loop/todo.md` by file path (do not rely on globbing dot-directories).
+
+      Read:
+      - .roboppi-loop/request.md
+      - .roboppi-loop/todo.md
+      - .roboppi-loop/review.md (if present)
+      - .roboppi-loop/fix.md (if present)
+
+      Task:
+      - If .roboppi-loop/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted changes).
+      - Otherwise, implement the TODO checklist items.
+      - Update the TODO checkboxes as you complete items.
+      - Keep changes focused; avoid drive-by refactors.
+
+      Notes:
+      - Tests are run in the completion_check phase; focus here on implementation and documentation updates.
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
+    timeout: "60m"
+    on_failure: retry
+    max_retries: 1
+
+    convergence:
+      enabled: true
+      stall_threshold: 2
+      max_stage: 3
+      fail_on_max_stage: true
+
+    completion_check:
+      worker: OPENCODE
+      model: "openai/gpt-5.2"
+      variant: "xhigh"
+      decision_file: ".roboppi-loop/review.verdict"
+      instructions: |
+        You are OpenCode.
+
+        Sandbox rule:
+        - Do NOT read or write outside the workspace directory.
+        - Treat `/tmp/**` as forbidden (Roboppi will auto-reject external_directory reads).
+        - If you need temp files/dirs, use `.roboppi-loop/tmp/*`.
+
+        Task:
+        1) Run tests:
+           - make test-all
+        2) Review the changes against the request + TODO + implementation-review doc.
+        3) Write/update:
+           - .roboppi-loop/review.md
+           - .roboppi-loop/review.verdict (single-line JSON; see Output rules)
+        4) If verdict is FAIL, also write/update:
+           - .roboppi-loop/fix.md (non-empty; concrete, actionable steps; include file paths)
+        5) If verdict is PASS:
+           - Clear .roboppi-loop/fix.md if it exists (truncate to empty)
+
+        Before reviewing, generate deterministic review inputs:
+        - bash "${ROBOPPI_ROOT:-.}/scripts/agent-pr-loop/review-inputs.sh"
+
+        Debugging rule (branch verification):
+        - If `make test-all` fails in the branch verification phase and you need logs,
+          re-run branch verification with a verify dir INSIDE the workspace, e.g.:
+          - bash "bash tests/branch/run-branch-verification.sh .roboppi-loop/tmp/branch-verify"
+        - Do not use `mktemp -d /tmp/...`.
+
+        You must read at least:
+        - .roboppi-loop/request.md
+        - .roboppi-loop/todo.md
+        - docs/features/workflow-management-agent-implementation-review.md
+        - .roboppi-loop/review.base_ref
+        - .roboppi-loop/review.diff
+        - .roboppi-loop/review.status
+        - .roboppi-loop/review.untracked
+        - .roboppi-loop/review.untracked.diff
+
+        Format for .roboppi-loop/review.md:
+        - Sections: Summary, Issues, Verification
+
+        Output rules:
+        - Write .roboppi-loop/review.verdict as a single-line JSON object:
+          - complete => {"decision":"complete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+          - incomplete => {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+        - When FAIL, also include:
+          - "reasons": ["..."]
+          - "fingerprints": ["..."]
+        - Fingerprints should be stable across iterations (e.g. test name, file:line, or finding id).
+      capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS]
+      timeout: "90m"
+
+    max_iterations: 8
+    on_iterations_exhausted: abort
+    outputs:
+      - name: review
+        path: ".roboppi-loop/review.md"
+        type: review
+      - name: verdict
+        path: ".roboppi-loop/review.verdict"
+        type: text
+      - name: fix
+        path: ".roboppi-loop/fix.md"
+        type: review

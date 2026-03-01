@@ -30,6 +30,7 @@ import {
   DEFAULT_PROCEED_DIRECTIVE,
 } from "./types.js";
 import { resolveManagementDecision } from "./decision-resolver.js";
+import { ManagementEventSink } from "./management-event-sink.js";
 
 // ---------------------------------------------------------------------------
 // WorkerEngine options
@@ -115,12 +116,14 @@ export class WorkerEngine implements ManagementAgentEngine {
 
     const runWorker = Effect.tryPromise<void, Error>({
       try: async () => {
+        const managementSink = new ManagementEventSink(invDir);
         await this.stepRunner.runStep(
           `_management:${hook}:${context.step_id}`,
           mgmtStepDef,
           this.workspaceDir,
           hookAbortController.signal,
           mgmtEnv,
+          managementSink,
         );
       },
       catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),

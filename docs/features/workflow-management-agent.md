@@ -1,6 +1,6 @@
 # Workflow Management Agent: Adaptive Supervisor for Runtime Workflow Control
 
-Status: proposal (not yet implemented)
+Status: implemented (with ongoing refinements)
 
 This document defines a "Workflow Management Agent" feature for Roboppi.
 
@@ -1460,8 +1460,8 @@ orchestrators, but safer and more predictable than fully autonomous agents.
 ## 15. Pi (coding-agent) SDK Integration
 
 This section describes a concrete implementation path that uses the Pi
-`coding-agent` as an SDK (vendored at `refs/coding-agent-repo/packages/coding-agent/`)
-to power the Workflow Management Agent.
+`coding-agent` as an SDK (installed as `@mariozechner/pi-coding-agent`, loaded via
+dynamic import) to power the Workflow Management Agent.
 
 The goal is to reuse Pi's existing agent/session/tooling infrastructure while
 keeping Roboppi's mechanism/policy separation intact: Pi provides an agent
@@ -1474,8 +1474,8 @@ concurrency, and directive validation.
   entire workflow, improving cross-step diagnosis and consistency.
 - **Typed tools and extensions**: use Pi's tool framework to make directive
   emission structured (tool call) instead of relying on free-form text.
-- **Pluggable capabilities**: map `READ/EDIT/RUN_TESTS/RUN_COMMANDS` to an
-  explicit Pi tool set.
+- **Capability mapping**: in v1, keep the embedded PiSdkEngine read-only (§15.5)
+  regardless of declared capabilities.
 - **Optional reuse**: the same SDK can later be used to implement a first-class
   Roboppi worker kind (Pi-backed step workers), reducing reliance on external
   CLIs.
@@ -1597,16 +1597,16 @@ Engine rules:
 
 ### 15.5 Capability → Pi tool mapping
 
-Map Roboppi capabilities to explicit Pi tools:
+In v1, the embedded PiSdkEngine is intentionally **read-only** to preserve
+mechanism/policy separation.
 
-- `READ` → `read, ls, grep, find`
-- `EDIT` → `edit, write` (and usually `read`)
-- `RUN_TESTS` → restricted command execution (see below)
-- `RUN_COMMANDS` → command execution
+- PiSdkEngine exposes only: `read, ls, grep, find`
+- PiSdkEngine does NOT expose `bash`, `edit`, or `write` even if capabilities
+  request them.
 
-Important: Pi's built-in `bash` tool can execute arbitrary commands. If Roboppi
-policy assumes command gating, prefer wrapping command execution behind a
-Roboppi-controlled tool that enforces:
+Important: Pi's built-in `bash` tool can execute arbitrary commands. If you need
+agent-driven command execution, prefer wrapping it behind a Roboppi-controlled
+tool (or using a sidecar engine) that enforces:
 
 - working directory = step workspace
 - per-command timeouts (`max_command_time`)

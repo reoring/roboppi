@@ -27,7 +27,7 @@ import {
   DEFAULT_PROCEED_DIRECTIVE,
 } from "./types.js";
 import { HookContextBuilder } from "./hook-context-builder.js";
-import { validateDirective } from "./directive-validator.js";
+import { validateDirective, validateDirectiveShape } from "./directive-validator.js";
 import { createEngine } from "./engine-factory.js";
 
 // ---------------------------------------------------------------------------
@@ -129,6 +129,11 @@ export class ManagementController {
     const stepMgmt = stepDef?.management;
     if (stepMgmt?.enabled === false) return false;
 
+    const stepOverride = (stepMgmt as unknown as Record<string, unknown> | undefined)?.[hook];
+    if (typeof stepOverride === "boolean") {
+      return stepOverride;
+    }
+
     // Workflow-level hook config
     const hooks = this.config.hooks;
     if (!hooks) return false;
@@ -151,6 +156,9 @@ export class ManagementController {
 
     // max_consecutive_interventions guard
     if (this.consecutiveInterventions >= this.maxConsecutiveInterventions) {
+      // NOTE: callers that rely on shouldSkipHook() must ensure this does not
+      // become a permanent bypass. The preferred path is to let invokeHook()
+      // handle guards (it resets the streak when forcing proceed).
       return true;
     }
 
@@ -170,8 +178,65 @@ export class ManagementController {
       contextHint?: string;
       stallEvent?: unknown;
       checkResult?: unknown;
+      workflowStartedAt?: number;
+      workflowTimeoutMs?: number;
     },
   ): Promise<ManagementDirective> {
+    // Guard: min_remaining_time / max_consecutive_interventions.
+    // If we bypass, we do NOT create an invocation directory.
+    const workflowStartedAt = opts?.workflowStartedAt;
+    const workflowTimeoutMs = opts?.workflowTimeoutMs;
+
+    let bypassReason: string | null = null;
+
+    // min_remaining_time guard (only when we have timing info)
+    if (
+      bypassReason === null &&
+      this.minRemainingTimeMs > 0 &&
+      workflowStartedAt !== undefined &&
+      workflowTimeoutMs !== undefined
+    ) {
+      const elapsed = Date.now() - workflowStartedAt;
+      const remaining = workflowTimeoutMs - elapsed;
+      if (remaining < this.minRemainingTimeMs) {
+        bypassReason = "bypassed by min_remaining_time";
+      }
+    }
+
+    // max_consecutive_interventions guard
+    if (
+      bypassReason === null &&
+      this.consecutiveInterventions >= this.maxConsecutiveInterventions
+    ) {
+      bypassReason = "bypassed by max_consecutive_interventions";
+    }
+
+    if (bypassReason !== null) {
+      await this.ensureInit();
+
+      // If this was a max_consecutive_interventions trigger, reset the streak so
+      // management degrades to safe proceed rather than permanently disabling hooks.
+      if (this.consecutiveInterventions >= this.maxConsecutiveInterventions) {
+        this.consecutiveInterventions = 0;
+      }
+
+      const hookId = crypto.randomUUID();
+      const logEntry: DecisionsLogEntry = {
+        ts: Date.now(),
+        hook_id: hookId,
+        hook,
+        step_id: stepId,
+        directive: { ...DEFAULT_PROCEED_DIRECTIVE },
+        applied: false,
+        wallTimeMs: 0,
+        source: "fallback",
+        reason: bypassReason,
+      };
+      await appendFile(this.decisionsLogPath, JSON.stringify(logEntry) + "\n");
+
+      return { ...DEFAULT_PROCEED_DIRECTIVE };
+    }
+
     await this.ensureInit();
 
     const hookId = crypto.randomUUID();
@@ -225,6 +290,17 @@ export class ManagementController {
       }
     }
 
+    // Validate directive shape (required fields, bounds). This is required for
+    // PiSdkEngine tool calls as well as file-based decisions.
+    const shape = validateDirectiveShape(finalDirective as unknown);
+    if (!shape.valid) {
+      applied = false;
+      reason = shape.reason ?? "directive shape validation failed";
+      finalDirective = { ...DEFAULT_PROCEED_DIRECTIVE };
+    } else {
+      finalDirective = shape.directive!;
+    }
+
     // Validate against permission matrix and step state
     if (finalDirective.action !== "proceed") {
       const validation = validateDirective(finalDirective, hook, stepStatus);
@@ -254,6 +330,10 @@ export class ManagementController {
       wallTimeMs,
       source: engineResult.source ?? "decided",
       ...(reason ? { reason } : {}),
+      ...(engineResult.meta?.reasoning ? { reasoning: engineResult.meta.reasoning } : {}),
+      ...(engineResult.meta?.confidence !== undefined
+        ? { confidence: engineResult.meta.confidence }
+        : {}),
     };
 
     await appendFile(

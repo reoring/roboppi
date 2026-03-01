@@ -212,4 +212,34 @@ steps:
     expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
     expect(() => parseWorkflow(yaml)).toThrow(/string|context_hint/i);
   });
+
+  it("TC-MA-P-12: management.agent.agent must reference a known agent", () => {
+    const agents = {
+      mgr: {
+        worker: "OPENCODE",
+        model: "openai/gpt-5.2",
+        capabilities: ["READ"],
+      },
+    };
+
+    const yaml = `
+name: test-workflow
+version: "1"
+timeout: "30m"
+management:
+  enabled: true
+  agent:
+    agent: unknown
+    timeout: "30s"
+    capabilities: [READ]
+steps:
+  step1:
+    worker: CODEX_CLI
+    instructions: "Do something"
+    capabilities: [READ]
+`;
+
+    expect(() => parseWorkflow(yaml, { agents: agents as any })).toThrow(WorkflowParseError);
+    expect(() => parseWorkflow(yaml, { agents: agents as any })).toThrow(/unknown agent/);
+  });
 });

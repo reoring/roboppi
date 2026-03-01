@@ -34,6 +34,31 @@ export function buildArgs(
     args.push(...filtered);
   }
 
+  if (task.variant) {
+    // If defaultArgs already specify a variant, prefer the task-level variant.
+    const filtered: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === "--variant") {
+        i++; // skip value
+        continue;
+      }
+      if (a.startsWith("--variant=")) continue;
+      filtered.push(a);
+    }
+
+    const effectiveVariant = (() => {
+      // Convenience: accept xhigh/xlow as aliases for providers that don't support them.
+      if (task.model?.startsWith("openai/") && task.variant === "xhigh") return "high";
+      if (task.model?.startsWith("openai/") && task.variant === "xlow") return "minimal";
+      return task.variant;
+    })();
+
+    filtered.push("--variant", effectiveVariant);
+    args.length = 0;
+    args.push(...filtered);
+  }
+
   args.push(task.instructions);
 
   return args;

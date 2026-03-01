@@ -112,7 +112,7 @@ run_wf() {
   local log="$2"
   shift 2
   set +e
-  (cd "${REPO_ROOT}" && bun run src/workflow/run.ts "${VERIFY_DIR}/${wf}" --workspace "${VERIFY_DIR}" --verbose "$@" > "${log}" 2>&1)
+  (cd "${REPO_ROOT}" && env -u BASE_BRANCH -u ROBOPPI_EFFECTIVE_BASE_BRANCH -u ROBOPPI_PROTECTED_BRANCHES -u ROBOPPI_ALLOW_PROTECTED_BRANCH -u ROBOPPI_SUPERVISED_IPC_TRANSPORT bun run src/workflow/run.ts "${VERIFY_DIR}/${wf}" --workspace "${VERIFY_DIR}" --verbose "$@" > "${log}" 2>&1)
   local code=$?
   set -e
   return "${code}"
