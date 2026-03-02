@@ -8,7 +8,7 @@ import { ErrorClass } from "../types/common.js";
 import { parseDuration } from "./duration.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
-const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
+const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS", "MAILBOX", "TASKS"]);
 
 const RESERVED_STEP_IDS = new Set([
   "_subworkflows",
@@ -926,7 +926,7 @@ function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
   validateOptionalBoolean(obj["enabled"], "swarm.enabled");
   validateOptionalString(obj["team_name"], "swarm.team_name");
 
-  // When enabled, team_name and members are required.
+  // When enabled, team_name and members are required and non-empty.
   if (obj["enabled"] === true) {
     if (typeof obj["team_name"] !== "string" || obj["team_name"] === "") {
       throw new WorkflowParseError(
@@ -937,6 +937,25 @@ function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
       throw new WorkflowParseError(
         "swarm.members is required when swarm.enabled is true",
       );
+    }
+    // Members must be non-empty when enabled
+    if (typeof obj["members"] === "object" && obj["members"] !== null && !Array.isArray(obj["members"])) {
+      const memberKeys = Object.keys(obj["members"] as Record<string, unknown>);
+      if (memberKeys.length === 0) {
+        throw new WorkflowParseError(
+          "swarm.members must be non-empty when swarm.enabled is true",
+        );
+      }
+    }
+    // Validate lead semantics: prefer explicit "lead" member key.
+    // Deterministic fallback: first member key becomes the lead (with runtime warning).
+    if (typeof obj["members"] === "object" && obj["members"] !== null && !Array.isArray(obj["members"])) {
+      const memberKeys = Object.keys(obj["members"] as Record<string, unknown>);
+      if (memberKeys.length > 0 && !memberKeys.includes("lead")) {
+        // Deterministic fallback: first member key is used as lead.
+        // The executor emits a warning at runtime (parser cannot emit side effects).
+        (obj as Record<string, unknown>)["_lead_fallback"] = memberKeys[0];
+      }
     }
   }
 

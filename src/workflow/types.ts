@@ -146,7 +146,7 @@ export interface StepDefinition {
   variant?: string;
   workspace?: string;
   instructions?: string;
-  capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS")[];
   /** Subworkflow YAML path (mutually exclusive with worker). */
   workflow?: string;
   /** Export child artifacts into parent context (subworkflow steps only). */
@@ -259,7 +259,7 @@ export interface CompletionCheckDef {
   /** Optional model variant / reasoning-effort hint (worker-specific). */
   variant?: string;
   instructions: string;
-  capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS")[];
   timeout?: DurationString;
 
   /**

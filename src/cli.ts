@@ -65,6 +65,7 @@ USAGE
   roboppi workflow <workflow.yaml> [options] Run a workflow YAML
   roboppi daemon <daemon.yaml> [options]     Run daemon mode (resident workflows)
   roboppi agent [options] <instructions...>  Alias for 'roboppi run'
+  roboppi swarm <subcommand> [options]       Swarm team coordination (JSON-only stdout)
 
 IPC SERVER MODE
   Reads JSON Lines from stdin, writes responses to stdout. Logs go to stderr.
@@ -74,7 +75,7 @@ RUN MODE OPTIONS
   --worker <kind>         Worker to use: opencode, claude-code, codex  (required)
   --workspace <path>      Working directory for the worker             (required)
   --model <id>            Model identifier (adapter-specific)          (optional)
-  --capabilities <csv>    Comma-separated: READ,EDIT,RUN_TESTS,RUN_COMMANDS
+  --capabilities <csv>    Comma-separated: READ,EDIT,RUN_TESTS,RUN_COMMANDS,MAILBOX,TASKS
                                                                         (default: EDIT)
   --timeout <ms>          Task timeout in milliseconds                 (default: 120000)
 
@@ -136,6 +137,8 @@ const VALID_CAPABILITIES: Record<string, WorkerCapability> = {
   EDIT: WorkerCapability.EDIT,
   RUN_TESTS: WorkerCapability.RUN_TESTS,
   RUN_COMMANDS: WorkerCapability.RUN_COMMANDS,
+  MAILBOX: WorkerCapability.MAILBOX,
+  TASKS: WorkerCapability.TASKS,
 };
 
 function die(msg: string): never {
@@ -510,6 +513,12 @@ async function main(): Promise<void> {
   if (argv[0] === "daemon") {
     const { runDaemonCli } = await import("./daemon/cli.js");
     await runDaemonCli(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "swarm") {
+    const { runSwarmCli } = await import("./swarm/cli.js");
+    await runSwarmCli(argv.slice(1));
     return;
   }
 

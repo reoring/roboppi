@@ -45,6 +45,7 @@ steps:
       Read (by exact file path):
       - .roboppi-loop/request.md
       - docs/features/swarm.md
+      - docs/spec/swarm.md
       - docs/design.md
       - src/types/worker-task.ts
       - src/worker/adapters/claude-code-adapter.ts
@@ -60,6 +61,8 @@ steps:
       - Group by milestones (MVP first; then follow-ups)
       - Include file paths and symbols when possible
       - Include explicit test tasks (at least: make typecheck, make test-all)
+      - Add explicit conformance tasks for `docs/spec/swarm.md` section 3.1-3.6 and section 5 checklist.
+      - If any spec item is partial/missing, add at least one concrete task per gap (code + test).
       - Keep scope aligned to .roboppi-loop/request.md
     capabilities: [READ, EDIT]
     timeout: "25m"
@@ -94,6 +97,7 @@ steps:
       Read:
       - .roboppi-loop/request.md
       - docs/features/swarm.md
+      - docs/spec/swarm.md
       - .roboppi-loop/todo.md
       - .roboppi-loop/review.md (if present)
       - .roboppi-loop/fix.md (if present)
@@ -101,6 +105,7 @@ steps:
       Task:
       - If .roboppi-loop/fix.md exists and is non-empty, apply ONLY those fixes (minimal, targeted changes).
       - Otherwise, implement the TODO checklist items (focus on the MVP first).
+      - Give priority to unresolved MUST items in `docs/spec/swarm.md` section 3.
       - Update the TODO checkboxes as you complete items.
       - Keep changes focused; avoid drive-by refactors.
 
@@ -133,7 +138,7 @@ steps:
         Task:
         1) Run tests:
            - make test-all
-        2) Review the changes against the request + TODO + design doc.
+        2) Review the changes against the request + TODO + `docs/features/swarm.md` + `docs/spec/swarm.md`.
         3) Write/update:
            - .roboppi-loop/review.md
            - .roboppi-loop/review.verdict (single-line JSON; see Output rules)
@@ -154,6 +159,7 @@ steps:
         You must read at least:
         - .roboppi-loop/request.md
         - docs/features/swarm.md
+        - docs/spec/swarm.md
         - .roboppi-loop/todo.md
         - .roboppi-loop/review.base_ref
         - .roboppi-loop/review.diff
@@ -162,12 +168,19 @@ steps:
         - .roboppi-loop/review.untracked.diff
 
         Format for .roboppi-loop/review.md:
-        - Sections: Summary, Issues, Verification
+        - Sections: Summary, Conformance, Issues, Verification
+        - In Conformance, include `docs/spec/swarm.md` section 3.1-3.6 as:
+          - status: implemented | partial | missing
+          - evidence: file paths and symbols
+          - required fixes (for partial/missing)
 
         Output rules:
         - Write .roboppi-loop/review.verdict as a single-line JSON object:
           - complete => {"decision":"complete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
           - incomplete => {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+        - Verdict policy:
+          - If any MUST requirement in `docs/spec/swarm.md` section 3 is partial or missing, verdict MUST be `incomplete`.
+          - If all section 3 MUST requirements are implemented and tests pass, verdict MAY be `complete`.
         - When FAIL, also include:
           - "reasons": ["..."]
           - "fingerprints": ["..."]

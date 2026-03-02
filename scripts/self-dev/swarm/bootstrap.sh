@@ -25,9 +25,12 @@ rm -f \
 
 if [ ! -f "${LOOP_DIR}/request.md" ]; then
   cat > "${LOOP_DIR}/request.md" <<'EOF'
-# Request: Implement Swarm (Agent Teams) for Roboppi
+# Request: Swarm Gap Closure (Design + Conformance)
 
-Implement the Swarm feature described in `docs/features/swarm.md`.
+Implement/close remaining Swarm gaps so behavior aligns with both:
+
+- `docs/features/swarm.md`
+- `docs/spec/swarm.md`
 
 Swarm is a local, file-backed agent team system:
 
@@ -38,56 +41,56 @@ Swarm is a local, file-backed agent team system:
 This is inspired by Claude Code agent teams:
 - https://code.claude.com/docs/en/agent-teams
 
-## Scope (v1 / MVP)
+## Scope (v1 / MVP + Conformance)
 
 1) Swarm file store (maildir-like)
-- Create a file-backed mailbox + task store under `<context_dir>/_swarm/` as
-  specified in `docs/features/swarm.md`.
-- Use atomic operations (`tmp` + `rename`) to avoid corruption under concurrency.
+- Keep file-backed mailbox + task store under `<context_dir>/_swarm/`.
+- Keep atomic operations (`tmp` + `rename`) for concurrency safety.
 
 2) CLI tools (model-facing)
-- Add a `roboppi swarm` CLI group with JSON outputs:
+- Keep/extend `roboppi swarm` CLI group:
   - `swarm init`
   - `swarm members list`
   - `swarm message send|broadcast|recv|ack`
   - `swarm tasks add|list|claim|complete`
-  - `swarm housekeep` (requeue stale processing messages)
-- All commands MUST print machine-readable JSON to stdout on success.
-- Errors should be actionable and MUST NOT print non-JSON to stdout.
+  - `swarm housekeep`
+- Implement `swarm message recv --wait-ms`.
+- Enforce JSON-safe output contract on all failures (including arg/usage errors).
 
-3) Capability gating for Claude Code
-- Add a new `WorkerCapability` (name: `MAILBOX`) and map it so Claude Code gets
-  a restricted tool:
-  - allow `Bash(roboppi swarm:*)` (or equivalent narrow allowlist)
-  - do NOT grant full `Bash` just for mailbox access
-- Update documentation and tests accordingly.
+3) Lifecycle and housekeeping closure
+- Coordinator shutdown must include deterministic completion checks and cleanup
+  policy application.
+- Housekeeping must cover stale task recovery for `tasks/in_progress/` as
+  defined by spec.
 
-4) Tests
-- Add unit tests covering:
-  - message send -> inbox/new
-  - recv claim -> processing
-  - ack -> cur
-  - broadcast -> N recipients
-  - task add/claim/complete transitions
-  - housekeeping (stale processing requeue)
-- `make test-all` must pass.
+4) Capability/identity/safety closure
+- Keep `MAILBOX` / `TASKS` capability support and gating.
+- Keep metadata-only event policy.
+- Ensure tool-facing path handling remains traversal-safe.
+
+5) Tests and review quality gate
+- Add/extend tests for all spec MUST items.
+- `make test-all` should pass in normal local environments.
+- Completion review MUST include a conformance audit against
+  `docs/spec/swarm.md` section 3.1-3.6.
 
 ## Constraints
 
 - Keep changes focused; avoid repo-wide refactors.
 - Prefer ASCII in new files.
-- Validate all paths stay within `<context_dir>/_swarm/` (no traversal).
+- Validate paths for swarm mutations stay within `<context_dir>/_swarm/`.
 - Bound message/task sizes (e.g. 64KB message body; 256KB task file).
 
 ## Acceptance Criteria
 
-- [ ] `docs/features/swarm.md` remains accurate (update if implementation diverges)
-- [ ] `roboppi swarm init` creates the expected directory layout + config files
-- [ ] `roboppi swarm message send/recv/ack` works end-to-end (file semantics)
-- [ ] broadcast delivers to all members
-- [ ] `roboppi swarm tasks add/claim/complete` works and is race-safe
-- [ ] housekeeping requeues stale `processing/` messages
-- [ ] Claude Code capability `MAILBOX` enables only `roboppi swarm:*` bash usage
+- [ ] `docs/features/swarm.md` and `docs/spec/swarm.md` are both accurate
+- [ ] `docs/spec/swarm.md` section 3.1 (`recv --wait-ms`) is implemented + tested
+- [ ] `docs/spec/swarm.md` section 3.2 (shutdown/cleanup policy + final event) is implemented + tested
+- [ ] `docs/spec/swarm.md` section 3.3 (stale `in_progress` task recovery) is implemented + tested
+- [ ] `docs/spec/swarm.md` section 3.4 (JSON-safe CLI failure output) is implemented + tested
+- [ ] `docs/spec/swarm.md` section 3.5 (path safety for tool-facing inputs) is implemented + tested
+- [ ] `docs/spec/swarm.md` section 3.6 (supervised integration using `roboppi swarm`) is implemented + tested
+- [ ] `make typecheck` passes
 - [ ] `make test-all` passes
 EOF
 fi

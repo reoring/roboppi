@@ -10,7 +10,7 @@ import type {
 } from "./types.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
-const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
+const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS", "MAILBOX", "TASKS"]);
 const VALID_EVENT_TYPES = new Set(["cron", "interval", "fswatch", "webhook", "command"]);
 const VALID_FSWATCH_EVENTS = new Set(["create", "modify", "delete"]);
 const VALID_ON_WORKFLOW_FAILURE = new Set(["ignore", "retry", "pause_trigger"]);

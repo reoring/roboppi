@@ -206,6 +206,7 @@ export async function claimTask(
         ts: Date.now(),
         type: "task_blocked",
         task_id: taskId,
+        title: task.title,
         by: memberId,
       });
 
@@ -220,6 +221,16 @@ export async function claimTask(
   task.claimed_at = now;
   task.updated_at = now;
 
+  // Enforce max task file size
+  const claimJson = JSON.stringify(task, null, 2);
+  if (Buffer.byteLength(claimJson, "utf-8") > MAX_TASK_BYTES) {
+    // Move back to pending since we can't write oversized data
+    try {
+      await rename(destPath, srcPath);
+    } catch { /* best-effort */ }
+    return { ok: false, error: `Task file exceeds max size (${MAX_TASK_BYTES} bytes) after claim update` };
+  }
+
   const tmpDir = tasksTmp(contextDir);
   await atomicJsonWrite(tmpDir, destPath, task);
 
@@ -227,6 +238,7 @@ export async function claimTask(
     ts: now,
     type: "task_claimed",
     task_id: taskId,
+    title: task.title,
     by: memberId,
   });
 
@@ -287,6 +299,16 @@ export async function completeTask(
     task.artifacts = [...task.artifacts, ...artifacts];
   }
 
+  // Enforce max task file size
+  const completeJson = JSON.stringify(task, null, 2);
+  if (Buffer.byteLength(completeJson, "utf-8") > MAX_TASK_BYTES) {
+    // Move back to in_progress since we can't write oversized data
+    try {
+      await rename(destPath, srcPath);
+    } catch { /* best-effort */ }
+    return { ok: false, error: `Task file exceeds max size (${MAX_TASK_BYTES} bytes) after complete update` };
+  }
+
   const tmpDir = tasksTmp(contextDir);
   await atomicJsonWrite(tmpDir, destPath, task);
 
@@ -294,6 +316,7 @@ export async function completeTask(
     ts: now,
     type: "task_completed",
     task_id: taskId,
+    title: task.title,
     by: memberId,
   });
 

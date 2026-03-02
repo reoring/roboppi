@@ -122,7 +122,7 @@ export interface TriggerContext {
 }
 
 export type WorkerKindString = "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
-export type CapabilityString = "READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS";
+export type CapabilityString = "READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS";
 
 // ---------------------------------------------------------------------------
 // Runtime event types

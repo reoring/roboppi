@@ -79,6 +79,10 @@ export interface SwarmMessage {
   delivery_attempt?: number;
   /** Internal: set by claimMessage(). */
   claimed_at?: Timestamp;
+  /** Internal: opaque claim token set by recv+claim. */
+  claim_token?: string;
+  /** Internal: claim token expiry (ms epoch). */
+  claim_token_expires_at?: Timestamp;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +135,8 @@ export type TaskEventType =
   | "task_added"
   | "task_claimed"
   | "task_completed"
-  | "task_blocked";
+  | "task_blocked"
+  | "task_requeued";
 
 export interface TaskEvent {
   ts: Timestamp;

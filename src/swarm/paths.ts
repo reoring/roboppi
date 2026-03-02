@@ -103,6 +103,12 @@ export function tasksEventsPath(contextDir: string): string {
   return resolve(tasksRoot(contextDir), "_events.jsonl");
 }
 
+// -- Swarm-level events (survive mailbox/tasks cleanup) -------------------
+
+export function swarmEventsPath(contextDir: string): string {
+  return resolve(swarmRoot(contextDir), "_events.jsonl");
+}
+
 // -- Locks -----------------------------------------------------------------
 
 export function locksDir(contextDir: string): string {

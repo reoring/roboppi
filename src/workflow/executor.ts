@@ -39,6 +39,7 @@ import type { AgentProfile } from "./agent-catalog.js";
 import { initSwarmContext } from "../swarm/store.js";
 import { addTask as addSwarmTask } from "../swarm/task-store.js";
 import { membersJsonPath } from "../swarm/paths.js";
+import { SwarmCoordinator } from "../swarm/coordinator.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -317,6 +318,9 @@ export class WorkflowExecutor {
   private preStepHookInFlight = 0;
   private readonly preStepHookDone = new Set<string>();
 
+  // Swarm coordinator (when enabled)
+  private swarmCoordinator: SwarmCoordinator | null = null;
+
   // Subworkflow options
   private readonly definitionPath?: string;
   private readonly workflowCallStack: string[];
@@ -486,11 +490,19 @@ export class WorkflowExecutor {
         }),
       );
 
-      // Determine lead member id: prefer explicit "lead" key, else first member
-      const leadMemberId =
-        swarmConfig.members && "lead" in swarmConfig.members
-          ? "lead"
-          : memberEntries[0]?.member_id ?? "lead";
+      // Determine lead member id: prefer explicit "lead" key, else first member (deterministic fallback)
+      const hasExplicitLead = swarmConfig.members && "lead" in swarmConfig.members;
+      const leadMemberId = hasExplicitLead
+        ? "lead"
+        : memberEntries[0]?.member_id ?? "lead";
+
+      if (!hasExplicitLead && memberEntries.length > 0) {
+        this.emitSink.emit({
+          type: "warning",
+          ts: Date.now(),
+          message: `[swarm] No explicit "lead" member key; using first member "${leadMemberId}" as lead (deterministic fallback).`,
+        });
+      }
 
       const { teamId: swarmTeamId } = await initSwarmContext({
         contextDir: this.contextManager.contextDir,
@@ -519,6 +531,20 @@ export class WorkflowExecutor {
         ROBOPPI_SWARM_MEMBERS_FILE: membersJsonPath(this.contextManager.contextDir),
         ROBOPPI_SWARM_MEMBER_ID: leadMemberId,
       };
+
+      // Start swarm coordinator for housekeeping, event bridging, and teammate spawning
+      this.swarmCoordinator = new SwarmCoordinator({
+        contextDir: this.contextManager.contextDir,
+        sink: this.emitSink,
+        stepRunner: this.stepRunner,
+        workspaceDir: this.workspaceDir,
+        agentCatalog: this.agentCatalog,
+        members: swarmConfig.members,
+        leadMemberId,
+        teamId: swarmTeamId,
+        baseEnv: this.env,
+      });
+      await this.swarmCoordinator.start();
     }
 
     // 3. Set up workflow-level abort controller for timeout
@@ -564,6 +590,10 @@ export class WorkflowExecutor {
     } finally {
       clearTimeout(timeoutId);
       this.sentinelController?.stopAll();
+      // Stop swarm coordinator (cleanup timers, final housekeep, final tail)
+      if (this.swarmCoordinator) {
+        await this.swarmCoordinator.stop();
+      }
       if (this.abortSignal) {
         this.abortSignal.removeEventListener("abort", onExternalAbort);
       }

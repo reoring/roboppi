@@ -18,3 +18,6 @@ export const MAX_DELIVERY_ATTEMPTS = 5;
 
 /** Default polling interval for recv --wait-ms (1 second). */
 export const DEFAULT_RECV_POLL_INTERVAL_MS = 1000;
+
+/** Default claim token TTL in ms (10 minutes, matches processing TTL). */
+export const DEFAULT_CLAIM_TOKEN_TTL_MS = 10 * 60 * 1000;

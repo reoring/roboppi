@@ -5,6 +5,7 @@ import { renderDiffsTab } from "./tabs/diffs-tab.js";
 import { renderResultTab } from "./tabs/result-tab.js";
 import { renderCoreTab } from "./tabs/core-tab.js";
 import { renderHelpTab } from "./tabs/help-tab.js";
+import { renderSwarmTab } from "./tabs/swarm-tab.js";
 import { ansiFit } from "../ansi-utils.js";
 
 const TABS = [
@@ -13,7 +14,8 @@ const TABS = [
   { key: "3", id: "diffs", label: "Diffs" },
   { key: "4", id: "result", label: "Result" },
   { key: "5", id: "core", label: "Core" },
-  { key: "6", id: "help", label: "Help" },
+  { key: "6", id: "swarm", label: "Swarm" },
+  { key: "7", id: "help", label: "Help" },
 ] as const;
 
 export function renderDetailPane(state: WorkflowUiState, width: number, height: number): string {
@@ -48,6 +50,9 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
       break;
     case "core":
       content = renderCoreTab(state, width, contentHeight);
+      break;
+    case "swarm":
+      content = renderSwarmTab(state, width, contentHeight);
       break;
     case "help":
       content = renderHelpTab(width, contentHeight);

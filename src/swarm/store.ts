@@ -20,7 +20,7 @@ import {
   inboxCur,
   allDirs,
 } from "./paths.js";
-import { MAX_MESSAGE_BYTES } from "./constants.js";
+import { MAX_MESSAGE_BYTES, DEFAULT_CLAIM_TOKEN_TTL_MS } from "./constants.js";
 import type {
   TeamConfig,
   MembersConfig,
@@ -247,7 +247,10 @@ export async function broadcastMessage(
   const ts = Date.now();
   const delivered: string[] = [];
 
-  for (const member of targets) {
+  // Sort targets by member_id for deterministic delivery ordering
+  const sortedTargets = [...targets].sort((a, b) => a.member_id.localeCompare(b.member_id));
+
+  for (const member of sortedTargets) {
     const message: SwarmMessage = {
       version: "1",
       team_id: opts.teamId,
@@ -295,10 +298,16 @@ export interface RecvMessagesOptions {
   max?: number;
 }
 
+export interface ClaimToken {
+  token: string;
+  expires_at: number;
+}
+
 export interface ReceivedMessage {
   messageId: string;
   filename: string;
   message: SwarmMessage;
+  claim?: ClaimToken;
 }
 
 /**
@@ -341,8 +350,12 @@ export async function recvMessages(
           continue;
         }
 
-        // Update claimed_at
+        // Mint claim token and update claimed_at
+        const claimToken = randomUUID();
+        const expiresAt = Date.now() + DEFAULT_CLAIM_TOKEN_TTL_MS;
         message.claimed_at = Date.now();
+        message.claim_token = claimToken;
+        message.claim_token_expires_at = expiresAt;
         const tmpDir = mailboxTmp(opts.contextDir);
         await atomicJsonWrite(tmpDir, destPath, message);
 
@@ -350,15 +363,25 @@ export async function recvMessages(
           ts: Date.now(),
           type: "message_claimed",
           message_id: message.message_id,
+          from: message.from.member_id,
+          to: opts.memberId,
+          topic: message.topic,
           by: opts.memberId,
         });
-      }
 
-      results.push({
-        messageId: message.message_id,
-        filename,
-        message,
-      });
+        results.push({
+          messageId: message.message_id,
+          filename,
+          message,
+          claim: { token: claimToken, expires_at: expiresAt },
+        });
+      } else {
+        results.push({
+          messageId: message.message_id,
+          filename,
+          message,
+        });
+      }
     } catch {
       // Corrupted or racing — skip
       continue;
@@ -374,22 +397,23 @@ export async function recvMessages(
 
 /**
  * Atomically move a specific message from `new/` to `processing/`.
+ * Returns a claim token on success for use with `ackMessageByClaimToken()`.
  */
 export async function claimMessage(
   contextDir: string,
   memberId: string,
   messageId: string,
-): Promise<boolean> {
+): Promise<{ ok: boolean; claim?: ClaimToken }> {
   const newDir = inboxNew(contextDir, memberId);
   let entries: string[];
   try {
     entries = await readdir(newDir);
   } catch {
-    return false;
+    return { ok: false };
   }
 
   const filename = entries.find((f) => f.includes(messageId));
-  if (!filename) return false;
+  if (!filename) return { ok: false };
 
   const src = resolve(newDir, filename);
   const processingDir = inboxProcessing(contextDir, memberId);
@@ -399,14 +423,22 @@ export async function claimMessage(
   try {
     await rename(src, dest);
   } catch {
-    return false;
+    return { ok: false };
   }
 
-  // Update claimed_at
+  // Mint claim token and update claimed_at
+  let from: string | undefined;
+  let topic: string | undefined;
+  const claimToken = randomUUID();
+  const expiresAt = Date.now() + DEFAULT_CLAIM_TOKEN_TTL_MS;
   try {
     const raw = await readFile(dest, "utf-8");
     const message = JSON.parse(raw) as SwarmMessage;
     message.claimed_at = Date.now();
+    message.claim_token = claimToken;
+    message.claim_token_expires_at = expiresAt;
+    from = message.from.member_id;
+    topic = message.topic;
     const tmpDir = mailboxTmp(contextDir);
     await atomicJsonWrite(tmpDir, dest, message);
   } catch {
@@ -417,10 +449,13 @@ export async function claimMessage(
     ts: Date.now(),
     type: "message_claimed",
     message_id: messageId,
+    from,
+    to: memberId,
+    topic,
     by: memberId,
   });
 
-  return true;
+  return { ok: true, claim: { token: claimToken, expires_at: expiresAt } };
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +463,7 @@ export async function claimMessage(
 // ---------------------------------------------------------------------------
 
 /**
- * Atomically move a message from `processing/` to `cur/`.
+ * Atomically move a message from `processing/` to `cur/` by message ID.
  */
 export async function ackMessage(
   contextDir: string,
@@ -446,10 +481,71 @@ export async function ackMessage(
   const filename = entries.find((f) => f.includes(messageId));
   if (!filename) return false;
 
+  return ackMessageFile(contextDir, memberId, filename, messageId);
+}
+
+/**
+ * Ack a message by its claim token (no directory scan by messageId).
+ * Scans processing/ for a file whose JSON contains a matching claim_token.
+ */
+export async function ackMessageByClaimToken(
+  contextDir: string,
+  memberId: string,
+  claimToken: string,
+): Promise<boolean> {
+  const processingDir = inboxProcessing(contextDir, memberId);
+  let entries: string[];
+  try {
+    entries = await readdir(processingDir);
+  } catch {
+    return false;
+  }
+
+  for (const filename of entries) {
+    if (!filename.endsWith(".json")) continue;
+    try {
+      const raw = await readFile(resolve(processingDir, filename), "utf-8");
+      const message = JSON.parse(raw) as SwarmMessage;
+      if (message.claim_token === claimToken) {
+        // Best-effort expiry check
+        if (message.claim_token_expires_at && Date.now() > message.claim_token_expires_at) {
+          return false; // token expired
+        }
+        return ackMessageFile(contextDir, memberId, filename, message.message_id);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
+ * Internal: move a specific message file from processing/ to cur/.
+ */
+async function ackMessageFile(
+  contextDir: string,
+  memberId: string,
+  filename: string,
+  messageId: string,
+): Promise<boolean> {
+  const processingDir = inboxProcessing(contextDir, memberId);
   const src = resolve(processingDir, filename);
   const curDir = inboxCur(contextDir, memberId);
   await mkdir(curDir, { recursive: true });
   const dest = resolve(curDir, filename);
+
+  // Read metadata before moving for event enrichment
+  let from: string | undefined;
+  let topic: string | undefined;
+  try {
+    const raw = await readFile(src, "utf-8");
+    const message = JSON.parse(raw) as SwarmMessage;
+    from = message.from.member_id;
+    topic = message.topic;
+  } catch {
+    // non-critical
+  }
 
   try {
     await rename(src, dest);
@@ -461,6 +557,9 @@ export async function ackMessage(
     ts: Date.now(),
     type: "message_acked",
     message_id: messageId,
+    from,
+    to: memberId,
+    topic,
     by: memberId,
   });
 

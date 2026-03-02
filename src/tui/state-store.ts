@@ -60,7 +60,7 @@ export interface WorkflowUiState {
   stepOrder: string[];
   selectedStepId?: string;
   followMode: "selected" | "running";
-  selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "help";
+  selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "swarm" | "help";
   coreLogs: RingBuffer<string>;
   warnings: RingBuffer<string>;
   swarmActivity: RingBuffer<string>;
