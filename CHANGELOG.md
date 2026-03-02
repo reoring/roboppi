@@ -13,6 +13,24 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Fixed
 
 
+## [0.1.8] - 2026-03-02
+
+### Added
+
+- Swarm v1: file-backed mailbox + task store for agent teams under `<context_dir>/_swarm/`.
+- New `roboppi swarm` CLI (JSON-only stdout) for members, messaging, tasks, and housekeeping (incl. `message recv --wait-ms`, claim-token ack, stale recovery).
+- Workflow YAML `swarm:` config for defining members + seeding tasks; inject `ROBOPPI_SWARM_*` env vars into steps.
+- Workflow TUI Swarm tab + `swarm_*` exec events for metadata-only activity visibility.
+- New worker capabilities `MAILBOX` and `TASKS` to gate Swarm tooling (Claude Code allowlist support).
+
+### Changed
+
+- Swarm conformance checklist is captured in `docs/spec/swarm.md` and enforced by the self-dev Swarm impl loop.
+
+### Fixed
+
+- Harden `roboppi swarm` tool-facing inputs with explicit path-safety validation and JSON-safe error output.
+
 ## [0.1.7] - 2026-03-01
 
 ### Added
