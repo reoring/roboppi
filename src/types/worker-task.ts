@@ -12,6 +12,8 @@ export enum WorkerCapability {
   EDIT = "EDIT",
   RUN_TESTS = "RUN_TESTS",
   RUN_COMMANDS = "RUN_COMMANDS",
+  MAILBOX = "MAILBOX",
+  TASKS = "TASKS",
 }
 
 export enum OutputMode {

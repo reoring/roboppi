@@ -36,6 +36,10 @@ import { ManagementController } from "./management/management-controller.js";
 import { ManagementTelemetrySink } from "./management/management-telemetry.js";
 import type { ManagementHook, ManagementConfig, ManagementAgentConfig } from "./management/types.js";
 import type { AgentProfile } from "./agent-catalog.js";
+import { initSwarmContext } from "../swarm/store.js";
+import { addTask as addSwarmTask } from "../swarm/task-store.js";
+import { membersJsonPath } from "../swarm/paths.js";
+import { SwarmCoordinator } from "../swarm/coordinator.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -314,6 +318,9 @@ export class WorkflowExecutor {
   private preStepHookInFlight = 0;
   private readonly preStepHookDone = new Set<string>();
 
+  // Swarm coordinator (when enabled)
+  private swarmCoordinator: SwarmCoordinator | null = null;
+
   // Subworkflow options
   private readonly definitionPath?: string;
   private readonly workflowCallStack: string[];
@@ -325,7 +332,7 @@ export class WorkflowExecutor {
     private readonly contextManager: ContextManager,
     private readonly stepRunner: StepRunner,
     private readonly workspaceDir: string,
-    private readonly env?: Record<string, string>,
+    private env?: Record<string, string>,
     private readonly abortSignal?: AbortSignal,
     private readonly branchContext?: BranchRuntimeContext,
     private readonly supervised: boolean = false,
@@ -460,6 +467,86 @@ export class WorkflowExecutor {
       await this.contextManager.initStep(stepId);
     }
 
+    // 2d. Initialize Swarm context if enabled (§8.1)
+    const swarmConfig = this.definition.swarm;
+    if (swarmConfig?.enabled) {
+      // Emit warning when not supervised
+      if (!this.supervised) {
+        this.emitSink.emit({
+          type: "warning",
+          ts: Date.now(),
+          message: "Swarm is enabled but the workflow is not supervised (--supervised). Safety and observability will be reduced.",
+        });
+      }
+
+      const memberEntries = Object.entries(swarmConfig.members ?? {}).map(
+        ([memberId, _memberCfg]) => ({
+          member_id: memberId,
+          name: memberId,
+          role: memberId === "lead" ? "team_lead" : "member",
+          worker: undefined,
+          capabilities: undefined,
+          workspace: undefined,
+        }),
+      );
+
+      // Determine lead member id: prefer explicit "lead" key, else first member (deterministic fallback)
+      const hasExplicitLead = swarmConfig.members && "lead" in swarmConfig.members;
+      const leadMemberId = hasExplicitLead
+        ? "lead"
+        : memberEntries[0]?.member_id ?? "lead";
+
+      if (!hasExplicitLead && memberEntries.length > 0) {
+        this.emitSink.emit({
+          type: "warning",
+          ts: Date.now(),
+          message: `[swarm] No explicit "lead" member key; using first member "${leadMemberId}" as lead (deterministic fallback).`,
+        });
+      }
+
+      const { teamId: swarmTeamId } = await initSwarmContext({
+        contextDir: this.contextManager.contextDir,
+        teamName: swarmConfig.team_name ?? this.definition.name,
+        leadMemberId,
+        members: memberEntries,
+      });
+
+      // Seed initial tasks from DSL config
+      if (swarmConfig.tasks) {
+        for (const taskDef of swarmConfig.tasks) {
+          await addSwarmTask({
+            contextDir: this.contextManager.contextDir,
+            title: taskDef.title,
+            description: taskDef.description,
+            assignedTo: taskDef.assigned_to,
+          });
+        }
+      }
+
+      // Merge swarm env vars into this.env for step execution
+      this.env = {
+        ...(this.env ?? {}),
+        ROBOPPI_SWARM_CONTEXT_DIR: this.contextManager.contextDir,
+        ROBOPPI_SWARM_TEAM_ID: swarmTeamId,
+        ROBOPPI_SWARM_MEMBERS_FILE: membersJsonPath(this.contextManager.contextDir),
+        ROBOPPI_SWARM_MEMBER_ID: leadMemberId,
+      };
+
+      // Start swarm coordinator for housekeeping, event bridging, and teammate spawning
+      this.swarmCoordinator = new SwarmCoordinator({
+        contextDir: this.contextManager.contextDir,
+        sink: this.emitSink,
+        stepRunner: this.stepRunner,
+        workspaceDir: this.workspaceDir,
+        agentCatalog: this.agentCatalog,
+        members: swarmConfig.members,
+        leadMemberId,
+        teamId: swarmTeamId,
+        baseEnv: this.env,
+      });
+      await this.swarmCoordinator.start();
+    }
+
     // 3. Set up workflow-level abort controller for timeout
     this.workflowAbortController = new AbortController();
 
@@ -503,6 +590,10 @@ export class WorkflowExecutor {
     } finally {
       clearTimeout(timeoutId);
       this.sentinelController?.stopAll();
+      // Stop swarm coordinator (cleanup timers, final housekeep, final tail)
+      if (this.swarmCoordinator) {
+        await this.swarmCoordinator.stop();
+      }
       if (this.abortSignal) {
         this.abortSignal.removeEventListener("abort", onExternalAbort);
       }

@@ -120,9 +120,9 @@ export class WorkflowTui {
       return;
     }
 
-    // Tab numbers 1-6 for tab switching
-    if (key >= "1" && key <= "6") {
-      const tabs = ["overview", "logs", "diffs", "result", "core", "help"] as const;
+    // Tab numbers 1-7 for tab switching
+    if (key >= "1" && key <= "7") {
+      const tabs = ["overview", "logs", "diffs", "result", "core", "swarm", "help"] as const;
       const idx = parseInt(key) - 1;
       if (idx < tabs.length) {
         state.selectedTab = tabs[idx]!;

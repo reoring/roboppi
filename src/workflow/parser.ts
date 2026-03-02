@@ -1,6 +1,6 @@
 import YAML from "yaml";
 import path from "node:path";
-import type { WorkflowDefinition, StepDefinition, CompletionCheckDef } from "./types.js";
+import type { WorkflowDefinition, StepDefinition, CompletionCheckDef, SwarmWorkflowConfig } from "./types.js";
 import type { ManagementConfig, ManagementAgentConfig, StepManagementConfig } from "./management/types.js";
 import { VALID_MANAGEMENT_HOOKS, VALID_ENGINE_TYPES } from "./management/types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
@@ -8,7 +8,7 @@ import { ErrorClass } from "../types/common.js";
 import { parseDuration } from "./duration.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
-const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS"]);
+const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS", "MAILBOX", "TASKS"]);
 
 const RESERVED_STEP_IDS = new Set([
   "_subworkflows",
@@ -916,6 +916,105 @@ function validateStepManagement(value: unknown, stepId: string): StepManagementC
   return obj as unknown as StepManagementConfig;
 }
 
+function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError("swarm must be an object");
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], "swarm.enabled");
+  validateOptionalString(obj["team_name"], "swarm.team_name");
+
+  // When enabled, team_name and members are required and non-empty.
+  if (obj["enabled"] === true) {
+    if (typeof obj["team_name"] !== "string" || obj["team_name"] === "") {
+      throw new WorkflowParseError(
+        "swarm.team_name is required when swarm.enabled is true",
+      );
+    }
+    if (obj["members"] === undefined) {
+      throw new WorkflowParseError(
+        "swarm.members is required when swarm.enabled is true",
+      );
+    }
+    // Members must be non-empty when enabled
+    if (typeof obj["members"] === "object" && obj["members"] !== null && !Array.isArray(obj["members"])) {
+      const memberKeys = Object.keys(obj["members"] as Record<string, unknown>);
+      if (memberKeys.length === 0) {
+        throw new WorkflowParseError(
+          "swarm.members must be non-empty when swarm.enabled is true",
+        );
+      }
+    }
+    // Validate lead semantics: prefer explicit "lead" member key.
+    // Deterministic fallback: first member key becomes the lead (with runtime warning).
+    if (typeof obj["members"] === "object" && obj["members"] !== null && !Array.isArray(obj["members"])) {
+      const memberKeys = Object.keys(obj["members"] as Record<string, unknown>);
+      if (memberKeys.length > 0 && !memberKeys.includes("lead")) {
+        // Deterministic fallback: first member key is used as lead.
+        // The executor emits a warning at runtime (parser cannot emit side effects).
+        (obj as Record<string, unknown>)["_lead_fallback"] = memberKeys[0];
+      }
+    }
+  }
+
+  // Validate members map
+  if (obj["members"] !== undefined) {
+    if (typeof obj["members"] !== "object" || obj["members"] === null || Array.isArray(obj["members"])) {
+      throw new WorkflowParseError("swarm.members must be an object (map of memberId -> config)");
+    }
+    const membersObj = obj["members"] as Record<string, unknown>;
+    const memberIds = Object.keys(membersObj);
+
+    for (const memberId of memberIds) {
+      assertPathSegment(memberId, `swarm.members key "${memberId}"`);
+
+      const memberVal = membersObj[memberId];
+      if (typeof memberVal !== "object" || memberVal === null || Array.isArray(memberVal)) {
+        throw new WorkflowParseError(`swarm.members.${memberId} must be an object`);
+      }
+      const member = memberVal as Record<string, unknown>;
+      assertString(member["agent"], `swarm.members.${memberId}.agent`);
+    }
+  }
+
+  // Validate tasks array
+  if (obj["tasks"] !== undefined) {
+    if (!Array.isArray(obj["tasks"])) {
+      throw new WorkflowParseError("swarm.tasks must be an array");
+    }
+
+    // Collect declared member ids for assigned_to validation
+    const declaredMembers = new Set<string>(
+      obj["members"] && typeof obj["members"] === "object" && !Array.isArray(obj["members"])
+        ? Object.keys(obj["members"] as Record<string, unknown>)
+        : [],
+    );
+
+    for (let i = 0; i < obj["tasks"].length; i++) {
+      const taskVal = obj["tasks"][i];
+      if (typeof taskVal !== "object" || taskVal === null || Array.isArray(taskVal)) {
+        throw new WorkflowParseError(`swarm.tasks[${i}] must be an object`);
+      }
+      const task = taskVal as Record<string, unknown>;
+      assertString(task["title"], `swarm.tasks[${i}].title`);
+      assertString(task["description"], `swarm.tasks[${i}].description`);
+
+      if (task["assigned_to"] !== undefined) {
+        assertString(task["assigned_to"], `swarm.tasks[${i}].assigned_to`);
+        if (!declaredMembers.has(task["assigned_to"] as string)) {
+          throw new WorkflowParseError(
+            `swarm.tasks[${i}].assigned_to references unknown member "${task["assigned_to"]}". Declared members: ${[...declaredMembers].join(", ") || "(none)"}`,
+          );
+        }
+      }
+    }
+  }
+
+  return obj as unknown as SwarmWorkflowConfig;
+}
+
 const MAX_YAML_SIZE = 1024 * 1024; // 1MB
 
 /**
@@ -958,6 +1057,9 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
 
   // Validate management config (opt-in)
   const managementConfig = validateManagement(doc["management"], options.agents);
+
+  // Validate swarm config (opt-in)
+  const swarmConfig = validateSwarm(doc["swarm"]);
 
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');
@@ -1004,6 +1106,7 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
       ? (doc["sentinel"] as WorkflowDefinition["sentinel"])
       : undefined,
     management: managementConfig,
+    swarm: swarmConfig,
     steps: validatedSteps,
   };
 }

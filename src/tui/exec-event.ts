@@ -72,4 +72,41 @@ export type ExecEvent =
       ts: number;
       message: string;
       data?: unknown;
+    }
+  | {
+      type: "swarm_message_sent";
+      ts: number;
+      teamId: string;
+      messageId: string;
+      fromMemberId: string;
+      toMemberId?: string;
+      to?: "broadcast";
+      topic: string;
+      kind?: string;
+    }
+  | {
+      type: "swarm_message_received";
+      ts: number;
+      teamId: string;
+      messageId: string;
+      fromMemberId: string;
+      toMemberId: string;
+      topic: string;
+      kind?: string;
+    }
+  | {
+      type: "swarm_task_claimed";
+      ts: number;
+      teamId: string;
+      taskId: string;
+      byMemberId: string;
+      title?: string;
+    }
+  | {
+      type: "swarm_task_completed";
+      ts: number;
+      teamId: string;
+      taskId: string;
+      byMemberId: string;
+      title?: string;
     };

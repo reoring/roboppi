@@ -80,6 +80,27 @@ export interface StallPolicy {
 }
 
 // ---------------------------------------------------------------------------
+// Swarm – workflow-level configuration (§8.1)
+// ---------------------------------------------------------------------------
+
+export interface SwarmMemberConfig {
+  agent: string;
+}
+
+export interface SwarmSeedTaskConfig {
+  title: string;
+  description: string;
+  assigned_to?: string;
+}
+
+export interface SwarmWorkflowConfig {
+  enabled?: boolean;
+  team_name?: string;
+  members?: Record<string, SwarmMemberConfig>;
+  tasks?: SwarmSeedTaskConfig[];
+}
+
+// ---------------------------------------------------------------------------
 // WorkflowDefinition
 // ---------------------------------------------------------------------------
 
@@ -100,6 +121,8 @@ export interface WorkflowDefinition {
   sentinel?: SentinelConfig;
   /** Optional: Management Agent configuration. */
   management?: ManagementConfig;
+  /** Optional: Swarm (agent team) configuration (§8.1). */
+  swarm?: SwarmWorkflowConfig;
   steps: Record<string, StepDefinition>;
 }
 
@@ -123,7 +146,7 @@ export interface StepDefinition {
   variant?: string;
   workspace?: string;
   instructions?: string;
-  capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS")[];
   /** Subworkflow YAML path (mutually exclusive with worker). */
   workflow?: string;
   /** Export child artifacts into parent context (subworkflow steps only). */
@@ -236,7 +259,7 @@ export interface CompletionCheckDef {
   /** Optional model variant / reasoning-effort hint (worker-specific). */
   variant?: string;
   instructions: string;
-  capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS")[];
+  capabilities: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS")[];
   timeout?: DurationString;
 
   /**

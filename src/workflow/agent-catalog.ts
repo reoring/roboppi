@@ -54,6 +54,8 @@ const VALID_CAPABILITIES = new Set<AgentCapability>([
   "EDIT",
   "RUN_TESTS",
   "RUN_COMMANDS",
+  "MAILBOX",
+  "TASKS",
 ]);
 
 function assertObject(value: unknown, field: string): asserts value is Record<string, unknown> {

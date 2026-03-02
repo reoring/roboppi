@@ -31,6 +31,12 @@ export function mapCapabilitiesToAllowedTools(
       case WorkerCapability.RUN_COMMANDS:
         tools.push("Bash");
         break;
+      case WorkerCapability.MAILBOX:
+        tools.push("Bash(roboppi swarm:*)");
+        break;
+      case WorkerCapability.TASKS:
+        tools.push("Bash(roboppi swarm:*)");
+        break;
     }
   }
   return [...new Set(tools)];

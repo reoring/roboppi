@@ -1,5 +1,5 @@
 
-.PHONY: all build test tests test-unit test-integration test-at test-branch test-all typecheck clean install install-user uninstall uninstall-user dev help
+.PHONY: all build test tests test-unit test-integration test-at test-branch test-all typecheck clean install install-user uninstall uninstall-user dev impl help
 
 BIN := roboppi
 
@@ -76,6 +76,9 @@ uninstall-user: ## Remove binary from ~/.local/bin
 
 dev: ## Run in dev mode (no build)
 	$(BUN) $(BUN_FLAGS) run $(SRC)
+
+impl: ## Run Swarm self-implementation workflow
+	$(BUN) $(BUN_FLAGS) run src/workflow/run.ts examples/swarm-impl-loop.yaml --workspace . --verbose
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'

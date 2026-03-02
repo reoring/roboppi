@@ -14,7 +14,7 @@ import type {
 } from "../../../src/workflow/types.js";
 import { WorkflowStatus, StepStatus } from "../../../src/workflow/types.js";
 import { ErrorClass } from "../../../src/types/common.js";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -1476,6 +1476,154 @@ describe("WorkflowExecutor", () => {
         ) as Record<string, unknown>;
         expect(content["status"]).toBe(WorkflowStatus.CANCELLED);
         expect(typeof content["completedAt"]).toBe("number");
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Swarm lifecycle wiring
+  // -------------------------------------------------------------------------
+  describe("swarm lifecycle wiring", () => {
+    it("creates _swarm/ directory and seeds tasks when swarm.enabled", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow(
+          { s1: makeStep() },
+          {
+            swarm: {
+              enabled: true,
+              team_name: "test-team",
+              members: {
+                lead: { agent: "lead-agent" },
+                researcher: { agent: "research-agent" },
+              },
+              tasks: [
+                { title: "Task 1", description: "Desc 1", assigned_to: "researcher" },
+                { title: "Task 2", description: "Desc 2" },
+              ],
+            },
+          },
+        );
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+
+        // Verify _swarm directory was created
+        const swarmDir = path.join(ctxDir, "_swarm");
+        const swarmStat = await stat(swarmDir);
+        expect(swarmStat.isDirectory()).toBe(true);
+
+        // Verify team.json
+        const teamJson = JSON.parse(
+          await readFile(path.join(swarmDir, "team.json"), "utf-8"),
+        );
+        expect(teamJson.name).toBe("test-team");
+        expect(teamJson.lead_member_id).toBe("lead");
+
+        // Verify members.json
+        const membersJson = JSON.parse(
+          await readFile(path.join(swarmDir, "members.json"), "utf-8"),
+        );
+        expect(membersJson.members).toHaveLength(2);
+        const memberIds = membersJson.members.map((m: { member_id: string }) => m.member_id);
+        expect(memberIds).toContain("lead");
+        expect(memberIds).toContain("researcher");
+
+        // Verify tasks were seeded (check pending dir)
+        const { readdir: rd } = await import("node:fs/promises");
+        const pendingDir = path.join(swarmDir, "tasks", "pending");
+        const pendingFiles = await rd(pendingDir);
+        const taskFiles = pendingFiles.filter((f: string) => f.endsWith(".json"));
+        expect(taskFiles).toHaveLength(2);
+      });
+    });
+
+    it("passes swarm env vars to step runner", async () => {
+      await withTempDir(async (dir) => {
+        let capturedEnv: Record<string, string> | undefined;
+
+        // Create an env-capturing runner
+        const envRunner: StepRunner = {
+          async runStep(_stepId, _step, _ws, _abort, env) {
+            capturedEnv = env;
+            return { status: "SUCCEEDED" };
+          },
+          async runCheck(_stepId, _check, _ws, _abort, _env) {
+            return { complete: true, failed: false };
+          },
+        };
+
+        const wf = makeWorkflow(
+          { s1: makeStep() },
+          {
+            swarm: {
+              enabled: true,
+              team_name: "env-test",
+              members: {
+                lead: { agent: "a" },
+              },
+            },
+          },
+        );
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, envRunner, dir);
+        await executor.execute();
+
+        expect(capturedEnv).toBeDefined();
+        expect(capturedEnv!["ROBOPPI_SWARM_CONTEXT_DIR"]).toBe(ctxDir);
+        expect(capturedEnv!["ROBOPPI_SWARM_TEAM_ID"]).toBeDefined();
+        expect(capturedEnv!["ROBOPPI_SWARM_MEMBERS_FILE"]).toContain("_swarm/members.json");
+        expect(capturedEnv!["ROBOPPI_SWARM_MEMBER_ID"]).toBe("lead");
+      });
+    });
+
+    it("emits warning when swarm enabled without supervised mode", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow(
+          { s1: makeStep() },
+          {
+            swarm: {
+              enabled: true,
+              team_name: "warn-test",
+              members: { lead: { agent: "a" } },
+            },
+          },
+        );
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+
+        // Capture events through a simple sink
+        const events: Array<{ type: string; message?: string }> = [];
+        const sink = {
+          emit(event: { type: string; message?: string }) {
+            events.push(event);
+          },
+        };
+
+        const executor = new WorkflowExecutor(
+          wf,
+          ctx,
+          runner,
+          dir,
+          undefined, // env
+          undefined, // abortSignal
+          undefined, // branchContext
+          false,     // supervised = false
+          sink as any,
+        );
+        await executor.execute();
+
+        const warnings = events.filter((e) => e.type === "warning");
+        expect(warnings.length).toBeGreaterThanOrEqual(1);
+        expect(warnings.some((w) => w.message?.includes("not supervised"))).toBe(true);
       });
     });
   });
