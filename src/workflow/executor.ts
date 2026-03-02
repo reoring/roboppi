@@ -36,6 +36,9 @@ import { ManagementController } from "./management/management-controller.js";
 import { ManagementTelemetrySink } from "./management/management-telemetry.js";
 import type { ManagementHook, ManagementConfig, ManagementAgentConfig } from "./management/types.js";
 import type { AgentProfile } from "./agent-catalog.js";
+import { initSwarmContext } from "../swarm/store.js";
+import { addTask as addSwarmTask } from "../swarm/task-store.js";
+import { membersJsonPath } from "../swarm/paths.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -325,7 +328,7 @@ export class WorkflowExecutor {
     private readonly contextManager: ContextManager,
     private readonly stepRunner: StepRunner,
     private readonly workspaceDir: string,
-    private readonly env?: Record<string, string>,
+    private env?: Record<string, string>,
     private readonly abortSignal?: AbortSignal,
     private readonly branchContext?: BranchRuntimeContext,
     private readonly supervised: boolean = false,
@@ -458,6 +461,64 @@ export class WorkflowExecutor {
         maxIterations: maxIter,
       };
       await this.contextManager.initStep(stepId);
+    }
+
+    // 2d. Initialize Swarm context if enabled (§8.1)
+    const swarmConfig = this.definition.swarm;
+    if (swarmConfig?.enabled) {
+      // Emit warning when not supervised
+      if (!this.supervised) {
+        this.emitSink.emit({
+          type: "warning",
+          ts: Date.now(),
+          message: "Swarm is enabled but the workflow is not supervised (--supervised). Safety and observability will be reduced.",
+        });
+      }
+
+      const memberEntries = Object.entries(swarmConfig.members ?? {}).map(
+        ([memberId, _memberCfg]) => ({
+          member_id: memberId,
+          name: memberId,
+          role: memberId === "lead" ? "team_lead" : "member",
+          worker: undefined,
+          capabilities: undefined,
+          workspace: undefined,
+        }),
+      );
+
+      // Determine lead member id: prefer explicit "lead" key, else first member
+      const leadMemberId =
+        swarmConfig.members && "lead" in swarmConfig.members
+          ? "lead"
+          : memberEntries[0]?.member_id ?? "lead";
+
+      const { teamId: swarmTeamId } = await initSwarmContext({
+        contextDir: this.contextManager.contextDir,
+        teamName: swarmConfig.team_name ?? this.definition.name,
+        leadMemberId,
+        members: memberEntries,
+      });
+
+      // Seed initial tasks from DSL config
+      if (swarmConfig.tasks) {
+        for (const taskDef of swarmConfig.tasks) {
+          await addSwarmTask({
+            contextDir: this.contextManager.contextDir,
+            title: taskDef.title,
+            description: taskDef.description,
+            assignedTo: taskDef.assigned_to,
+          });
+        }
+      }
+
+      // Merge swarm env vars into this.env for step execution
+      this.env = {
+        ...(this.env ?? {}),
+        ROBOPPI_SWARM_CONTEXT_DIR: this.contextManager.contextDir,
+        ROBOPPI_SWARM_TEAM_ID: swarmTeamId,
+        ROBOPPI_SWARM_MEMBERS_FILE: membersJsonPath(this.contextManager.contextDir),
+        ROBOPPI_SWARM_MEMBER_ID: leadMemberId,
+      };
     }
 
     // 3. Set up workflow-level abort controller for timeout

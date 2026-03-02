@@ -706,4 +706,275 @@ steps:
       expect(() => parseWorkflow(yaml)).toThrow(/exports_mode must be "merge" or "replace"/);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Swarm DSL validation
+  // -------------------------------------------------------------------------
+  describe("swarm config", () => {
+    it("parses valid swarm config", () => {
+      const yaml = `
+name: swarm-wf
+version: "1"
+timeout: "30m"
+swarm:
+  enabled: true
+  team_name: "my-team"
+  members:
+    lead:
+      agent: lead-agent
+    researcher:
+      agent: research-agent
+  tasks:
+    - title: "Investigate"
+      description: "Look at the code"
+      assigned_to: researcher
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.swarm).toBeDefined();
+      expect(wf.swarm!.enabled).toBe(true);
+      expect(wf.swarm!.team_name).toBe("my-team");
+      expect(wf.swarm!.members).toBeDefined();
+      expect(wf.swarm!.members!["lead"]!.agent).toBe("lead-agent");
+      expect(wf.swarm!.members!["researcher"]!.agent).toBe("research-agent");
+      expect(wf.swarm!.tasks).toHaveLength(1);
+      expect(wf.swarm!.tasks![0]!.title).toBe("Investigate");
+      expect(wf.swarm!.tasks![0]!.assigned_to).toBe("researcher");
+    });
+
+    it("parses disabled swarm config (minimal)", () => {
+      const yaml = `
+name: swarm-wf
+version: "1"
+timeout: "30m"
+swarm:
+  enabled: false
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.swarm).toBeDefined();
+      expect(wf.swarm!.enabled).toBe(false);
+    });
+
+    it("returns undefined swarm when not present", () => {
+      const wf = parseWorkflow(MINIMAL_WORKFLOW);
+      expect(wf.swarm).toBeUndefined();
+    });
+
+    it("rejects non-object swarm", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm: "not-an-object"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm must be an object/);
+    });
+
+    it("requires team_name when enabled", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  members:
+    lead:
+      agent: a
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.team_name is required/);
+    });
+
+    it("requires members when enabled", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members is required/);
+    });
+
+    it("rejects non-object members", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members: ["bad"]
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members must be an object/);
+    });
+
+    it("rejects member key with path traversal", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    "../escape":
+      agent: a
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/safe path segment/);
+    });
+
+    it("rejects member without agent field", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      role: "lead"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members.lead.agent/);
+    });
+
+    it("rejects tasks that are not an array", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks: "not-an-array"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks must be an array/);
+    });
+
+    it("rejects task missing title", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - description: "desc only"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks\[0\].title/);
+    });
+
+    it("rejects task missing description", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - title: "title only"
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks\[0\].description/);
+    });
+
+    it("rejects assigned_to referencing unknown member", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+swarm:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - title: "T"
+      description: "D"
+      assigned_to: unknown-member
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/assigned_to references unknown member/);
+    });
+  });
 });

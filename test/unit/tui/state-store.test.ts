@@ -297,4 +297,132 @@ describe("TuiStateStore", () => {
     const store = new TuiStateStore({ supervised: true });
     expect(store.state.supervised).toBe(true);
   });
+
+  // -------------------------------------------------------------------------
+  // Swarm events
+  // -------------------------------------------------------------------------
+
+  test("handles swarm_message_sent event", () => {
+    const store = new TuiStateStore();
+    const event: ExecEvent = {
+      type: "swarm_message_sent",
+      ts: 1000,
+      teamId: "team-1",
+      messageId: "msg-1",
+      fromMemberId: "researcher",
+      toMemberId: "lead",
+      topic: "findings",
+      kind: "text",
+    };
+
+    store.emit(event);
+
+    expect(store.dirty).toBe(true);
+    expect(store.state.swarmActivity.length).toBe(1);
+    expect(store.state.swarmActivity.lines()[0]).toContain("[swarm]");
+    expect(store.state.swarmActivity.lines()[0]).toContain("message sent");
+    expect(store.state.swarmActivity.lines()[0]).toContain("researcher");
+    expect(store.state.swarmEntries.length).toBe(1);
+    expect(store.state.swarmEntries[0]!.type).toBe("swarm_message_sent");
+    expect(store.state.swarmEntries[0]!.teamId).toBe("team-1");
+    expect(store.state.swarmEntries[0]!.id).toBe("msg-1");
+    expect(store.state.swarmEntries[0]!.memberId).toBe("researcher");
+    expect(store.state.swarmEntries[0]!.label).toBe("findings");
+  });
+
+  test("handles swarm_message_sent broadcast event", () => {
+    const store = new TuiStateStore();
+    store.emit({
+      type: "swarm_message_sent",
+      ts: 1000,
+      teamId: "team-1",
+      messageId: "msg-2",
+      fromMemberId: "lead",
+      to: "broadcast",
+      topic: "announcement",
+    });
+
+    expect(store.state.swarmEntries.length).toBe(1);
+    expect(store.state.swarmEntries[0]!.memberId).toBe("lead");
+  });
+
+  test("handles swarm_message_received event", () => {
+    const store = new TuiStateStore();
+    store.emit({
+      type: "swarm_message_received",
+      ts: 2000,
+      teamId: "team-1",
+      messageId: "msg-1",
+      fromMemberId: "researcher",
+      toMemberId: "lead",
+      topic: "findings",
+    });
+
+    expect(store.state.swarmActivity.length).toBe(1);
+    expect(store.state.swarmActivity.lines()[0]).toContain("message received");
+    expect(store.state.swarmActivity.lines()[0]).toContain("lead");
+    expect(store.state.swarmEntries[0]!.type).toBe("swarm_message_received");
+    expect(store.state.swarmEntries[0]!.memberId).toBe("lead");
+  });
+
+  test("handles swarm_task_claimed event", () => {
+    const store = new TuiStateStore();
+    store.emit({
+      type: "swarm_task_claimed",
+      ts: 3000,
+      teamId: "team-1",
+      taskId: "task-1",
+      byMemberId: "researcher",
+      title: "Investigate failure",
+    });
+
+    expect(store.state.swarmActivity.length).toBe(1);
+    expect(store.state.swarmActivity.lines()[0]).toContain("task claimed");
+    expect(store.state.swarmActivity.lines()[0]).toContain("researcher");
+    expect(store.state.swarmEntries[0]!.type).toBe("swarm_task_claimed");
+    expect(store.state.swarmEntries[0]!.id).toBe("task-1");
+    expect(store.state.swarmEntries[0]!.label).toBe("Investigate failure");
+  });
+
+  test("handles swarm_task_completed event", () => {
+    const store = new TuiStateStore();
+    store.emit({
+      type: "swarm_task_completed",
+      ts: 4000,
+      teamId: "team-1",
+      taskId: "task-1",
+      byMemberId: "researcher",
+      title: "Investigate failure",
+    });
+
+    expect(store.state.swarmActivity.length).toBe(1);
+    expect(store.state.swarmActivity.lines()[0]).toContain("task completed");
+    expect(store.state.swarmEntries[0]!.type).toBe("swarm_task_completed");
+    expect(store.state.swarmEntries[0]!.id).toBe("task-1");
+  });
+
+  test("swarm events do not end up in coreLogs or warnings", () => {
+    const store = new TuiStateStore();
+
+    store.emit({
+      type: "swarm_message_sent",
+      ts: 1000,
+      teamId: "team-1",
+      messageId: "msg-1",
+      fromMemberId: "researcher",
+      toMemberId: "lead",
+      topic: "findings",
+    });
+    store.emit({
+      type: "swarm_task_claimed",
+      ts: 2000,
+      teamId: "team-1",
+      taskId: "task-1",
+      byMemberId: "researcher",
+    });
+
+    expect(store.state.coreLogs.length).toBe(0);
+    expect(store.state.warnings.length).toBe(0);
+    expect(store.state.swarmActivity.length).toBe(2);
+  });
 });

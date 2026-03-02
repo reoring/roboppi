@@ -36,6 +36,18 @@ export interface StepUiState {
   result?: WorkerResult;
 }
 
+export interface SwarmActivityEntry {
+  ts: number;
+  type: "swarm_message_sent" | "swarm_message_received" | "swarm_task_claimed" | "swarm_task_completed";
+  teamId: string;
+  /** messageId for message events, taskId for task events */
+  id: string;
+  /** Sending or claiming/completing member */
+  memberId: string;
+  /** Topic (messages) or title (tasks) — metadata only */
+  label?: string;
+}
+
 export interface WorkflowUiState {
   workflowId?: string;
   name?: string;
@@ -51,6 +63,8 @@ export interface WorkflowUiState {
   selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "help";
   coreLogs: RingBuffer<string>;
   warnings: RingBuffer<string>;
+  swarmActivity: RingBuffer<string>;
+  swarmEntries: SwarmActivityEntry[];
 }
 
 export interface TuiStateStoreOptions {
@@ -59,16 +73,20 @@ export interface TuiStateStoreOptions {
   logLimitBytes?: number;
 }
 
+const DEFAULT_SWARM_ENTRIES_LIMIT = 200;
+
 export class TuiStateStore implements ExecEventSink {
   readonly state: WorkflowUiState;
   dirty = false;
 
   private readonly logLimitLines: number;
   private readonly logLimitBytes: number;
+  private readonly swarmEntriesLimit: number;
 
   constructor(opts?: TuiStateStoreOptions) {
     this.logLimitLines = opts?.logLimitLines ?? 5000;
     this.logLimitBytes = opts?.logLimitBytes ?? 2 * 1024 * 1024;
+    this.swarmEntriesLimit = DEFAULT_SWARM_ENTRIES_LIMIT;
 
     this.state = {
       supervised: opts?.supervised,
@@ -84,6 +102,11 @@ export class TuiStateStore implements ExecEventSink {
         maxLines: this.logLimitLines,
         maxBytes: this.logLimitBytes,
       }),
+      swarmActivity: new RingBuffer<string>({
+        maxLines: this.logLimitLines,
+        maxBytes: this.logLimitBytes,
+      }),
+      swarmEntries: [],
     };
   }
 
@@ -114,6 +137,12 @@ export class TuiStateStore implements ExecEventSink {
         break;
       case "warning":
         this.reduceWarning(event);
+        break;
+      case "swarm_message_sent":
+      case "swarm_message_received":
+      case "swarm_task_claimed":
+      case "swarm_task_completed":
+        this.reduceSwarmEvent(event);
         break;
     }
   }
@@ -257,5 +286,66 @@ export class TuiStateStore implements ExecEventSink {
     event: Extract<ExecEvent, { type: "warning" }>,
   ): void {
     this.state.warnings.push(event.message);
+  }
+
+  private reduceSwarmEvent(
+    event: Extract<ExecEvent, { type: "swarm_message_sent" | "swarm_message_received" | "swarm_task_claimed" | "swarm_task_completed" }>,
+  ): void {
+    let entry: SwarmActivityEntry;
+    let summary: string;
+
+    switch (event.type) {
+      case "swarm_message_sent":
+        entry = {
+          ts: event.ts,
+          type: event.type,
+          teamId: event.teamId,
+          id: event.messageId,
+          memberId: event.fromMemberId,
+          label: event.topic,
+        };
+        summary = `[swarm] message sent by ${event.fromMemberId} topic=${event.topic}`;
+        break;
+      case "swarm_message_received":
+        entry = {
+          ts: event.ts,
+          type: event.type,
+          teamId: event.teamId,
+          id: event.messageId,
+          memberId: event.toMemberId,
+          label: event.topic,
+        };
+        summary = `[swarm] message received by ${event.toMemberId} from=${event.fromMemberId} topic=${event.topic}`;
+        break;
+      case "swarm_task_claimed":
+        entry = {
+          ts: event.ts,
+          type: event.type,
+          teamId: event.teamId,
+          id: event.taskId,
+          memberId: event.byMemberId,
+          label: event.title,
+        };
+        summary = `[swarm] task claimed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
+        break;
+      case "swarm_task_completed":
+        entry = {
+          ts: event.ts,
+          type: event.type,
+          teamId: event.teamId,
+          id: event.taskId,
+          memberId: event.byMemberId,
+          label: event.title,
+        };
+        summary = `[swarm] task completed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
+        break;
+    }
+
+    this.state.swarmActivity.push(summary);
+    this.state.swarmEntries.push(entry);
+    // Evict oldest entries to stay within the bounded limit.
+    while (this.state.swarmEntries.length > this.swarmEntriesLimit) {
+      this.state.swarmEntries.shift();
+    }
   }
 }
