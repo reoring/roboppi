@@ -1,5 +1,6 @@
 import type { WorkerResult } from "../types/index.js";
 import type { ExecEventSink, ExecEvent } from "./exec-event.js";
+import type { ChatMessageEntry } from "./components/tabs/chat-tab.js";
 import { RingBuffer } from "./ring-buffer.js";
 import { generateId } from "../types/index.js";
 
@@ -36,22 +37,28 @@ export interface StepUiState {
   result?: WorkerResult;
 }
 
-export interface SwarmActivityEntry {
+export interface AgentActivityEntry {
   ts: number;
-  type: "swarm_message_sent" | "swarm_message_received" | "swarm_task_claimed" | "swarm_task_completed";
+  type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed";
   teamId: string;
   /** messageId for message events, taskId for task events */
   id: string;
   /** Sending or claiming/completing member */
   memberId: string;
+  /** Target member for message events (recipient for sent, sender for received) */
+  targetMemberId?: string;
   /** Topic (messages) or title (tasks) — metadata only */
   label?: string;
+  /** Truncated message body preview */
+  bodyPreview?: string;
 }
 
 export interface WorkflowUiState {
   workflowId?: string;
   name?: string;
   workspaceDir?: string;
+  /** Context directory where agents mailbox lives. */
+  contextDir?: string;
   supervised?: boolean;
   startedAt?: number;
   finishedAt?: number;
@@ -60,11 +67,18 @@ export interface WorkflowUiState {
   stepOrder: string[];
   selectedStepId?: string;
   followMode: "selected" | "running";
-  selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "swarm" | "help";
+  selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "agents" | "chat" | "help" | "agent_overview";
   coreLogs: RingBuffer<string>;
   warnings: RingBuffer<string>;
-  swarmActivity: RingBuffer<string>;
-  swarmEntries: SwarmActivityEntry[];
+  agentActivity: RingBuffer<string>;
+  agentEntries: AgentActivityEntry[];
+  chatMessages: ChatMessageEntry[];
+  /** Whether the chat input line is active (text input mode). */
+  chatInputActive: boolean;
+  /** Current text buffer for the chat input. */
+  chatInputBuffer: string;
+  /** Target member ID for the next chat message. */
+  chatInputTarget: string;
 }
 
 export interface TuiStateStoreOptions {
@@ -73,7 +87,26 @@ export interface TuiStateStoreOptions {
   logLimitBytes?: number;
 }
 
-const DEFAULT_SWARM_ENTRIES_LIMIT = 200;
+const DEFAULT_AGENT_ENTRIES_LIMIT = 200;
+
+/** Check whether a stepId represents a agent pseudo-step. */
+export function isAgentStep(stepId: string): boolean {
+  return stepId.startsWith("_agent:");
+}
+
+/** Extract the memberId from an agent pseudo-step id, or undefined if not an agent step. */
+export function agentMemberId(stepId: string): string | undefined {
+  if (!stepId.startsWith("_agent:")) return undefined;
+  return stepId.slice("_agent:".length);
+}
+
+export function getAgentHintText(step: StepUiState): string {
+  if (step.progress?.message) return step.progress.message;
+  const lastOut = step.logs.stdout.last();
+  if (lastOut?.trim()) return lastOut.trim();
+  if (step.phase) return step.phase;
+  return "";
+}
 
 export class TuiStateStore implements ExecEventSink {
   readonly state: WorkflowUiState;
@@ -81,12 +114,12 @@ export class TuiStateStore implements ExecEventSink {
 
   private readonly logLimitLines: number;
   private readonly logLimitBytes: number;
-  private readonly swarmEntriesLimit: number;
+  private readonly agentEntriesLimit: number;
 
   constructor(opts?: TuiStateStoreOptions) {
     this.logLimitLines = opts?.logLimitLines ?? 5000;
     this.logLimitBytes = opts?.logLimitBytes ?? 2 * 1024 * 1024;
-    this.swarmEntriesLimit = DEFAULT_SWARM_ENTRIES_LIMIT;
+    this.agentEntriesLimit = DEFAULT_AGENT_ENTRIES_LIMIT;
 
     this.state = {
       supervised: opts?.supervised,
@@ -102,11 +135,15 @@ export class TuiStateStore implements ExecEventSink {
         maxLines: this.logLimitLines,
         maxBytes: this.logLimitBytes,
       }),
-      swarmActivity: new RingBuffer<string>({
+      agentActivity: new RingBuffer<string>({
         maxLines: this.logLimitLines,
         maxBytes: this.logLimitBytes,
       }),
-      swarmEntries: [],
+      agentEntries: [],
+      chatMessages: [],
+      chatInputActive: false,
+      chatInputBuffer: "",
+      chatInputTarget: "",
     };
   }
 
@@ -138,11 +175,11 @@ export class TuiStateStore implements ExecEventSink {
       case "warning":
         this.reduceWarning(event);
         break;
-      case "swarm_message_sent":
-      case "swarm_message_received":
-      case "swarm_task_claimed":
-      case "swarm_task_completed":
-        this.reduceSwarmEvent(event);
+      case "agent_message_sent":
+      case "agent_message_received":
+      case "agent_task_claimed":
+      case "agent_task_completed":
+        this.reduceAgentEvent(event);
         break;
     }
   }
@@ -188,6 +225,7 @@ export class TuiStateStore implements ExecEventSink {
     this.state.workflowId = event.workflowId;
     this.state.name = event.name;
     this.state.workspaceDir = event.workspaceDir;
+    this.state.contextDir = event.contextDir;
     this.state.supervised = event.supervised;
     this.state.startedAt = event.startedAt;
     this.state.status = "RUNNING";
@@ -288,36 +326,49 @@ export class TuiStateStore implements ExecEventSink {
     this.state.warnings.push(event.message);
   }
 
-  private reduceSwarmEvent(
-    event: Extract<ExecEvent, { type: "swarm_message_sent" | "swarm_message_received" | "swarm_task_claimed" | "swarm_task_completed" }>,
+  isAgentStep(stepId: string): boolean {
+    return stepId.startsWith("_agent:");
+  }
+
+  agentMemberId(stepId: string): string | undefined {
+    if (!stepId.startsWith("_agent:")) return undefined;
+    return stepId.slice("_agent:".length);
+  }
+
+  private reduceAgentEvent(
+    event: Extract<ExecEvent, { type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed" }>,
   ): void {
-    let entry: SwarmActivityEntry;
+    let entry: AgentActivityEntry;
     let summary: string;
 
     switch (event.type) {
-      case "swarm_message_sent":
+      case "agent_message_sent":
         entry = {
           ts: event.ts,
           type: event.type,
           teamId: event.teamId,
           id: event.messageId,
           memberId: event.fromMemberId,
+          targetMemberId: event.toMemberId,
           label: event.topic,
+          bodyPreview: event.bodyPreview,
         };
-        summary = `[swarm] message sent by ${event.fromMemberId} topic=${event.topic}`;
+        summary = `[agents] message sent by ${event.fromMemberId} topic=${event.topic}`;
         break;
-      case "swarm_message_received":
+      case "agent_message_received":
         entry = {
           ts: event.ts,
           type: event.type,
           teamId: event.teamId,
           id: event.messageId,
           memberId: event.toMemberId,
+          targetMemberId: event.fromMemberId,
           label: event.topic,
+          bodyPreview: event.bodyPreview,
         };
-        summary = `[swarm] message received by ${event.toMemberId} from=${event.fromMemberId} topic=${event.topic}`;
+        summary = `[agents] message received by ${event.toMemberId} from=${event.fromMemberId} topic=${event.topic}`;
         break;
-      case "swarm_task_claimed":
+      case "agent_task_claimed":
         entry = {
           ts: event.ts,
           type: event.type,
@@ -326,9 +377,9 @@ export class TuiStateStore implements ExecEventSink {
           memberId: event.byMemberId,
           label: event.title,
         };
-        summary = `[swarm] task claimed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
+        summary = `[agents] task claimed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
         break;
-      case "swarm_task_completed":
+      case "agent_task_completed":
         entry = {
           ts: event.ts,
           type: event.type,
@@ -337,15 +388,41 @@ export class TuiStateStore implements ExecEventSink {
           memberId: event.byMemberId,
           label: event.title,
         };
-        summary = `[swarm] task completed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
+        summary = `[agents] task completed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
         break;
     }
 
-    this.state.swarmActivity.push(summary);
-    this.state.swarmEntries.push(entry);
+    this.state.agentActivity.push(summary);
+    this.state.agentEntries.push(entry);
     // Evict oldest entries to stay within the bounded limit.
-    while (this.state.swarmEntries.length > this.swarmEntriesLimit) {
-      this.state.swarmEntries.shift();
+    while (this.state.agentEntries.length > this.agentEntriesLimit) {
+      this.state.agentEntries.shift();
+    }
+
+    // Also populate chatMessages from message events that include a body preview.
+    if (
+      (event.type === "agent_message_sent" || event.type === "agent_message_received") &&
+      event.bodyPreview
+    ) {
+      // Deduplicate by messageId (TUI chat sends may arrive via event pipeline too)
+      const msgId = event.messageId;
+      const alreadyExists = msgId && this.state.chatMessages.some((m) => m.messageId === msgId);
+      if (!alreadyExists) {
+        const toMemberId =
+          event.type === "agent_message_sent" ? event.toMemberId : event.toMemberId;
+        this.state.chatMessages.push({
+          ts: event.ts,
+          messageId: msgId,
+          fromMemberId: event.fromMemberId,
+          fromName: event.fromMemberId,
+          toMemberId,
+          kind: event.kind ?? "text",
+          body: event.bodyPreview,
+        });
+        while (this.state.chatMessages.length > this.agentEntriesLimit) {
+          this.state.chatMessages.shift();
+        }
+      }
     }
   }
 }

@@ -1481,16 +1481,16 @@ describe("WorkflowExecutor", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Swarm lifecycle wiring
+  // Agents lifecycle wiring
   // -------------------------------------------------------------------------
-  describe("swarm lifecycle wiring", () => {
-    it("creates _swarm/ directory and seeds tasks when swarm.enabled", async () => {
+  describe("agents lifecycle wiring", () => {
+    it("creates _agents/ directory and seeds tasks when agents.enabled", async () => {
       await withTempDir(async (dir) => {
         const runner = new MockStepRunner();
         const wf = makeWorkflow(
           { s1: makeStep() },
           {
-            swarm: {
+            agents: {
               enabled: true,
               team_name: "test-team",
               members: {
@@ -1512,21 +1512,21 @@ describe("WorkflowExecutor", () => {
 
         expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
 
-        // Verify _swarm directory was created
-        const swarmDir = path.join(ctxDir, "_swarm");
-        const swarmStat = await stat(swarmDir);
-        expect(swarmStat.isDirectory()).toBe(true);
+        // Verify _agents directory was created
+        const agentsDir = path.join(ctxDir, "_agents");
+        const agentsStat = await stat(agentsDir);
+        expect(agentsStat.isDirectory()).toBe(true);
 
         // Verify team.json
         const teamJson = JSON.parse(
-          await readFile(path.join(swarmDir, "team.json"), "utf-8"),
+          await readFile(path.join(agentsDir, "team.json"), "utf-8"),
         );
         expect(teamJson.name).toBe("test-team");
         expect(teamJson.lead_member_id).toBe("lead");
 
         // Verify members.json
         const membersJson = JSON.parse(
-          await readFile(path.join(swarmDir, "members.json"), "utf-8"),
+          await readFile(path.join(agentsDir, "members.json"), "utf-8"),
         );
         expect(membersJson.members).toHaveLength(2);
         const memberIds = membersJson.members.map((m: { member_id: string }) => m.member_id);
@@ -1535,14 +1535,14 @@ describe("WorkflowExecutor", () => {
 
         // Verify tasks were seeded (check pending dir)
         const { readdir: rd } = await import("node:fs/promises");
-        const pendingDir = path.join(swarmDir, "tasks", "pending");
+        const pendingDir = path.join(agentsDir, "tasks", "pending");
         const pendingFiles = await rd(pendingDir);
         const taskFiles = pendingFiles.filter((f: string) => f.endsWith(".json"));
         expect(taskFiles).toHaveLength(2);
       });
     });
 
-    it("passes swarm env vars to step runner", async () => {
+    it("passes agents env vars to step runner", async () => {
       await withTempDir(async (dir) => {
         let capturedEnv: Record<string, string> | undefined;
 
@@ -1560,7 +1560,7 @@ describe("WorkflowExecutor", () => {
         const wf = makeWorkflow(
           { s1: makeStep() },
           {
-            swarm: {
+            agents: {
               enabled: true,
               team_name: "env-test",
               members: {
@@ -1576,20 +1576,20 @@ describe("WorkflowExecutor", () => {
         await executor.execute();
 
         expect(capturedEnv).toBeDefined();
-        expect(capturedEnv!["ROBOPPI_SWARM_CONTEXT_DIR"]).toBe(ctxDir);
-        expect(capturedEnv!["ROBOPPI_SWARM_TEAM_ID"]).toBeDefined();
-        expect(capturedEnv!["ROBOPPI_SWARM_MEMBERS_FILE"]).toContain("_swarm/members.json");
-        expect(capturedEnv!["ROBOPPI_SWARM_MEMBER_ID"]).toBe("lead");
+        expect(capturedEnv!["ROBOPPI_AGENTS_CONTEXT_DIR"]).toBe(ctxDir);
+        expect(capturedEnv!["ROBOPPI_AGENTS_TEAM_ID"]).toBeDefined();
+        expect(capturedEnv!["ROBOPPI_AGENTS_MEMBERS_FILE"]).toContain("_agents/members.json");
+        expect(capturedEnv!["ROBOPPI_AGENTS_MEMBER_ID"]).toBe("lead");
       });
     });
 
-    it("emits warning when swarm enabled without supervised mode", async () => {
+    it("emits warning when agents enabled without supervised mode", async () => {
       await withTempDir(async (dir) => {
         const runner = new MockStepRunner();
         const wf = makeWorkflow(
           { s1: makeStep() },
           {
-            swarm: {
+            agents: {
               enabled: true,
               team_name: "warn-test",
               members: { lead: { agent: "a" } },

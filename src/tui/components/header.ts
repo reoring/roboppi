@@ -1,4 +1,5 @@
 import type { WorkflowUiState } from "../state-store.js";
+import { isAgentStep } from "../state-store.js";
 import { ansiFit } from "../ansi-utils.js";
 
 const SPINNER_FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
@@ -18,14 +19,16 @@ export function renderHeader(state: WorkflowUiState, width: number): string {
   const statusColor = getStatusColor(status);
   const spinner = isRunningStatus(status) ? SPINNER_FRAMES[spinnerIdx] + " " : "";
 
-  const counts = countStatuses(state);
-  const countStr = formatCounts(counts);
+  const { stepCounts, agentTotal, agentRunning } = countStatuses(state);
+  const countStr = formatCounts(stepCounts)
+    + (agentTotal > 0 ? `  agents:${agentRunning}/${agentTotal}` : "");
 
   const isFinished = status !== "RUNNING" && status !== "PENDING";
-  const line1Raw = `\x1b[1m${name}\x1b[0m  ${spinner}${statusColor}${status}\x1b[0m  \x1b[90m${mode} \u00B7 ${elapsed}\x1b[0m`;
+  const cwdPart = state.workspaceDir ? `  \x1b[90m${state.workspaceDir}\x1b[0m` : "";
+  const line1Raw = `\x1b[1m${name}\x1b[0m  ${spinner}${statusColor}${status}\x1b[0m  \x1b[90m${mode} \u00B7 ${elapsed}\x1b[0m${cwdPart}`;
   const hints = isFinished
-    ? "j/k:move  1-7:tabs  y:copy  q:exit"
-    : "j/k:move  1-7:tabs  y:copy  Ctrl+C:cancel  q:quit";
+    ? "j/k:move  1-8:tabs  y:copy  q:exit"
+    : "j/k:move  1-8:tabs  y:copy  Ctrl+C:cancel  q:quit";
   const line2Raw = `\x1b[90m${countStr}  \u2502  ${hints}\x1b[0m`;
   const separator = "\x1b[90m" + "\u2500".repeat(Math.max(0, width)) + "\x1b[0m";
 
@@ -58,12 +61,27 @@ function isRunningStatus(status: string): boolean {
   return status === "RUNNING";
 }
 
-function countStatuses(state: WorkflowUiState): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const step of state.steps.values()) {
-    counts[step.status] = (counts[step.status] ?? 0) + 1;
+function countStatuses(state: WorkflowUiState): {
+  stepCounts: Record<string, number>;
+  agentTotal: number;
+  agentRunning: number;
+} {
+  const stepCounts: Record<string, number> = {};
+  let agentTotal = 0;
+  let agentRunning = 0;
+
+  for (const [stepId, step] of state.steps.entries()) {
+    if (isAgentStep(stepId)) {
+      agentTotal++;
+      if (step.status === "RUNNING" || step.status === "CHECKING") {
+        agentRunning++;
+      }
+    } else {
+      stepCounts[step.status] = (stepCounts[step.status] ?? 0) + 1;
+    }
   }
-  return counts;
+
+  return { stepCounts, agentTotal, agentRunning };
 }
 
 function formatCounts(counts: Record<string, number>): string {

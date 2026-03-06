@@ -115,29 +115,70 @@ export class EvaluateGate {
     abortSignal?: AbortSignal,
   ): Promise<boolean> {
     const cmd = getWorkerCommand(worker, instructions);
-    const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), timeoutMs);
-
-    const onAbort = () => abortController.abort();
-    if (abortSignal) {
-      if (abortSignal.aborted) {
-        abortController.abort();
-      } else {
-        abortSignal.addEventListener("abort", onAbort, { once: true });
-      }
-    }
-
     try {
       const proc = Bun.spawn(cmd, {
         cwd: workspaceDir,
         stdout: "pipe",
         stderr: "pipe",
-        signal: abortController.signal,
       });
 
-      const stdout = await new Response(proc.stdout).text();
-      await proc.exited;
-      return parseDecision(stdout);
+      let timedOut = false;
+      let aborted = false;
+      let settled = false;
+      let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const terminate = (): void => {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          return;
+        }
+
+        hardKillTimer = setTimeout(() => {
+          if (!settled) {
+            try {
+              proc.kill("SIGKILL");
+            } catch {
+              // ignore
+            }
+          }
+        }, 250);
+      };
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        terminate();
+      }, timeoutMs);
+
+      const onAbort = (): void => {
+        aborted = true;
+        terminate();
+      };
+
+      if (abortSignal) {
+        if (abortSignal.aborted) {
+          onAbort();
+        } else {
+          abortSignal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      const stdoutPromise = new Response(proc.stdout).text().catch(() => "");
+
+      try {
+        const exitCode = await proc.exited;
+        settled = true;
+        if (timedOut || aborted || exitCode !== 0) {
+          return false;
+        }
+
+        const stdout = await stdoutPromise;
+        return parseDecision(stdout);
+      } finally {
+        clearTimeout(timer);
+        if (hardKillTimer) clearTimeout(hardKillTimer);
+        if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
+      }
     } catch (err: unknown) {
       // Check if it's ENOENT (CLI not found)
       if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
@@ -148,9 +189,6 @@ export class EvaluateGate {
       }
       // Timeout or other spawn failure => skip
       return false;
-    } finally {
-      clearTimeout(timer);
-      if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
     }
   }
 

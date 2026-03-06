@@ -1,26 +1,69 @@
 import type { WorkflowUiState } from "../state-store.js";
+import { isAgentStep, agentMemberId } from "../state-store.js";
 import { renderOverviewTab } from "./tabs/overview-tab.js";
 import { renderLogsTab } from "./tabs/logs-tab.js";
 import { renderDiffsTab } from "./tabs/diffs-tab.js";
 import { renderResultTab } from "./tabs/result-tab.js";
 import { renderCoreTab } from "./tabs/core-tab.js";
 import { renderHelpTab } from "./tabs/help-tab.js";
-import { renderSwarmTab } from "./tabs/swarm-tab.js";
+import { renderAgentsTab } from "./tabs/agents-tab.js";
+import { renderChatTab } from "./tabs/chat-tab.js";
+import { renderAgentOverviewTab } from "./tabs/agent-overview-tab.js";
 import { ansiFit } from "../ansi-utils.js";
 
-const TABS = [
+const STEP_TABS = [
   { key: "1", id: "overview", label: "Overview" },
   { key: "2", id: "logs", label: "Logs" },
   { key: "3", id: "diffs", label: "Diffs" },
   { key: "4", id: "result", label: "Result" },
   { key: "5", id: "core", label: "Core" },
-  { key: "6", id: "swarm", label: "Swarm" },
+  { key: "6", id: "agents", label: "Agents" },
+  { key: "7", id: "chat", label: "Chat" },
+  { key: "8", id: "help", label: "Help" },
+] as const;
+
+const AGENT_TABS = [
+  { key: "1", id: "chat", label: "Chat" },
+  { key: "2", id: "agent_overview", label: "Agent" },
+  { key: "3", id: "logs", label: "Logs" },
+  { key: "4", id: "agents", label: "Activity" },
+  { key: "5", id: "result", label: "Result" },
+  { key: "6", id: "core", label: "Core" },
   { key: "7", id: "help", label: "Help" },
 ] as const;
 
+/**
+ * When the user switches between a step and an agent entry, map
+ * the current tab to its equivalent in the other context.
+ */
+export function resolveEffectiveTab(
+  currentTab: WorkflowUiState["selectedTab"],
+  selectedStepId: string,
+): WorkflowUiState["selectedTab"] {
+  const isAgent = isAgentStep(selectedStepId);
+
+  if (isAgent) {
+    // Moving to agent context — Chat is the default tab for agents
+    switch (currentTab) {
+      case "overview": return "agent_overview";
+      case "diffs": return "agents";
+      default: return currentTab;
+    }
+  } else {
+    // Moving to step context
+    switch (currentTab) {
+      case "agent_overview": return "overview";
+      default: return currentTab;
+    }
+  }
+}
+
 export function renderDetailPane(state: WorkflowUiState, width: number, height: number): string {
+  const isAgent = state.selectedStepId ? isAgentStep(state.selectedStepId) : false;
+  const tabs = isAgent ? AGENT_TABS : STEP_TABS;
+
   // Tab bar
-  const tabBarRaw = TABS.map((t) => {
+  const tabBarRaw = tabs.map((t) => {
     const active = state.selectedTab === t.id;
     if (active) {
       return `\x1b[1m\x1b[4m${t.key}:${t.label}\x1b[0m`;
@@ -33,11 +76,15 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
 
   const contentHeight = height - 2; // tab bar + separator
   const step = state.selectedStepId ? state.steps.get(state.selectedStepId) : undefined;
+  const memberId = state.selectedStepId ? agentMemberId(state.selectedStepId) : undefined;
 
   let content: string;
   switch (state.selectedTab) {
     case "overview":
       content = renderOverviewTab(state, step, width, contentHeight);
+      break;
+    case "agent_overview":
+      content = renderAgentOverviewTab(state, step, memberId ?? "", width, contentHeight);
       break;
     case "logs":
       content = renderLogsTab(step, width, contentHeight);
@@ -51,8 +98,11 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
     case "core":
       content = renderCoreTab(state, width, contentHeight);
       break;
-    case "swarm":
-      content = renderSwarmTab(state, width, contentHeight);
+    case "agents":
+      content = renderAgentsTab(state, width, contentHeight, memberId);
+      break;
+    case "chat":
+      content = renderChatTab(state, width, contentHeight);
       break;
     case "help":
       content = renderHelpTab(width, contentHeight);

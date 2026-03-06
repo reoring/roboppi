@@ -12,6 +12,8 @@ export type ExecEvent =
       workflowId: string;
       name: string;
       workspaceDir: string;
+      /** Context directory where agents mailbox lives (e.g. <workspace>/context/). */
+      contextDir?: string;
       supervised: boolean;
       startedAt: number;
       definitionSummary?: {
@@ -74,7 +76,7 @@ export type ExecEvent =
       data?: unknown;
     }
   | {
-      type: "swarm_message_sent";
+      type: "agent_message_sent";
       ts: number;
       teamId: string;
       messageId: string;
@@ -83,9 +85,10 @@ export type ExecEvent =
       to?: "broadcast";
       topic: string;
       kind?: string;
+      bodyPreview?: string;
     }
   | {
-      type: "swarm_message_received";
+      type: "agent_message_received";
       ts: number;
       teamId: string;
       messageId: string;
@@ -93,9 +96,10 @@ export type ExecEvent =
       toMemberId: string;
       topic: string;
       kind?: string;
+      bodyPreview?: string;
     }
   | {
-      type: "swarm_task_claimed";
+      type: "agent_task_claimed";
       ts: number;
       teamId: string;
       taskId: string;
@@ -103,7 +107,7 @@ export type ExecEvent =
       title?: string;
     }
   | {
-      type: "swarm_task_completed";
+      type: "agent_task_completed";
       ts: number;
       teamId: string;
       taskId: string;

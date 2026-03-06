@@ -65,7 +65,7 @@ USAGE
   roboppi workflow <workflow.yaml> [options] Run a workflow YAML
   roboppi daemon <daemon.yaml> [options]     Run daemon mode (resident workflows)
   roboppi agent [options] <instructions...>  Alias for 'roboppi run'
-  roboppi swarm <subcommand> [options]       Swarm team coordination (JSON-only stdout)
+  roboppi agents <subcommand> [options]       Agent team coordination (JSON-only stdout)
 
 IPC SERVER MODE
   Reads JSON Lines from stdin, writes responses to stdout. Logs go to stderr.
@@ -516,9 +516,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (argv[0] === "swarm") {
-    const { runSwarmCli } = await import("./swarm/cli.js");
-    await runSwarmCli(argv.slice(1));
+  if (argv[0] === "agents") {
+    const { runAgentsCli } = await import("./agents/cli.js");
+    await runAgentsCli(argv.slice(1));
     return;
   }
 
