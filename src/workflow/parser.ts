@@ -1,6 +1,6 @@
 import YAML from "yaml";
 import path from "node:path";
-import type { WorkflowDefinition, StepDefinition, CompletionCheckDef, SwarmWorkflowConfig } from "./types.js";
+import type { WorkflowDefinition, StepDefinition, CompletionCheckDef, AgentsWorkflowConfig } from "./types.js";
 import type { ManagementConfig, ManagementAgentConfig, StepManagementConfig } from "./management/types.js";
 import { VALID_MANAGEMENT_HOOKS, VALID_ENGINE_TYPES } from "./management/types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
@@ -383,6 +383,9 @@ function resolveTaskLikeWithAgent(
   }
   if (resolved["model"] === undefined && agent.model !== undefined) {
     resolved["model"] = agent.model;
+  }
+  if (resolved["variant"] === undefined && agent.variant !== undefined) {
+    resolved["variant"] = agent.variant;
   }
   if (resolved["capabilities"] === undefined && agent.capabilities !== undefined) {
     resolved["capabilities"] = agent.capabilities;
@@ -916,26 +919,26 @@ function validateStepManagement(value: unknown, stepId: string): StepManagementC
   return obj as unknown as StepManagementConfig;
 }
 
-function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
+function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new WorkflowParseError("swarm must be an object");
+    throw new WorkflowParseError("agents must be an object");
   }
   const obj = value as Record<string, unknown>;
 
-  validateOptionalBoolean(obj["enabled"], "swarm.enabled");
-  validateOptionalString(obj["team_name"], "swarm.team_name");
+  validateOptionalBoolean(obj["enabled"], "agents.enabled");
+  validateOptionalString(obj["team_name"], "agents.team_name");
 
   // When enabled, team_name and members are required and non-empty.
   if (obj["enabled"] === true) {
     if (typeof obj["team_name"] !== "string" || obj["team_name"] === "") {
       throw new WorkflowParseError(
-        "swarm.team_name is required when swarm.enabled is true",
+        "agents.team_name is required when agents.enabled is true",
       );
     }
     if (obj["members"] === undefined) {
       throw new WorkflowParseError(
-        "swarm.members is required when swarm.enabled is true",
+        "agents.members is required when agents.enabled is true",
       );
     }
     // Members must be non-empty when enabled
@@ -943,7 +946,7 @@ function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
       const memberKeys = Object.keys(obj["members"] as Record<string, unknown>);
       if (memberKeys.length === 0) {
         throw new WorkflowParseError(
-          "swarm.members must be non-empty when swarm.enabled is true",
+          "agents.members must be non-empty when agents.enabled is true",
         );
       }
     }
@@ -962,27 +965,27 @@ function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
   // Validate members map
   if (obj["members"] !== undefined) {
     if (typeof obj["members"] !== "object" || obj["members"] === null || Array.isArray(obj["members"])) {
-      throw new WorkflowParseError("swarm.members must be an object (map of memberId -> config)");
+      throw new WorkflowParseError("agents.members must be an object (map of memberId -> config)");
     }
     const membersObj = obj["members"] as Record<string, unknown>;
     const memberIds = Object.keys(membersObj);
 
     for (const memberId of memberIds) {
-      assertPathSegment(memberId, `swarm.members key "${memberId}"`);
+      assertPathSegment(memberId, `agents.members key "${memberId}"`);
 
       const memberVal = membersObj[memberId];
       if (typeof memberVal !== "object" || memberVal === null || Array.isArray(memberVal)) {
-        throw new WorkflowParseError(`swarm.members.${memberId} must be an object`);
+        throw new WorkflowParseError(`agents.members.${memberId} must be an object`);
       }
       const member = memberVal as Record<string, unknown>;
-      assertString(member["agent"], `swarm.members.${memberId}.agent`);
+      assertString(member["agent"], `agents.members.${memberId}.agent`);
     }
   }
 
   // Validate tasks array
   if (obj["tasks"] !== undefined) {
     if (!Array.isArray(obj["tasks"])) {
-      throw new WorkflowParseError("swarm.tasks must be an array");
+      throw new WorkflowParseError("agents.tasks must be an array");
     }
 
     // Collect declared member ids for assigned_to validation
@@ -995,24 +998,24 @@ function validateSwarm(value: unknown): SwarmWorkflowConfig | undefined {
     for (let i = 0; i < obj["tasks"].length; i++) {
       const taskVal = obj["tasks"][i];
       if (typeof taskVal !== "object" || taskVal === null || Array.isArray(taskVal)) {
-        throw new WorkflowParseError(`swarm.tasks[${i}] must be an object`);
+        throw new WorkflowParseError(`agents.tasks[${i}] must be an object`);
       }
       const task = taskVal as Record<string, unknown>;
-      assertString(task["title"], `swarm.tasks[${i}].title`);
-      assertString(task["description"], `swarm.tasks[${i}].description`);
+      assertString(task["title"], `agents.tasks[${i}].title`);
+      assertString(task["description"], `agents.tasks[${i}].description`);
 
       if (task["assigned_to"] !== undefined) {
-        assertString(task["assigned_to"], `swarm.tasks[${i}].assigned_to`);
+        assertString(task["assigned_to"], `agents.tasks[${i}].assigned_to`);
         if (!declaredMembers.has(task["assigned_to"] as string)) {
           throw new WorkflowParseError(
-            `swarm.tasks[${i}].assigned_to references unknown member "${task["assigned_to"]}". Declared members: ${[...declaredMembers].join(", ") || "(none)"}`,
+            `agents.tasks[${i}].assigned_to references unknown member "${task["assigned_to"]}". Declared members: ${[...declaredMembers].join(", ") || "(none)"}`,
           );
         }
       }
     }
   }
 
-  return obj as unknown as SwarmWorkflowConfig;
+  return obj as unknown as AgentsWorkflowConfig;
 }
 
 const MAX_YAML_SIZE = 1024 * 1024; // 1MB
@@ -1058,8 +1061,8 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
   // Validate management config (opt-in)
   const managementConfig = validateManagement(doc["management"], options.agents);
 
-  // Validate swarm config (opt-in)
-  const swarmConfig = validateSwarm(doc["swarm"]);
+  // Validate agents config (opt-in)
+  const agentsConfig = validateAgents(doc["agents"]);
 
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');
@@ -1106,7 +1109,7 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
       ? (doc["sentinel"] as WorkflowDefinition["sentinel"])
       : undefined,
     management: managementConfig,
-    swarm: swarmConfig,
+    agents: agentsConfig,
     steps: validatedSteps,
   };
 }

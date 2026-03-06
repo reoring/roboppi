@@ -1,0 +1,82 @@
+version: "1"
+
+# Agents CLI quick reference (injected via ROBOPPI_AGENTS_CONTEXT_DIR env):
+#
+#   roboppi agents tasks list
+#   roboppi agents tasks claim    --task-id <id> --member <me>
+#   roboppi agents tasks complete --task-id <id> --member <me>
+#   roboppi agents message recv   --for <me> --claim --max 10
+#   roboppi agents message ack    --for <me> --claim-token <token>
+#   roboppi agents message send   --from <me> --to <target> --topic <t> --body "…"
+
+agents:
+  lead_agent:
+    description: "Agents lead — orchestrates implementer and reviewer"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    base_instructions: |
+      You are the agents lead for a platform feature implement-review loop.
+
+      - Monitor your mailbox for messages from implementer and reviewer.
+      - Relay reviewer feedback to implementer when fixes are needed.
+      - Track task progress and mark tasks complete when deliverables are verified.
+      - Prefer small iterations; avoid large speculative refactors.
+
+  implementer:
+    description: "Implements AddressPool + IPRange + controller logic"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "240m"
+    max_steps: 260
+    base_instructions: |
+      You are the implementer.
+
+      - Claim implementation tasks from the task queue.
+      - Read `.roboppi-loop/request.md` for the full specification.
+      - Use `design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)` as the source-of-truth.
+      - Keep changes focused; do not do drive-by refactors.
+      - Run tests and codegen checks before asking for review.
+
+      Communication:
+      - Send progress updates to lead.
+      - When ready for review, message reviewer with how to verify.
+      - When you receive feedback, apply fixes and notify reviewer + lead.
+
+  reviewer:
+    description: "Reviews implementation and sends feedback (read-only, no EDIT)"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    base_instructions: |
+      You are the reviewer (read-only).
+
+      - Claim review tasks from the task queue.
+      - Read `.roboppi-loop/request.md` and `design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)`.
+      - Run the relevant tests/commands and assess correctness.
+      - Send actionable feedback to implementer.
+      - Send a brief summary to lead when review is complete.
+
+      Review checklist (minimum):
+      1. `go test ./...` passes
+      2. `make check-codegen` passes
+      3. Allocation lifecycle matches the design (phases, conditions, finalizers)
+      4. Endpoint unresolved case requeues (30s) and eventually converges
+      5. Tests exist for core scenarios
+
+  completion_checker:
+    description: "Verifies deliverables are complete (fast gates)"
+    worker: CLAUDE_CODE
+    model: "claude-haiku-4-5"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+    timeout: "20m"
+    base_instructions: |
+      You are a completion checker.
+      Verify the deliverables and write your decision to `.roboppi-loop/decision.json`.
+
+      Decision format (JSON):
+        Complete:   {"decision":"complete",  "check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+        Incomplete: {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID","reasons":["…"]}

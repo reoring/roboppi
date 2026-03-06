@@ -14,6 +14,9 @@ export interface AgentProfile {
   /** Default model identifier (adapter-specific). */
   model?: string;
 
+  /** Optional model variant / reasoning effort hint (worker-specific). */
+  variant?: string;
+
   /** Optional instructions prepended before step.instructions. */
   base_instructions?: string;
 
@@ -162,6 +165,7 @@ export function parseAgentCatalog(yamlContent: string): AgentCatalog {
     validateOptionalNonEmptyString(obj["description"], `agents.${agentId}.description`);
     validateOptionalWorker(obj["worker"], `agents.${agentId}.worker`);
     validateOptionalNonEmptyString(obj["model"], `agents.${agentId}.model`);
+    validateOptionalNonEmptyString(obj["variant"], `agents.${agentId}.variant`);
     // Allow empty string to intentionally clear inherited base_instructions.
     validateOptionalString(obj["base_instructions"], `agents.${agentId}.base_instructions`);
     validateOptionalCapabilities(obj["capabilities"], `agents.${agentId}.capabilities`);

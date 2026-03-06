@@ -1,0 +1,79 @@
+version: "1"
+
+# ─────────────────────────────────────────────────────────────
+# Agents CLI quick reference (injected via ROBOPPI_AGENTS_CONTEXT_DIR env):
+#
+#   roboppi agents tasks list
+#   roboppi agents tasks claim   --task-id <id> --member <me>
+#   roboppi agents tasks complete --task-id <id> --member <me>
+#   roboppi agents message recv --for <me> --claim --max 10
+#   roboppi agents message ack  --for <me> --claim-token <token>
+#   roboppi agents message send --from <me> --to <target> --topic <t> --body "…"
+# ─────────────────────────────────────────────────────────────
+
+agents:
+  lead_agent:
+    description: "Agents lead — orchestrates implementer and reviewer"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "30m"
+    base_instructions: |
+      You are the agents lead for a review-loop demo.
+
+      - Monitor your mailbox for messages from implementer and reviewer.
+      - Relay reviewer feedback to the implementer when fixes are needed.
+      - Track task progress and mark tasks complete when deliverables are verified.
+      - The workflow is complete when all seed tasks are done.
+
+  implementer:
+    description: "Implements the word-counter CLI project"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    max_steps: 200
+    base_instructions: |
+      You are the implementer in an agents review-loop demo.
+
+      - Claim implementation tasks from the task queue.
+      - Read .roboppi-loop/request.md for the full specification.
+      - Build a Bun + TypeScript word-counter CLI with tests.
+      - Send progress updates to the lead.
+      - When you receive review feedback, apply fixes and notify the reviewer.
+
+  reviewer:
+    description: "Reviews implementation and sends feedback (read-only, no EDIT)"
+    worker: OPENCODE
+    model: "openai/gpt-5.2"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "20m"
+    base_instructions: |
+      You are the reviewer in an agents review-loop demo.
+
+      - Claim review tasks from the task queue.
+      - Read the source code, run tests, and evaluate quality.
+      - Send review feedback to the implementer vian agents messages.
+      - Send a summary to the lead when review is complete.
+      - You do NOT have EDIT capability — read and review only.
+
+      Review checklist:
+      1. package.json with correct scripts
+      2. `bun test` passes
+      3. `bun run src/cli.ts <file>` produces valid JSON
+      4. Edge cases handled (empty file, unicode, missing file)
+      5. Top-5 word frequency is correct
+
+  completion_checker:
+    description: "Verifies deliverables are complete (lightweight, fast)"
+    worker: CLAUDE_CODE
+    model: "claude-haiku-4-5"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+    timeout: "5m"
+    base_instructions: |
+      You are a completion checker. Verify the deliverables and write
+      your decision to .roboppi-loop/decision.json.
+
+      Decision format (JSON):
+        Complete:   {"decision":"complete",  "check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+        Incomplete: {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID","reasons":["…"]}

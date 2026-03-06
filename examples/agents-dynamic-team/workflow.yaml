@@ -1,0 +1,99 @@
+# Dynamic Team Example
+#
+# Demonstrates dynamic agent team creation where:
+# - The lead starts ALONE (no pre-configured teammates)
+# - The lead reads the project spec and decides what specialists are needed
+# - The lead uses `roboppi agents members upsert` to add members at runtime
+# - The coordinator's reconcile loop detects new members and spawns them
+# - Agents coordinate via mailbox messages and shared task queue
+#
+# This is the key difference from the agents-review-loop-demo where all
+# members are pre-configured in the workflow YAML.
+#
+# Run:
+#   bash examples/agents-dynamic-team/run-in-tmp.sh
+
+name: agents-dynamic-team
+version: "1"
+timeout: "120m"
+concurrency: 4
+
+agents:
+  enabled: true
+  team_name: "dynamic-team"
+  # Only the lead is pre-configured. All other members are added dynamically.
+  members:
+    lead:
+      agent: lead_agent
+  # No seed tasks — the lead creates them dynamically based on the spec.
+  tasks: []
+
+steps:
+  orchestrate:
+    description: "Lead reads spec, dynamically builds team, assigns tasks, monitors progress"
+    agent: lead_agent
+    instructions: |
+      You are the team lead. Your goal is to build a multi-module project by
+      dynamically assembling a team of specialists.
+
+      ## Step 1: Understand the project
+      Read .roboppi-loop/request.md for the full specification.
+
+      ## Step 2: Add team members dynamically
+      Based on the spec, add the specialist agents you need:
+
+        # Add an implementer for the math module
+        roboppi agents members upsert --member math-dev --agent implementer --role member
+
+        # Add an implementer for the string module
+        roboppi agents members upsert --member string-dev --agent implementer --role member
+
+        # Add a tester
+        roboppi agents members upsert --member tester --agent tester --role member
+
+      The coordinator will automatically spawn these agents within ~10 seconds.
+
+      ## Step 3: Create and assign tasks
+      Create tasks for each team member:
+
+        roboppi agents tasks add --title "Implement math module" \
+          --description "Build src/math.ts with add, subtract, multiply, divide functions. See .roboppi-loop/request.md for full spec." \
+          --assigned-to math-dev
+
+        roboppi agents tasks add --title "Implement string module" \
+          --description "Build src/string-utils.ts with capitalize, reverse, truncate, slugify functions. See .roboppi-loop/request.md for full spec." \
+          --assigned-to string-dev
+
+      Wait for implementations to complete before assigning test tasks.
+
+      ## Step 4: Monitor and coordinate
+      - Check task status: `roboppi agents tasks list`
+      - Check messages: `roboppi agents message recv --claim`
+      - When implementations are done, create test tasks for the tester.
+
+      ## Step 5: Verify completion
+      When all tasks are done and tests pass, write a summary to .roboppi-loop/summary.md.
+
+    timeout: "60m"
+
+    completion_check:
+      agent: completion_checker
+      decision_file: ".roboppi-loop/decision.json"
+      instructions: |
+        Verify the project deliverables:
+
+        1. Check files exist:
+           - package.json (with "test" script)
+           - src/math.ts (exports: add, subtract, multiply, divide)
+           - src/string-utils.ts (exports: capitalize, reverse, truncate, slugify)
+           - test/math.test.ts
+           - test/string-utils.test.ts
+        2. Run `bun test` — all tests must pass
+        3. Verify each function works correctly by reading the test results
+
+        Write your decision to .roboppi-loop/decision.json.
+      capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+      timeout: "5m"
+
+    max_iterations: 10
+    on_iterations_exhausted: abort

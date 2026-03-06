@@ -80,24 +80,24 @@ export interface StallPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Swarm – workflow-level configuration (§8.1)
+// Agents – workflow-level configuration (§8.1)
 // ---------------------------------------------------------------------------
 
-export interface SwarmMemberConfig {
+export interface AgentMemberConfig {
   agent: string;
 }
 
-export interface SwarmSeedTaskConfig {
+export interface AgentSeedTaskConfig {
   title: string;
   description: string;
   assigned_to?: string;
 }
 
-export interface SwarmWorkflowConfig {
+export interface AgentsWorkflowConfig {
   enabled?: boolean;
   team_name?: string;
-  members?: Record<string, SwarmMemberConfig>;
-  tasks?: SwarmSeedTaskConfig[];
+  members?: Record<string, AgentMemberConfig>;
+  tasks?: AgentSeedTaskConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -121,8 +121,8 @@ export interface WorkflowDefinition {
   sentinel?: SentinelConfig;
   /** Optional: Management Agent configuration. */
   management?: ManagementConfig;
-  /** Optional: Swarm (agent team) configuration (§8.1). */
-  swarm?: SwarmWorkflowConfig;
+  /** Optional: Agents (agent team) configuration (§8.1). */
+  agents?: AgentsWorkflowConfig;
   steps: Record<string, StepDefinition>;
 }
 

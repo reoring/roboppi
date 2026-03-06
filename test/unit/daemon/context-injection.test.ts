@@ -7,6 +7,17 @@ import type { DaemonConfig } from "../../../src/daemon/types.js";
 import { DaemonStateStore } from "../../../src/daemon/state-store.js";
 import { WorkflowStatus } from "../../../src/workflow/types.js";
 
+async function waitForFile(filePath: string, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await Bun.file(filePath).exists()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
 describe("Context injection", () => {
   test("context.env: environment variables set during workflow execution", async () => {
     const tmpDir = await mkdtemp(path.join(tmpdir(), "ctx-env-"));
@@ -52,8 +63,7 @@ steps:
     const daemon = new Daemon(config);
     const startPromise = daemon.start();
 
-    // Wait for at least one workflow execution
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await waitForFile(markerFile);
     await daemon.stop();
     await startPromise;
 
@@ -118,7 +128,7 @@ steps:
     const daemon = new Daemon(config);
     const startPromise = daemon.start();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await waitForFile(contextJsonPath);
     await daemon.stop();
     await startPromise;
 
@@ -172,7 +182,7 @@ steps:
     const daemon = new Daemon(config);
     const startPromise = daemon.start();
 
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await waitForFile(contextJsonPath);
     await daemon.stop();
     await startPromise;
 

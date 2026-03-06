@@ -1,11 +1,24 @@
 import type { TuiRenderer } from "./opentui-platform.js";
 import { PlainRenderer } from "./opentui-platform.js";
 import type { TuiStateStore } from "./state-store.js";
+import { isAgentStep, agentMemberId } from "./state-store.js";
 import { renderHeader } from "./components/header.js";
-import { renderStepList } from "./components/step-list.js";
-import { renderDetailPane } from "./components/detail-pane.js";
+import { renderStepList, buildLeftPaneEntries } from "./components/step-list.js";
+import { renderDetailPane, resolveEffectiveTab } from "./components/detail-pane.js";
 import { ansiFit, sanitizeForTui, stripAnsi } from "./ansi-utils.js";
 import { copyToClipboard } from "./clipboard.js";
+import {
+  deliverMessage,
+  readTeam,
+  upsertMember,
+  recvMessages,
+  ackMessageByClaimToken,
+} from "../agents/store.js";
+import { allDirs } from "../agents/paths.js";
+import { mkdir } from "node:fs/promises";
+
+const CHAT_MEMBER_ID = "user";
+const CHAT_POLL_INTERVAL_MS = 2000;
 
 export class WorkflowTui {
   private renderer: TuiRenderer;
@@ -14,6 +27,8 @@ export class WorkflowTui {
   private finished = false;
   private dismissResolve: (() => void) | null = null;
   private toast: { message: string; until: number } | null = null;
+  private userRegistered = false;
+  private chatPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly store: TuiStateStore,
@@ -46,6 +61,11 @@ export class WorkflowTui {
 
     // Initial render
     this.renderFrame();
+
+    // Poll user inbox for incoming replies
+    this.chatPollTimer = setInterval(() => {
+      this.pollChatInbox().catch(() => {});
+    }, CHAT_POLL_INTERVAL_MS);
   }
 
   /**
@@ -66,6 +86,10 @@ export class WorkflowTui {
   }
 
   stop(): void {
+    if (this.chatPollTimer) {
+      clearInterval(this.chatPollTimer);
+      this.chatPollTimer = null;
+    }
     if (this.renderTimer) {
       clearInterval(this.renderTimer);
       this.renderTimer = null;
@@ -75,6 +99,24 @@ export class WorkflowTui {
 
   private handleKey(key: string): void {
     const state = this.store.state;
+
+    // Chat input mode: capture all keystrokes into the input buffer.
+    if (state.chatInputActive) {
+      this.handleChatInput(key);
+      return;
+    }
+
+    // i - enter chat input mode (only on chat tab)
+    if (key === "i" && state.selectedTab === "chat") {
+      const memberId = state.selectedStepId
+        ? agentMemberId(state.selectedStepId)
+        : undefined;
+      state.chatInputActive = true;
+      state.chatInputTarget = memberId ?? state.chatInputTarget ?? "";
+      state.chatInputBuffer = "";
+      this.store.dirty = true;
+      return;
+    }
 
     // y - copy visible tab contents
     if (key === "y") {
@@ -120,9 +162,12 @@ export class WorkflowTui {
       return;
     }
 
-    // Tab numbers 1-7 for tab switching
-    if (key >= "1" && key <= "7") {
-      const tabs = ["overview", "logs", "diffs", "result", "core", "swarm", "help"] as const;
+    // Tab numbers 1-8 for tab switching (context-dependent)
+    if (key >= "1" && key <= "8") {
+      const isAgent = state.selectedStepId ? isAgentStep(state.selectedStepId) : false;
+      const tabs = isAgent
+        ? ["chat", "agent_overview", "logs", "agents", "result", "core", "help"] as const
+        : ["overview", "logs", "diffs", "result", "core", "agents", "chat", "help"] as const;
       const idx = parseInt(key) - 1;
       if (idx < tabs.length) {
         state.selectedTab = tabs[idx]!;
@@ -153,21 +198,194 @@ export class WorkflowTui {
     }
   }
 
+  // ----- Chat input mode -----
+
+  private handleChatInput(key: string): void {
+    const state = this.store.state;
+
+    // Escape — exit input mode
+    if (key === "\x1b") {
+      state.chatInputActive = false;
+      state.chatInputBuffer = "";
+      this.store.dirty = true;
+      return;
+    }
+
+    // Ctrl+C — exit input mode
+    if (key === "\x03") {
+      state.chatInputActive = false;
+      state.chatInputBuffer = "";
+      this.store.dirty = true;
+      return;
+    }
+
+    // Enter — send message
+    if (key === "\r" || key === "\n") {
+      const buf = state.chatInputBuffer.trim();
+      if (buf) {
+        this.fireChatSend(buf);
+      }
+      state.chatInputActive = false;
+      state.chatInputBuffer = "";
+      this.store.dirty = true;
+      return;
+    }
+
+    // Backspace
+    if (key === "\x7f" || key === "\x08") {
+      if (state.chatInputBuffer.length > 0) {
+        state.chatInputBuffer = state.chatInputBuffer.slice(0, -1);
+        this.store.dirty = true;
+      }
+      return;
+    }
+
+    // Printable characters
+    if (key.length === 1 && key >= " ") {
+      state.chatInputBuffer += key;
+      this.store.dirty = true;
+      return;
+    }
+  }
+
+  private fireChatSend(body: string): void {
+    this.doSendChatMessage(body).catch(() => {
+      // silently ignore — agents context may not be available
+    });
+  }
+
+  /** Ensure "user" member exists in members.json with role "human" and inbox dirs. */
+  private async ensureUserRegistered(): Promise<void> {
+    if (this.userRegistered) return;
+    const contextDir = this.store.state.contextDir;
+    if (!contextDir) return;
+
+    try {
+      await upsertMember(contextDir, {
+        member_id: CHAT_MEMBER_ID,
+        name: CHAT_MEMBER_ID,
+        role: "human",
+      });
+      const dirs = allDirs(contextDir, [CHAT_MEMBER_ID]);
+      for (const dir of dirs) {
+        await mkdir(dir, { recursive: true });
+      }
+      this.userRegistered = true;
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async doSendChatMessage(body: string): Promise<void> {
+    const state = this.store.state;
+    const contextDir = state.contextDir;
+    if (!contextDir) {
+      this.showToast("No agents context");
+      return;
+    }
+
+    const target = state.chatInputTarget;
+    if (!target) {
+      this.showToast("No target agent");
+      return;
+    }
+
+    // Register user member (creates inbox dirs, adds to members.json with role:"human")
+    await this.ensureUserRegistered();
+
+    try {
+      const team = await readTeam(contextDir);
+      const { messageId } = await deliverMessage({
+        contextDir,
+        teamId: team.team_id,
+        fromMemberId: CHAT_MEMBER_ID,
+        fromName: CHAT_MEMBER_ID,
+        toMemberId: target,
+        topic: "chat",
+        body,
+      });
+
+      // Add to chatMessages for immediate display (with messageId for dedup)
+      state.chatMessages.push({
+        ts: Date.now(),
+        messageId,
+        fromMemberId: CHAT_MEMBER_ID,
+        fromName: CHAT_MEMBER_ID,
+        toMemberId: target,
+        kind: "text",
+        body,
+      });
+      this.showToast(`Sent to ${target}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.showToast(`Send failed: ${msg.slice(0, 40)}`);
+    }
+  }
+
+  /** Poll "user" inbox for incoming replies and add to chatMessages. */
+  private async pollChatInbox(): Promise<void> {
+    if (!this.userRegistered) return;
+    const contextDir = this.store.state.contextDir;
+    if (!contextDir) return;
+
+    const msgs = await recvMessages({
+      contextDir,
+      memberId: CHAT_MEMBER_ID,
+      claim: true,
+      max: 20,
+    });
+
+    for (const msg of msgs) {
+      // Ack the message
+      if (msg.claim) {
+        await ackMessageByClaimToken(contextDir, CHAT_MEMBER_ID, msg.claim.token).catch(() => {});
+      }
+
+      // Deduplicate by messageId
+      const msgId = msg.messageId;
+      if (this.store.state.chatMessages.some((m) => m.messageId === msgId)) continue;
+
+      this.store.state.chatMessages.push({
+        ts: msg.message.ts,
+        messageId: msgId,
+        fromMemberId: msg.message.from.member_id,
+        fromName: msg.message.from.name || msg.message.from.member_id,
+        toMemberId: CHAT_MEMBER_ID,
+        kind: msg.message.kind,
+        body: msg.message.body,
+      });
+      this.store.dirty = true;
+    }
+  }
+
+  private showToast(message: string): void {
+    this.toast = { message, until: Date.now() + 2000 };
+    this.store.dirty = true;
+  }
+
   private moveSelection(delta: number): void {
     const state = this.store.state;
-    const stepOrder = state.stepOrder;
-    if (stepOrder.length === 0) return;
+    const entries = buildLeftPaneEntries(state);
+    const selectable = entries.filter((e) => e.kind !== "separator");
+    if (selectable.length === 0) return;
 
     const currentIdx = state.selectedStepId
-      ? stepOrder.indexOf(state.selectedStepId)
+      ? selectable.findIndex((e) => e.stepId === state.selectedStepId)
       : -1;
 
     let newIdx = currentIdx + delta;
     if (newIdx < 0) newIdx = 0;
-    if (newIdx >= stepOrder.length) newIdx = stepOrder.length - 1;
+    if (newIdx >= selectable.length) newIdx = selectable.length - 1;
 
-    state.selectedStepId = stepOrder[newIdx];
+    const prev = state.selectedStepId;
+    state.selectedStepId = selectable[newIdx]!.stepId;
     state.followMode = "selected";
+
+    // When crossing step↔agent boundary, remap the tab
+    if (prev && state.selectedStepId !== prev) {
+      state.selectedTab = resolveEffectiveTab(state.selectedTab, state.selectedStepId);
+    }
+
     this.store.dirty = true;
   }
 
@@ -181,13 +399,19 @@ export class WorkflowTui {
         return s && (s.status === "RUNNING" || s.status === "CHECKING");
       });
       if (runningStep) {
+        const prev = state.selectedStepId;
         state.selectedStepId = runningStep;
+        if (prev && state.selectedStepId !== prev) {
+          state.selectedTab = resolveEffectiveTab(state.selectedTab, state.selectedStepId);
+        }
       }
     }
 
-    // Default selection
+    // Default selection: first selectable entry
     if (!state.selectedStepId && state.stepOrder.length > 0) {
-      state.selectedStepId = state.stepOrder[0];
+      const entries = buildLeftPaneEntries(state);
+      const first = entries.find((e) => e.kind !== "separator");
+      state.selectedStepId = first ? first.stepId : state.stepOrder[0];
     }
 
     try {

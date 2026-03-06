@@ -36,10 +36,11 @@ import { ManagementController } from "./management/management-controller.js";
 import { ManagementTelemetrySink } from "./management/management-telemetry.js";
 import type { ManagementHook, ManagementConfig, ManagementAgentConfig } from "./management/types.js";
 import type { AgentProfile } from "./agent-catalog.js";
-import { initSwarmContext } from "../swarm/store.js";
-import { addTask as addSwarmTask } from "../swarm/task-store.js";
-import { membersJsonPath } from "../swarm/paths.js";
-import { SwarmCoordinator } from "../swarm/coordinator.js";
+import { initAgentsContext } from "../agents/store.js";
+import { addTask as addAgentsTask } from "../agents/task-store.js";
+import { membersJsonPath } from "../agents/paths.js";
+import { AgentCoordinator } from "../agents/coordinator.js";
+import { LeadInboxBroker } from "../agents/lead-inbox-broker.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -318,8 +319,9 @@ export class WorkflowExecutor {
   private preStepHookInFlight = 0;
   private readonly preStepHookDone = new Set<string>();
 
-  // Swarm coordinator (when enabled)
-  private swarmCoordinator: SwarmCoordinator | null = null;
+  // Agent coordinator and inbox broker (when enabled)
+  private agentCoordinator: AgentCoordinator | null = null;
+  private leadInboxBroker: LeadInboxBroker | null = null;
 
   // Subworkflow options
   private readonly definitionPath?: string;
@@ -449,6 +451,7 @@ export class WorkflowExecutor {
       workflowId,
       name: this.definition.name,
       workspaceDir: this.workspaceDir,
+      contextDir: this.contextManager.contextDir,
       supervised: this.supervised,
       startedAt,
       definitionSummary: {
@@ -467,31 +470,36 @@ export class WorkflowExecutor {
       await this.contextManager.initStep(stepId);
     }
 
-    // 2d. Initialize Swarm context if enabled (§8.1)
-    const swarmConfig = this.definition.swarm;
-    if (swarmConfig?.enabled) {
+    // 3. Set up workflow-level abort controller for timeout (moved before agents init
+    //    so the broker can receive the signal for prompt stop on cancel)
+    this.workflowAbortController = new AbortController();
+
+    // 2d. Initialize Agents context if enabled (§8.1)
+    const agentsConfig = this.definition.agents;
+    if (agentsConfig?.enabled) {
       // Emit warning when not supervised
       if (!this.supervised) {
         this.emitSink.emit({
           type: "warning",
           ts: Date.now(),
-          message: "Swarm is enabled but the workflow is not supervised (--supervised). Safety and observability will be reduced.",
+          message: "Agents are enabled but the workflow is not supervised (--supervised). Safety and observability will be reduced.",
         });
       }
 
-      const memberEntries = Object.entries(swarmConfig.members ?? {}).map(
-        ([memberId, _memberCfg]) => ({
+      const memberEntries = Object.entries(agentsConfig.members ?? {}).map(
+        ([memberId, memberCfg]) => ({
           member_id: memberId,
           name: memberId,
           role: memberId === "lead" ? "team_lead" : "member",
           worker: undefined,
           capabilities: undefined,
           workspace: undefined,
+          agent: memberCfg.agent,
         }),
       );
 
       // Determine lead member id: prefer explicit "lead" key, else first member (deterministic fallback)
-      const hasExplicitLead = swarmConfig.members && "lead" in swarmConfig.members;
+      const hasExplicitLead = agentsConfig.members && "lead" in agentsConfig.members;
       const leadMemberId = hasExplicitLead
         ? "lead"
         : memberEntries[0]?.member_id ?? "lead";
@@ -500,21 +508,21 @@ export class WorkflowExecutor {
         this.emitSink.emit({
           type: "warning",
           ts: Date.now(),
-          message: `[swarm] No explicit "lead" member key; using first member "${leadMemberId}" as lead (deterministic fallback).`,
+          message: `[agents] No explicit "lead" member key; using first member "${leadMemberId}" as lead (deterministic fallback).`,
         });
       }
 
-      const { teamId: swarmTeamId } = await initSwarmContext({
+      const { teamId: agentsTeamId } = await initAgentsContext({
         contextDir: this.contextManager.contextDir,
-        teamName: swarmConfig.team_name ?? this.definition.name,
+        teamName: agentsConfig.team_name ?? this.definition.name,
         leadMemberId,
         members: memberEntries,
       });
 
       // Seed initial tasks from DSL config
-      if (swarmConfig.tasks) {
-        for (const taskDef of swarmConfig.tasks) {
-          await addSwarmTask({
+      if (agentsConfig.tasks) {
+        for (const taskDef of agentsConfig.tasks) {
+          await addAgentsTask({
             contextDir: this.contextManager.contextDir,
             title: taskDef.title,
             description: taskDef.description,
@@ -523,32 +531,38 @@ export class WorkflowExecutor {
         }
       }
 
-      // Merge swarm env vars into this.env for step execution
+      // Merge agents env vars into this.env for step execution
       this.env = {
         ...(this.env ?? {}),
-        ROBOPPI_SWARM_CONTEXT_DIR: this.contextManager.contextDir,
-        ROBOPPI_SWARM_TEAM_ID: swarmTeamId,
-        ROBOPPI_SWARM_MEMBERS_FILE: membersJsonPath(this.contextManager.contextDir),
-        ROBOPPI_SWARM_MEMBER_ID: leadMemberId,
+        ROBOPPI_AGENTS_CONTEXT_DIR: this.contextManager.contextDir,
+        ROBOPPI_AGENTS_TEAM_ID: agentsTeamId,
+        ROBOPPI_AGENTS_MEMBERS_FILE: membersJsonPath(this.contextManager.contextDir),
+        ROBOPPI_AGENTS_MEMBER_ID: leadMemberId,
       };
 
-      // Start swarm coordinator for housekeeping, event bridging, and teammate spawning
-      this.swarmCoordinator = new SwarmCoordinator({
+      // Start agent coordinator for housekeeping, event bridging, and teammate spawning
+      this.agentCoordinator = new AgentCoordinator({
         contextDir: this.contextManager.contextDir,
         sink: this.emitSink,
         stepRunner: this.stepRunner,
         workspaceDir: this.workspaceDir,
         agentCatalog: this.agentCatalog,
-        members: swarmConfig.members,
+        members: agentsConfig.members,
         leadMemberId,
-        teamId: swarmTeamId,
+        teamId: agentsTeamId,
         baseEnv: this.env,
       });
-      await this.swarmCoordinator.start();
-    }
+      await this.agentCoordinator.start();
 
-    // 3. Set up workflow-level abort controller for timeout
-    this.workflowAbortController = new AbortController();
+      // Start lead inbox broker for auto-consuming lead messages
+      this.leadInboxBroker = new LeadInboxBroker({
+        contextDir: this.contextManager.contextDir,
+        teamId: agentsTeamId,
+        leadMemberId,
+        signal: this.workflowAbortController.signal,
+      });
+      this.leadInboxBroker.start();
+    }
 
     const timeoutId = setTimeout(() => {
       if (this.abortReason === null) this.abortReason = "timeout";
@@ -590,9 +604,13 @@ export class WorkflowExecutor {
     } finally {
       clearTimeout(timeoutId);
       this.sentinelController?.stopAll();
-      // Stop swarm coordinator (cleanup timers, final housekeep, final tail)
-      if (this.swarmCoordinator) {
-        await this.swarmCoordinator.stop();
+      // Stop lead inbox broker (no leaked timers)
+      if (this.leadInboxBroker) {
+        this.leadInboxBroker.stop();
+      }
+      // Stop agent coordinator (cleanup timers, final housekeep, final tail)
+      if (this.agentCoordinator) {
+        await this.agentCoordinator.stop();
       }
       if (this.abortSignal) {
         this.abortSignal.removeEventListener("abort", onExternalAbort);

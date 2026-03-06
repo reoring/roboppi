@@ -1,5 +1,6 @@
 import type { WorkflowUiState, StepUiState } from "../state-store.js";
-import { ansiFit, ansiTruncate } from "../ansi-utils.js";
+import { agentMemberId, getAgentHintText } from "../state-store.js";
+import { ansiFit, ansiTruncate, stripAnsi } from "../ansi-utils.js";
 
 const SPINNER_FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
 let spinnerIdx = 0;
@@ -16,13 +17,55 @@ const STATUS_ICONS: Record<string, string> = {
   CANCELLED: "\x1b[31m\u2298\x1b[0m",
 };
 
+export type LeftPaneEntry =
+  | { kind: "step"; stepId: string }
+  | { kind: "separator"; label: string }
+  | { kind: "agent"; stepId: string; memberId: string };
+
+/**
+ * Build left-pane entries from state, splitting steps and agents
+ * into two sections separated by a divider.
+ */
+export function buildLeftPaneEntries(state: WorkflowUiState): LeftPaneEntry[] {
+  const steps: LeftPaneEntry[] = [];
+  const agents: LeftPaneEntry[] = [];
+
+  for (const stepId of state.stepOrder) {
+    const mid = agentMemberId(stepId);
+    if (mid) {
+      agents.push({ kind: "agent", stepId, memberId: mid });
+    } else {
+      steps.push({ kind: "step", stepId });
+    }
+  }
+
+  const entries: LeftPaneEntry[] = [...steps];
+  if (agents.length > 0) {
+    entries.push({ kind: "separator", label: "Agents" });
+    entries.push(...agents);
+  }
+
+  return entries;
+}
+
 export function renderStepList(state: WorkflowUiState, width: number, height: number): string {
   spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
 
+  const entries = buildLeftPaneEntries(state);
   const lines: string[] = [];
-  const stepOrder = state.stepOrder;
+  const w = Math.max(0, width);
 
-  for (const stepId of stepOrder) {
+  for (const entry of entries) {
+    if (entry.kind === "separator") {
+      const label = ` ${entry.label} `;
+      const pad = Math.max(0, w - label.length - 2);
+      const left = Math.floor(pad / 2);
+      const right = pad - left;
+      lines.push(`\x1b[90m${"\u2500".repeat(left)}${label}${"\u2500".repeat(right)}\x1b[0m`);
+      continue;
+    }
+
+    const stepId = entry.stepId;
     const step = state.steps.get(stepId);
     if (!step) continue;
 
@@ -31,13 +74,27 @@ export function renderStepList(state: WorkflowUiState, width: number, height: nu
     const suffix = isSelected ? "\x1b[0m" : "";
 
     const icon = getStepIcon(step);
+    const displayName = entry.kind === "agent"
+      ? `\x1b[36m\u25C6\x1b[0m ${entry.memberId}`
+      : stepId;
     const iter = step.maxIterations > 1 ? ` ${step.iteration}/${step.maxIterations}` : "";
     const duration = step.startedAt ? ` ${formatDuration(step)}` : "";
     const phase = step.phase ? ` \x1b[90m${step.phase}\x1b[0m` : "";
 
-    const base = ` ${icon} ${stepId}${iter}${duration}${phase}`;
-    const fitted = ansiFit(ansiTruncate(base, Math.max(0, width), { ellipsis: "..." }), Math.max(0, width));
+    const base = ` ${icon} ${displayName}${iter}${duration}${phase}`;
+    const fitted = ansiFit(ansiTruncate(base, w, { ellipsis: "..." }), w);
     lines.push(`${prefix}${fitted}${suffix}`);
+
+    // Add hint subline for RUNNING agents
+    if (entry.kind === "agent" && step.status === "RUNNING") {
+      const hint = getAgentHintText(step);
+      if (hint) {
+        const plain = stripAnsi(hint);
+        const maxHintW = Math.max(0, w - 4); // "  └ " prefix
+        const truncated = plain.length > maxHintW ? plain.slice(0, Math.max(0, maxHintW - 3)) + "..." : plain;
+        lines.push(`\x1b[90m  └ ${truncated}\x1b[0m`);
+      }
+    }
   }
 
   // Pad to fill height

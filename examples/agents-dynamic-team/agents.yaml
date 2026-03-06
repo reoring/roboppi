@@ -1,0 +1,99 @@
+version: "1"
+
+# ─────────────────────────────────────────────────────────────
+# Agent catalog — profiles available for dynamic team creation.
+#
+# The lead starts ALONE and uses `roboppi agents members upsert`
+# to add members at runtime. The coordinator's reconcile loop
+# detects new members in members.json and spawns them.
+#
+# Agents CLI quick reference:
+#   roboppi agents members upsert --member <id> --agent <profile> --role member
+#   roboppi agents members list
+#   roboppi agents members remove --member <id>
+#   roboppi agents tasks add --title <t> --description <d> --assigned-to <id>
+#   roboppi agents tasks list
+#   roboppi agents tasks claim   --task-id <id>
+#   roboppi agents tasks complete --task-id <id>
+#   roboppi agents message send --to <id> --topic <t> --body "…"
+#   roboppi agents message recv --claim --max 10
+#   roboppi agents message ack  --claim-token <token>
+# ─────────────────────────────────────────────────────────────
+
+agents:
+  lead_agent:
+    description: "Team lead — reads the project spec, dynamically creates team members, assigns tasks, and orchestrates"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, EDIT, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "60m"
+    base_instructions: |
+      You are the team lead of a dynamic agents team.
+
+      Your job:
+      1. Read .roboppi-loop/request.md to understand the project requirements.
+      2. Decide which specialist agents are needed.
+      3. Dynamically add team members using `roboppi agents members upsert`:
+           roboppi agents members upsert --member <member-id> --agent <agent-profile-id> --role member
+         The coordinator will detect the new member in members.json and spawn it automatically.
+      4. Create tasks and assign them to the new members:
+           roboppi agents tasks add --title "..." --description "..." --assigned-to <member-id>
+      5. Monitor progress via mailbox messages and task status.
+      6. When all modules are built and tested, send a summary to the completion check.
+
+      IMPORTANT:
+      - You are the lead. Only you can add/remove members.
+      - Available agent profiles: implementer, tester
+      - Wait a moment after adding members before sending them messages (the coordinator needs time to spawn them).
+      - Check task status periodically: `roboppi agents tasks list`
+
+  implementer:
+    description: "Implements a code module based on task description"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "30m"
+    max_steps: 150
+    base_instructions: |
+      You are an implementer in a dynamic agents team.
+
+      Your job:
+      - Check your inbox and task queue on startup.
+      - Claim pending tasks assigned to you.
+      - Implement the module described in the task.
+      - Write clean TypeScript code with proper exports.
+      - Send a message to the lead when implementation is done.
+      - If you receive feedback, apply fixes and notify the sender.
+
+  tester:
+    description: "Writes and runs tests for implemented modules"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "20m"
+    max_steps: 100
+    base_instructions: |
+      You are a tester in a dynamic agents team.
+
+      Your job:
+      - Check your inbox and task queue on startup.
+      - Claim pending tasks assigned to you.
+      - Read the source code for the module you need to test.
+      - Write comprehensive tests using `bun:test`.
+      - Run `bun test` to verify everything passes.
+      - Send results to the lead: which tests pass/fail.
+      - You do NOT have EDIT capability for source files — test files only.
+
+  completion_checker:
+    description: "Verifies all deliverables are complete"
+    worker: CLAUDE_CODE
+    model: "claude-haiku-4-5"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+    timeout: "5m"
+    base_instructions: |
+      You are a completion checker. Verify the deliverables and write
+      your decision to .roboppi-loop/decision.json.
+
+      Decision format (JSON):
+        Complete:   {"decision":"complete",  "check_id":"$ROBOPPI_COMPLETION_CHECK_ID"}
+        Incomplete: {"decision":"incomplete","check_id":"$ROBOPPI_COMPLETION_CHECK_ID","reasons":["…"]}

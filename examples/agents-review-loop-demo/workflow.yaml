@@ -1,0 +1,89 @@
+# Agents Review Loop Demo
+#
+# A realistic agents workflow where:
+# - implementer (Claude Code / Opus 4.6) builds a word-counter CLI
+# - reviewer (OpenCode / GPT-5.2) reviews and sends feedback
+# - lead (Claude Code / Sonnet 4.6) orchestrates the loop
+#
+# Note: The executor currently requires at least one step even in agents mode.
+# The "orchestrate" step is the lead's entry point — implementer and reviewer
+# are spawned as separate processes by AgentCoordinator, NOT as steps.
+#
+# Run:
+#   bash examples/agents-review-loop-demo/run-in-tmp.sh
+
+name: agents-review-loop-demo
+version: "1"
+timeout: "120m"
+concurrency: 4
+
+agents:
+  enabled: true
+  team_name: "review-loop-demo"
+  members:
+    lead:
+      agent: lead_agent
+    implementer:
+      agent: implementer
+    reviewer:
+      agent: reviewer
+  tasks:
+    - title: "Implement word-counter CLI"
+      description: |
+        Build a Bun + TypeScript word-counter CLI as described in .roboppi-loop/request.md.
+
+        Deliverables:
+        - package.json with "test" script
+        - src/cli.ts — entry point: `bun run src/cli.ts <filepath>`
+        - src/counter.ts — countStats(text) → { lines, words, chars, top_words }
+        - test/counter.test.ts — unit tests
+        - JSON output from CLI
+        - Error handling for missing/unreadable files
+
+        When done, send a message to the lead and reviewer.
+      assigned_to: implementer
+    - title: "Review implementation"
+      description: |
+        Review the word-counter CLI for correctness and quality.
+
+        Checklist:
+        - package.json exists with correct scripts
+        - `bun test` passes
+        - `bun run src/cli.ts <file>` → valid JSON with { lines, words, chars, top_words }
+        - Edge cases handled (empty file, unicode, missing file)
+        - Top-5 word frequency is accurate
+
+        Send feedback to implementer, summary to lead.
+      assigned_to: reviewer
+
+# The lead runs as a step (executor requirement). Implementer and reviewer
+# are separate processes managed by AgentCoordinator.
+steps:
+  orchestrate:
+    description: "Lead orchestrates the implement-review loop"
+    agent: lead_agent
+    # instructions are inherited from agents.yaml base_instructions.
+    # Only add step-specific context here:
+    instructions: |
+      Orchestrate the implement → review → fix loop.
+      The workflow is complete when all deliverables pass the completion check.
+    timeout: "60m"
+
+    completion_check:
+      agent: completion_checker
+      decision_file: ".roboppi-loop/decision.json"
+      instructions: |
+        Verify the word-counter CLI deliverables:
+
+        1. Check files exist: package.json, src/cli.ts, src/counter.ts, test/counter.test.ts
+        2. Run `bun test` — all tests must pass
+        3. Run `bun run src/cli.ts <testfile>` — output must be valid JSON with
+           { lines: number, words: number, chars: number, top_words: array }
+        4. Test error handling: `bun run src/cli.ts nonexistent.txt` should exit non-zero
+
+        Write your decision to .roboppi-loop/decision.json.
+      capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+      timeout: "5m"
+
+    max_iterations: 8
+    on_iterations_exhausted: abort

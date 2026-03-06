@@ -1,0 +1,105 @@
+# Agents Review Loop: appthrust/platform (Cilium LB IP allocation)
+#
+# This is a variant of examples/agents-review-loop-demo/workflow.yaml tailored
+# to implement the design in:
+#   design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)
+#
+# Run (from the roboppi repo root):
+#   WORKSPACE=/path/to/appthrust/platform \
+#     bun run src/workflow/run.ts \
+#       examples/agents-review-loop-demo/platform-cilium-lb-ip-allocation/workflow.yaml \
+#       --workspace "$WORKSPACE" --verbose
+#
+# Important: ensure the workspace contains `.roboppi-loop/request.md`.
+
+name: agents-review-loop-platform-cilium-lb-ip-allocation
+version: "1"
+timeout: "360m"
+concurrency: 4
+
+agents:
+  enabled: true
+  team_name: "platform-cilium-lb-ip-allocation"
+  members:
+    lead:
+      agent: lead_agent
+    implementer:
+      agent: implementer
+    reviewer:
+      agent: reviewer
+  tasks:
+    - title: "Implement AddressPool + IPRange (design: cilium-loadbalancer-ip-allocation)"
+      description: |
+        Implement the design in `design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)`.
+
+        Read:
+        - .roboppi-loop/request.md
+        - design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)
+        - ARCHITECTURE.md (required before touching controllers)
+
+        Deliverables (high level):
+        - New CRDs/types: AddressPool + IPRange (v1alpha1)
+        - Controller logic for validation + allocation lifecycle
+        - CiliumCNI controller integration (allocation + remote SSA apply/cleanup)
+        - Codegen outputs up-to-date (CRDs/RBAC if needed)
+        - Tests added (Go unit tests and/or Bun e2e per request)
+
+        When ready for review, message reviewer + lead with:
+        - what changed
+        - how to run checks locally
+      assigned_to: implementer
+
+    - title: "Review AddressPool + IPRange implementation"
+      description: |
+        Review the implementation against `.roboppi-loop/request.md` and
+        `design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)`.
+
+        Checklist:
+        - `go test ./...` passes
+        - `make check-codegen` passes (no generated diffs)
+        - Status/conditions/finalizers match the design intent
+        - Allocation algorithm is deterministic and safe (grace period, reuse)
+        - No secret leakage in logs/output
+        - Added tests cover core flows and edge cases
+
+        Send actionable feedback to implementer; send a brief summary to lead.
+      assigned_to: reviewer
+
+steps:
+  orchestrate:
+    description: "Lead orchestrates implement → review → fix loop"
+    agent: lead_agent
+    instructions: |
+      Orchestrate the implement → review → fix loop for appthrust/platform.
+
+      Notes:
+      - Implementer/reviewer must rely on files inside the workspace.
+      - `.roboppi-loop/request.md` is the working spec; the design doc is the source-of-truth.
+      - Keep iterations tight: ask implementer for targeted fixes, then re-review.
+
+      The workflow is complete when the completion check returns "complete".
+    timeout: "240m"
+
+    completion_check:
+      agent: completion_checker
+      decision_file: ".roboppi-loop/decision.json"
+      instructions: |
+        Verify the workspace implements the design in
+        `design/cilium-loadbalancer-ip-allocation.md (or docs/design/cilium-loadbalancer-ip-allocation.md)`.
+
+        Hard gates (must pass):
+        1) File exists: .roboppi-loop/request.md
+        2) `go test ./...`
+        3) `make check-codegen`
+        4) `bash tests/check-files-get.sh`
+
+        Soft gates (should pass; include as reasons if missing):
+        - At least the new API types exist for AddressPool and IPRange.
+        - At least one test suite exists for the feature (Go unit or Bun e2e).
+
+        Write your decision to .roboppi-loop/decision.json.
+      capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+      timeout: "20m"
+
+    max_iterations: 10
+    on_iterations_exhausted: abort

@@ -32,10 +32,10 @@ export function mapCapabilitiesToAllowedTools(
         tools.push("Bash");
         break;
       case WorkerCapability.MAILBOX:
-        tools.push("Bash(roboppi swarm:*)");
+        tools.push("Bash(roboppi agents:*)");
         break;
       case WorkerCapability.TASKS:
-        tools.push("Bash(roboppi swarm:*)");
+        tools.push("Bash(roboppi agents:*)");
         break;
     }
   }

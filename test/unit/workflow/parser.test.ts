@@ -710,13 +710,13 @@ steps:
   // -------------------------------------------------------------------------
   // Swarm DSL validation
   // -------------------------------------------------------------------------
-  describe("swarm config", () => {
-    it("parses valid swarm config", () => {
+  describe("agents config", () => {
+    it("parses valid agents config", () => {
       const yaml = `
-name: swarm-wf
+name: agents-wf
 version: "1"
 timeout: "30m"
-swarm:
+agents:
   enabled: true
   team_name: "my-team"
   members:
@@ -735,23 +735,23 @@ steps:
     capabilities: [READ]
 `;
       const wf = parseWorkflow(yaml);
-      expect(wf.swarm).toBeDefined();
-      expect(wf.swarm!.enabled).toBe(true);
-      expect(wf.swarm!.team_name).toBe("my-team");
-      expect(wf.swarm!.members).toBeDefined();
-      expect(wf.swarm!.members!["lead"]!.agent).toBe("lead-agent");
-      expect(wf.swarm!.members!["researcher"]!.agent).toBe("research-agent");
-      expect(wf.swarm!.tasks).toHaveLength(1);
-      expect(wf.swarm!.tasks![0]!.title).toBe("Investigate");
-      expect(wf.swarm!.tasks![0]!.assigned_to).toBe("researcher");
+      expect(wf.agents).toBeDefined();
+      expect(wf.agents!.enabled).toBe(true);
+      expect(wf.agents!.team_name).toBe("my-team");
+      expect(wf.agents!.members).toBeDefined();
+      expect(wf.agents!.members!["lead"]!.agent).toBe("lead-agent");
+      expect(wf.agents!.members!["researcher"]!.agent).toBe("research-agent");
+      expect(wf.agents!.tasks).toHaveLength(1);
+      expect(wf.agents!.tasks![0]!.title).toBe("Investigate");
+      expect(wf.agents!.tasks![0]!.assigned_to).toBe("researcher");
     });
 
-    it("parses disabled swarm config (minimal)", () => {
+    it("parses disabled agents config (minimal)", () => {
       const yaml = `
-name: swarm-wf
+name: agents-wf
 version: "1"
 timeout: "30m"
-swarm:
+agents:
   enabled: false
 steps:
   s1:
@@ -760,21 +760,21 @@ steps:
     capabilities: [READ]
 `;
       const wf = parseWorkflow(yaml);
-      expect(wf.swarm).toBeDefined();
-      expect(wf.swarm!.enabled).toBe(false);
+      expect(wf.agents).toBeDefined();
+      expect(wf.agents!.enabled).toBe(false);
     });
 
-    it("returns undefined swarm when not present", () => {
+    it("returns undefined agents when not present", () => {
       const wf = parseWorkflow(MINIMAL_WORKFLOW);
-      expect(wf.swarm).toBeUndefined();
+      expect(wf.agents).toBeUndefined();
     });
 
-    it("rejects non-object swarm", () => {
+    it("rejects non-object agents", () => {
       const yaml = `
 name: w
 version: "1"
 timeout: "5m"
-swarm: "not-an-object"
+agents: "not-an-object"
 steps:
   s1:
     worker: CODEX_CLI
@@ -782,7 +782,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm must be an object/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents must be an object/);
     });
 
     it("requires team_name when enabled", () => {
@@ -790,7 +790,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   members:
     lead:
@@ -802,7 +802,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.team_name is required/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.team_name is required/);
     });
 
     it("requires members when enabled", () => {
@@ -810,7 +810,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
 steps:
@@ -820,7 +820,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members is required/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.members is required/);
     });
 
     it("rejects non-object members", () => {
@@ -828,7 +828,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members: ["bad"]
@@ -839,7 +839,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members must be an object/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.members must be an object/);
     });
 
     it("rejects member key with path traversal", () => {
@@ -847,7 +847,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:
@@ -868,7 +868,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:
@@ -881,7 +881,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.members.lead.agent/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.members.lead.agent/);
     });
 
     it("rejects tasks that are not an array", () => {
@@ -889,7 +889,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:
@@ -903,7 +903,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks must be an array/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.tasks must be an array/);
     });
 
     it("rejects task missing title", () => {
@@ -911,7 +911,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:
@@ -926,7 +926,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks\[0\].title/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.tasks\[0\].title/);
     });
 
     it("rejects task missing description", () => {
@@ -934,7 +934,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:
@@ -949,7 +949,7 @@ steps:
     capabilities: [READ]
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
-      expect(() => parseWorkflow(yaml)).toThrow(/swarm.tasks\[0\].description/);
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.tasks\[0\].description/);
     });
 
     it("rejects assigned_to referencing unknown member", () => {
@@ -957,7 +957,7 @@ steps:
 name: w
 version: "1"
 timeout: "5m"
-swarm:
+agents:
   enabled: true
   team_name: "t"
   members:

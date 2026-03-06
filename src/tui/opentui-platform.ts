@@ -498,6 +498,12 @@ function normalizeKeyEvent(event: KeyEvent): string | null {
   // Ctrl+C
   if (event.ctrl && event.name === "c") return "\x03";
 
+  // Escape
+  if (event.name === "escape") return "\x1b";
+
+  // Backspace
+  if (event.name === "backspace") return "\x7f";
+
   // Arrows
   if (event.name === "up") return "\x1b[A";
   if (event.name === "down") return "\x1b[B";

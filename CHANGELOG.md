@@ -13,23 +13,43 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Fixed
 
 
+## [0.1.9] - 2026-03-06
+
+### Added
+
+- `roboppi agents chat` interactive REPL, `message reply`, and resident-agent dispatch loops so teammates can keep working across the full workflow run.
+- Runner-owned lead inbox summaries at `_agents/inbox-summary.json`, dynamic membership reconciliation, and new example workflows for live team reconfiguration.
+- TUI agent overview/chat surfaces for inline messaging and richer agent activity inspection.
+
+### Changed
+
+- Renamed the swarm-facing CLI, docs, examples, tests, and runtime modules to the `agents` surface so the feature matches the shipped vocabulary.
+- Agent coordination now keeps long-lived LLM teammates resident and routes lead communication through mailbox-backed workflow services instead of prompt-level polling.
+
+### Fixed
+
+- Added reply-token handling and expanded unit/acceptance coverage around agent mailbox, broker, and TUI chat behavior.
+
+
 ## [0.1.8] - 2026-03-02
 
 ### Added
 
-- Swarm v1: file-backed mailbox + task store for agent teams under `<context_dir>/_swarm/`.
-- New `roboppi swarm` CLI (JSON-only stdout) for members, messaging, tasks, and housekeeping (incl. `message recv --wait-ms`, claim-token ack, stale recovery).
-- Workflow YAML `swarm:` config for defining members + seeding tasks; inject `ROBOPPI_SWARM_*` env vars into steps.
-- Workflow TUI Swarm tab + `swarm_*` exec events for metadata-only activity visibility.
-- New worker capabilities `MAILBOX` and `TASKS` to gate Swarm tooling (Claude Code allowlist support).
+- Agents v1: file-backed mailbox + task store for agent teams under `<context_dir>/_agents/`.
+- New `roboppi agents` CLI (JSON-only stdout) for members, messaging, tasks, and housekeeping (incl. `message recv --wait-ms`, claim-token ack, stale recovery).
+- Workflow YAML `agents:` config for defining members + seeding tasks; inject `ROBOPPI_AGENTS_*` env vars into steps.
+- Workflow TUI Agents tab + `agent_*` exec events for metadata-only activity visibility.
+- New worker capabilities `MAILBOX` and `TASKS` to gate Agents tooling (Claude Code allowlist support).
+- Runner-owned `LeadInboxBroker` for auto-consuming lead inbox and maintaining `_agents/inbox-summary.json`.
+- Dynamic membership via `roboppi agents members set|upsert|remove` with coordinator reconcile loop.
 
 ### Changed
 
-- Swarm conformance checklist is captured in `docs/spec/swarm.md` and enforced by the self-dev Swarm impl loop.
+- Agents conformance checklist is captured in `docs/spec/agents.md` and enforced by the self-dev Agents impl loop.
 
 ### Fixed
 
-- Harden `roboppi swarm` tool-facing inputs with explicit path-safety validation and JSON-safe error output.
+- Harden `roboppi agents` tool-facing inputs with explicit path-safety validation and JSON-safe error output.
 
 ## [0.1.7] - 2026-03-01
 

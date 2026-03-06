@@ -37,6 +37,10 @@ export class RingBuffer<T extends string> {
     }
   }
 
+  last(): T | undefined {
+    return this.buf.length > 0 ? this.buf[this.buf.length - 1] : undefined;
+  }
+
   lines(): T[] {
     return this.buf.slice();
   }
