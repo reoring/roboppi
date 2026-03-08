@@ -10,6 +10,7 @@ export interface WorkerTaskJobPayload {
   workerKind: WorkerKind;
   workspaceRef: string;
   instructions: string;
+  defaultArgs?: string[];
   model?: string;
   variant?: string;
   capabilities: WorkerCapability[];
@@ -42,6 +43,13 @@ export function isWorkerTaskJobPayload(value: unknown): value is WorkerTaskJobPa
   if (typeof v.workerTaskId !== "string") return false;
   if (typeof v.workspaceRef !== "string") return false;
   if (typeof v.instructions !== "string") return false;
+
+  if (v.defaultArgs !== undefined) {
+    if (!Array.isArray(v.defaultArgs)) return false;
+    for (const arg of v.defaultArgs) {
+      if (typeof arg !== "string") return false;
+    }
+  }
 
   if (v.model !== undefined && typeof v.model !== "string") return false;
   if (v.variant !== undefined && typeof v.variant !== "string") return false;

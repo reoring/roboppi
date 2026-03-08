@@ -2,6 +2,8 @@ import type { WorkflowUiState } from "../state-store.js";
 import { isAgentStep, agentMemberId } from "../state-store.js";
 import { renderOverviewTab } from "./tabs/overview-tab.js";
 import { renderLogsTab } from "./tabs/logs-tab.js";
+import { renderRawLogsTab } from "./tabs/raw-logs-tab.js";
+import { renderUsageTab } from "./tabs/usage-tab.js";
 import { renderDiffsTab } from "./tabs/diffs-tab.js";
 import { renderResultTab } from "./tabs/result-tab.js";
 import { renderCoreTab } from "./tabs/core-tab.js";
@@ -13,23 +15,27 @@ import { ansiFit } from "../ansi-utils.js";
 
 const STEP_TABS = [
   { key: "1", id: "overview", label: "Overview" },
-  { key: "2", id: "logs", label: "Logs" },
-  { key: "3", id: "diffs", label: "Diffs" },
-  { key: "4", id: "result", label: "Result" },
-  { key: "5", id: "core", label: "Core" },
-  { key: "6", id: "agents", label: "Agents" },
-  { key: "7", id: "chat", label: "Chat" },
-  { key: "8", id: "help", label: "Help" },
+  { key: "2", id: "logs", label: "Timeline" },
+  { key: "3", id: "raw_logs", label: "Raw" },
+  { key: "4", id: "diffs", label: "Diffs" },
+  { key: "5", id: "usage", label: "Usage" },
+  { key: "6", id: "result", label: "Result" },
+  { key: "7", id: "core", label: "Core" },
+  { key: "8", id: "agents", label: "Agents" },
+  { key: "9", id: "chat", label: "Chat" },
+  { key: "0", id: "help", label: "Help" },
 ] as const;
 
 const AGENT_TABS = [
   { key: "1", id: "chat", label: "Chat" },
   { key: "2", id: "agent_overview", label: "Agent" },
-  { key: "3", id: "logs", label: "Logs" },
-  { key: "4", id: "agents", label: "Activity" },
-  { key: "5", id: "result", label: "Result" },
-  { key: "6", id: "core", label: "Core" },
-  { key: "7", id: "help", label: "Help" },
+  { key: "3", id: "logs", label: "Timeline" },
+  { key: "4", id: "raw_logs", label: "Raw" },
+  { key: "5", id: "usage", label: "Usage" },
+  { key: "6", id: "agents", label: "Activity" },
+  { key: "7", id: "result", label: "Result" },
+  { key: "8", id: "core", label: "Core" },
+  { key: "9", id: "help", label: "Help" },
 ] as const;
 
 /**
@@ -77,6 +83,7 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
   const contentHeight = height - 2; // tab bar + separator
   const step = state.selectedStepId ? state.steps.get(state.selectedStepId) : undefined;
   const memberId = state.selectedStepId ? agentMemberId(state.selectedStepId) : undefined;
+  const rosterEntry = memberId ? state.agentRoster.get(memberId) : undefined;
 
   let content: string;
   switch (state.selectedTab) {
@@ -84,10 +91,16 @@ export function renderDetailPane(state: WorkflowUiState, width: number, height: 
       content = renderOverviewTab(state, step, width, contentHeight);
       break;
     case "agent_overview":
-      content = renderAgentOverviewTab(state, step, memberId ?? "", width, contentHeight);
+      content = renderAgentOverviewTab(state, step, rosterEntry, memberId ?? "", width, contentHeight);
       break;
     case "logs":
       content = renderLogsTab(step, width, contentHeight);
+      break;
+    case "raw_logs":
+      content = renderRawLogsTab(step, width, contentHeight);
+      break;
+    case "usage":
+      content = renderUsageTab(state, step, memberId, width, contentHeight);
       break;
     case "diffs":
       content = renderDiffsTab(step, width, contentHeight);

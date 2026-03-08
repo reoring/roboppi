@@ -10,10 +10,12 @@ import { copyToClipboard } from "./clipboard.js";
 import {
   deliverMessage,
   readTeam,
+  readMembers,
   upsertMember,
   recvMessages,
   ackMessageByClaimToken,
 } from "../agents/store.js";
+import { readWorkflowStatus } from "../agents/status-store.js";
 import { allDirs } from "../agents/paths.js";
 import { mkdir } from "node:fs/promises";
 
@@ -29,6 +31,7 @@ export class WorkflowTui {
   private toast: { message: string; until: number } | null = null;
   private userRegistered = false;
   private chatPollTimer: ReturnType<typeof setInterval> | null = null;
+  private rosterPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly store: TuiStateStore,
@@ -66,6 +69,11 @@ export class WorkflowTui {
     this.chatPollTimer = setInterval(() => {
       this.pollChatInbox().catch(() => {});
     }, CHAT_POLL_INTERVAL_MS);
+
+    this.rosterPollTimer = setInterval(() => {
+      this.pollAgentArtifacts().catch(() => {});
+    }, CHAT_POLL_INTERVAL_MS);
+    this.pollAgentArtifacts().catch(() => {});
   }
 
   /**
@@ -86,6 +94,10 @@ export class WorkflowTui {
   }
 
   stop(): void {
+    if (this.rosterPollTimer) {
+      clearInterval(this.rosterPollTimer);
+      this.rosterPollTimer = null;
+    }
     if (this.chatPollTimer) {
       clearInterval(this.chatPollTimer);
       this.chatPollTimer = null;
@@ -162,13 +174,13 @@ export class WorkflowTui {
       return;
     }
 
-    // Tab numbers 1-8 for tab switching (context-dependent)
-    if (key >= "1" && key <= "8") {
+    // Tab numbers 0-9 for tab switching (context-dependent)
+    if ((key >= "1" && key <= "9") || key === "0") {
       const isAgent = state.selectedStepId ? isAgentStep(state.selectedStepId) : false;
       const tabs = isAgent
-        ? ["chat", "agent_overview", "logs", "agents", "result", "core", "help"] as const
-        : ["overview", "logs", "diffs", "result", "core", "agents", "chat", "help"] as const;
-      const idx = parseInt(key) - 1;
+        ? ["chat", "agent_overview", "logs", "raw_logs", "usage", "agents", "result", "core", "help"] as const
+        : ["overview", "logs", "raw_logs", "diffs", "usage", "result", "core", "agents", "chat", "help"] as const;
+      const idx = key === "0" ? 9 : parseInt(key, 10) - 1;
       if (idx < tabs.length) {
         state.selectedTab = tabs[idx]!;
         this.store.dirty = true;
@@ -358,6 +370,34 @@ export class WorkflowTui {
     }
   }
 
+  private async pollAgentArtifacts(): Promise<void> {
+    const contextDir = this.store.state.contextDir;
+    if (!contextDir) return;
+
+    try {
+      const membersConfig = await readMembers(contextDir);
+      this.store.syncAgentRoster(
+        membersConfig.members
+          .filter((member) => member.role !== "human" && member.role !== "team_lead")
+          .map((member) => ({
+            memberId: member.member_id,
+            name: member.name || member.member_id,
+            role: member.role,
+            agentId: member.agent,
+          })),
+      );
+    } catch {
+      // best-effort
+    }
+
+    try {
+      const summary = await readWorkflowStatus(contextDir);
+      this.store.syncWorkflowStatusSummary(summary);
+    } catch {
+      // best-effort
+    }
+  }
+
   private showToast(message: string): void {
     this.toast = { message, until: Date.now() + 2000 };
     this.store.dirty = true;
@@ -408,7 +448,7 @@ export class WorkflowTui {
     }
 
     // Default selection: first selectable entry
-    if (!state.selectedStepId && state.stepOrder.length > 0) {
+    if (!state.selectedStepId) {
       const entries = buildLeftPaneEntries(state);
       const first = entries.find((e) => e.kind !== "separator");
       state.selectedStepId = first ? first.stepId : state.stepOrder[0];

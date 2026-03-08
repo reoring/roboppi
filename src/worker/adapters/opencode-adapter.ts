@@ -15,7 +15,8 @@ export function buildArgs(
   task: WorkerTask,
   config: Required<OpenCodeAdapterConfig>,
 ): string[] {
-  const args: string[] = ["run", "--format", "json", ...config.defaultArgs];
+  const mergedDefaultArgs = [...config.defaultArgs, ...(task.defaultArgs ?? [])];
+  const args: string[] = ["run", "--format", "json", ...mergedDefaultArgs];
 
   if (task.model) {
     // If defaultArgs already specify a model, prefer the task-level model.

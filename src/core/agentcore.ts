@@ -274,6 +274,7 @@ export class AgentCore {
       workerKind: payload.workerKind,
       workspaceRef: payload.workspaceRef,
       instructions: payload.instructions,
+      ...(payload.defaultArgs ? { defaultArgs: [...payload.defaultArgs] } : {}),
       ...(payload.model ? { model: payload.model } : {}),
       ...(payload.variant ? { variant: payload.variant } : {}),
       capabilities: payload.capabilities,

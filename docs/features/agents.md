@@ -146,6 +146,7 @@ Directory root:
     in_progress/
     completed/
     blocked/
+    superseded/
     tmp/
     _events.jsonl
   locks/
@@ -286,8 +287,9 @@ Task transitions are represented by moving the file:
 
 - `pending/<taskId>.json` -> `in_progress/<taskId>.json`
 - `in_progress/<taskId>.json` -> `completed/<taskId>.json`
+- `pending|in_progress|blocked/<taskId>.json` -> `superseded/<taskId>.json`
 
-Blocked tasks can be stored in `blocked/` to make discovery fast.
+Blocked tasks can be stored in `blocked/` to make discovery fast, and stale coordination tasks can be moved to `superseded/` to preserve audit history without leaving them claimable.
 
 ### 4.4 Event logs
 
@@ -308,6 +310,7 @@ audit. These logs MUST be safe by default.
 { "ts": 1710000000000, "type": "task_added", "task_id": "...", "title": "..." }
 { "ts": 1710000005000, "type": "task_claimed", "task_id": "...", "by": "researcher" }
 { "ts": 1710000010000, "type": "task_completed", "task_id": "...", "by": "researcher" }
+{ "ts": 1710000015000, "type": "task_superseded", "task_id": "...", "by": "lead", "reason": "stale contract" }
 ```
 
 The full message body SHOULD NOT be copied into `_events.jsonl` unless explicitly
@@ -408,9 +411,10 @@ Add a `roboppi agents` CLI group:
 - `roboppi agents message ack --context <dir> --for <memberId> --message-id <uuid>`
 
 - `roboppi agents tasks add --context <dir> --title ... --description ... [--depends-on ...]`
-- `roboppi agents tasks list --context <dir> [--status pending|in_progress|completed]`
+- `roboppi agents tasks list --context <dir> [--status pending|in_progress|completed|blocked|superseded]`
 - `roboppi agents tasks claim --context <dir> --task-id <uuid> --member <memberId>`
 - `roboppi agents tasks complete --context <dir> --task-id <uuid> --member <memberId> [--artifact <path>]`
+- `roboppi agents tasks supersede --context <dir> --task-id <uuid> --member <memberId> [--reason <text>] [--replacement-task-id <uuid>]`
 
 Return values MUST be JSON so workers can parse them reliably.
 

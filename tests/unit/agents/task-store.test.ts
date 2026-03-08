@@ -18,6 +18,7 @@ import {
   listTasks,
   claimTask,
   completeTask,
+  supersedeTask,
   validateArtifactPath,
 } from "../../../src/agents/task-store.js";
 import {
@@ -292,5 +293,53 @@ describe("metadata-only task events", () => {
     expect(eventsRaw).not.toContain("SECRET_DESCRIPTION_CONTENT");
     // Title IS included (metadata-only contract allows title)
     expect(eventsRaw).toContain("Public Title");
+  });
+});
+
+
+describe("supersedeTask", () => {
+  it("moves a pending task to superseded/ with metadata", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Supersede Me", description: "" });
+
+    const result = await supersedeTask(contextDir, taskId, "lead", "stale contract", "replacement-task");
+    expect(result.ok).toBe(true);
+
+    const supersededEntries = await readdir(tasksStatusDir(contextDir, "superseded"));
+    expect(supersededEntries).toContain(`${taskId}.json`);
+
+    const raw = await readFile(
+      path.join(tasksStatusDir(contextDir, "superseded"), `${taskId}.json`),
+      "utf-8",
+    );
+    const task = JSON.parse(raw);
+    expect(task.status).toBe("superseded");
+    expect(task.superseded_by).toBe("lead");
+    expect(task.supersede_reason).toBe("stale contract");
+    expect(task.replacement_task_id).toBe("replacement-task");
+  });
+
+  it("moves an in_progress task to superseded/", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Claim Then Supersede", description: "" });
+    await claimTask(contextDir, taskId, "alice");
+
+    const result = await supersedeTask(contextDir, taskId, "lead", "replaced");
+    expect(result.ok).toBe(true);
+
+    const supersededEntries = await readdir(tasksStatusDir(contextDir, "superseded"));
+    expect(supersededEntries).toContain(`${taskId}.json`);
+  });
+
+  it("emits task_superseded event", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Supersede Event", description: "" });
+
+    await supersedeTask(contextDir, taskId, "lead", "duplicate", "replacement-task");
+
+    const eventsRaw = await readFile(tasksEventsPath(contextDir), "utf-8");
+    const events = eventsRaw.trim().split("\n").map((l) => JSON.parse(l));
+    const superseded = events.find((e: any) => e.type === "task_superseded");
+    expect(superseded).toBeTruthy();
+    expect(superseded.by).toBe("lead");
+    expect(superseded.reason).toBe("duplicate");
+    expect(superseded.replacement_task_id).toBe("replacement-task");
   });
 });

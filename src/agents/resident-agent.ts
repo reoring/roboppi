@@ -16,7 +16,7 @@
 import { mkdir } from "node:fs/promises";
 
 import { recvMessages } from "./store.js";
-import { listTasks } from "./task-store.js";
+import { hasActionableTaskForMember } from "./task-store.js";
 import { allDirs } from "./paths.js";
 import {
   DEFAULT_RESIDENT_POLL_INTERVAL_MS,
@@ -61,6 +61,30 @@ interface SessionEntry {
   ts: number;
   type: "message_received" | "task_completed" | "dispatch_result";
   summary: string;
+}
+
+function cloneProfileDefaultArgs(profile: AgentProfile): string[] {
+  return Array.isArray(profile.defaultArgs) ? [...profile.defaultArgs] : [];
+}
+
+export function createAdapterForAgentProfile(
+  processManager: ProcessManager,
+  profile: AgentProfile,
+): WorkerAdapter {
+  const defaultArgs = cloneProfileDefaultArgs(profile);
+
+  switch (profile.worker) {
+    case "OPENCODE":
+      return new OpenCodeAdapter(processManager, { defaultArgs });
+    case "CODEX_CLI":
+      return new CodexCliAdapter(processManager, { defaultArgs });
+    case "CLAUDE_CODE":
+    default:
+      return new ClaudeCodeAdapter(
+        { outputFormat: "json", defaultArgs },
+        processManager,
+      );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +137,7 @@ export class ResidentAgent {
 
     // Create adapter based on worker kind
     this.processManager = new ProcessManager();
-    this.adapter = this.createAdapter(opts.profile.worker ?? "CLAUDE_CODE");
+    this.adapter = createAdapterForAgentProfile(this.processManager, opts.profile);
 
     this.settled = new Promise<void>((resolve) => {
       this.resolveSettled = resolve;
@@ -249,12 +273,7 @@ export class ResidentAgent {
 
   private async hasClaimableTasks(): Promise<boolean> {
     try {
-      const tasks = await listTasks(this.contextDir, "pending");
-      return tasks.some(
-        (t) =>
-          t.assigned_to === this.memberId ||
-          (!t.assigned_to && !t.claimed_by),
-      );
+      return await hasActionableTaskForMember(this.contextDir, this.memberId);
     } catch {
       return false;
     }
@@ -270,6 +289,7 @@ export class ResidentAgent {
   ): Promise<void> {
     this.dispatching = true;
     this.dispatchAbortController = new AbortController();
+    const instructions = this.buildInstructions(pendingMessages, hasTasks);
 
     // Emit phase: executing
     this.sink.emit({
@@ -277,10 +297,12 @@ export class ResidentAgent {
       stepId: this.stepId,
       phase: "executing",
       at: Date.now(),
+      detail: {
+        instructions,
+      },
     });
 
     try {
-      const instructions = this.buildInstructions(pendingMessages, hasTasks);
       const result = await this.runCliAgent(instructions);
 
       // Record dispatch result in session history
@@ -320,6 +342,7 @@ export class ResidentAgent {
   }
 
   private async runCliAgent(instructions: string): Promise<WorkerResult> {
+    const instructionBytes = new TextEncoder().encode(instructions).length;
     const task: WorkerTask = {
       workerTaskId: generateId(),
       workerKind: this.resolveWorkerKind(),
@@ -359,6 +382,11 @@ export class ResidentAgent {
 
     const result = await this.adapter.awaitResult(handle);
     await streamDone;
+
+    result.cost = {
+      ...result.cost,
+      instructionBytes,
+    };
 
     // Emit final result
     this.sink.emit({
@@ -447,6 +475,9 @@ export class ResidentAgent {
     parts.push(
       "  roboppi agents tasks complete --task-id <id>   # when done",
     );
+    parts.push(
+      "  roboppi agents tasks supersede --task-id <id> --member <your_member_id> --reason <why> [--replacement-task-id <newer_id>]   # when your task/input is stale",
+    );
     parts.push("");
 
     // Session context from previous dispatches
@@ -477,21 +508,6 @@ export class ResidentAgent {
   // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
-
-  private createAdapter(workerKind: string): WorkerAdapter {
-    switch (workerKind) {
-      case "OPENCODE":
-        return new OpenCodeAdapter(this.processManager);
-      case "CODEX_CLI":
-        return new CodexCliAdapter(this.processManager);
-      case "CLAUDE_CODE":
-      default:
-        return new ClaudeCodeAdapter(
-          { outputFormat: "json" },
-          this.processManager,
-        );
-    }
-  }
 
   private resolveWorkerKind(): WorkerKind {
     switch (this.profile.worker) {

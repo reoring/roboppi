@@ -88,6 +88,8 @@ export interface ManagementAgentConfig {
   agent?: string;
   /** Engine type: "worker" (default, file-based) or "pi" (Pi SDK in-process). */
   engine?: "worker" | "pi";
+  /** Optional CLI args forwarded to the resolved worker adapter. */
+  defaultArgs?: string[];
   model?: string;
   capabilities?: ("READ" | "EDIT" | "RUN_TESTS" | "RUN_COMMANDS" | "MAILBOX" | "TASKS")[];
   timeout?: DurationString;

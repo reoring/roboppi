@@ -11,6 +11,9 @@ export interface AgentProfile {
   /** Default worker kind when referenced via step.agent. */
   worker?: AgentWorkerKind;
 
+  /** Optional CLI arguments forwarded to the selected resident worker adapter. */
+  defaultArgs?: string[];
+
   /** Default model identifier (adapter-specific). */
   model?: string;
 
@@ -78,6 +81,18 @@ function validateOptionalString(value: unknown, field: string): void {
   if (value === undefined) return;
   if (typeof value !== "string") {
     throw new AgentCatalogParseError(`"${field}" must be a string`);
+  }
+}
+
+function validateOptionalStringArray(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new AgentCatalogParseError(`"${field}" must be an array`);
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new AgentCatalogParseError(`"${field}" must contain only strings`);
+    }
   }
 }
 
@@ -164,6 +179,7 @@ export function parseAgentCatalog(yamlContent: string): AgentCatalog {
 
     validateOptionalNonEmptyString(obj["description"], `agents.${agentId}.description`);
     validateOptionalWorker(obj["worker"], `agents.${agentId}.worker`);
+    validateOptionalStringArray(obj["defaultArgs"], `agents.${agentId}.defaultArgs`);
     validateOptionalNonEmptyString(obj["model"], `agents.${agentId}.model`);
     validateOptionalNonEmptyString(obj["variant"], `agents.${agentId}.variant`);
     // Allow empty string to intentionally clear inherited base_instructions.

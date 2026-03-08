@@ -91,7 +91,7 @@ export interface AgentMessage {
 // Tasks
 // ---------------------------------------------------------------------------
 
-export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked";
+export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked" | "superseded";
 
 export interface AgentTask {
   version: "1";
@@ -106,6 +106,10 @@ export interface AgentTask {
   claimed_by: string | null;
   claimed_at: Timestamp | null;
   completed_at: Timestamp | null;
+  superseded_at: Timestamp | null;
+  superseded_by: string | null;
+  supersede_reason: string | null;
+  replacement_task_id: UUID | null;
   artifacts: string[];
   tags: string[];
   requires_plan_approval: boolean;
@@ -140,7 +144,8 @@ export type TaskEventType =
   | "task_claimed"
   | "task_completed"
   | "task_blocked"
-  | "task_requeued";
+  | "task_requeued"
+  | "task_superseded";
 
 export interface TaskEvent {
   ts: Timestamp;
@@ -148,4 +153,6 @@ export interface TaskEvent {
   task_id: UUID;
   title?: string;
   by?: string;
+  reason?: string;
+  replacement_task_id?: UUID;
 }

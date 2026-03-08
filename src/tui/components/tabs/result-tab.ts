@@ -37,6 +37,12 @@ export function renderResultTab(
     if (r.cost.wallTimeMs !== undefined) {
       lines.push(`  Wall time: ${(r.cost.wallTimeMs / 1000).toFixed(1)}s`);
     }
+    if (r.cost.estimatedTokens !== undefined) {
+      lines.push(`  Estimated tokens: ${r.cost.estimatedTokens}`);
+    }
+    if (r.cost.instructionBytes !== undefined) {
+      lines.push(`  Prompt bytes: ${r.cost.instructionBytes}`);
+    }
   }
 
   if (r.artifacts && r.artifacts.length > 0) {

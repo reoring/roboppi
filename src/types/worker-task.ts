@@ -33,6 +33,8 @@ export interface WorkerTask {
   workerKind: WorkerKind;
   workspaceRef: string;
   instructions: string;
+  /** Optional CLI args forwarded to the worker adapter. */
+  defaultArgs?: string[];
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
   /** Optional model variant / reasoning effort hint (worker-specific). */

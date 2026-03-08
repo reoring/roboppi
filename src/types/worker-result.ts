@@ -20,6 +20,7 @@ export interface Observation {
 
 export interface WorkerCost {
   estimatedTokens?: number;
+  instructionBytes?: number;
   wallTimeMs: number;
 }
 

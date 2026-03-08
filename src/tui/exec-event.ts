@@ -113,4 +113,12 @@ export type ExecEvent =
       taskId: string;
       byMemberId: string;
       title?: string;
+    }
+  | {
+      type: "agent_task_superseded";
+      ts: number;
+      teamId: string;
+      taskId: string;
+      byMemberId: string;
+      title?: string;
     };

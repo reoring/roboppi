@@ -1,5 +1,5 @@
 import type { WorkflowUiState, StepUiState } from "../state-store.js";
-import { agentMemberId, getAgentHintText } from "../state-store.js";
+import { agentMemberId, agentStepId, getAgentHintText } from "../state-store.js";
 import { ansiFit, ansiTruncate, stripAnsi } from "../ansi-utils.js";
 
 const SPINNER_FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
@@ -8,6 +8,7 @@ let spinnerIdx = 0;
 const STATUS_ICONS: Record<string, string> = {
   PENDING: "\x1b[90m\u25CB\x1b[0m",
   READY: "\x1b[36m\u25CE\x1b[0m",
+  IDLE: "\x1b[36m\u25CE\x1b[0m",
   RUNNING: "\x1b[33m\u25CF\x1b[0m",
   CHECKING: "\x1b[35m\u25C9\x1b[0m",
   SUCCEEDED: "\x1b[32m\u2713\x1b[0m",
@@ -15,6 +16,7 @@ const STATUS_ICONS: Record<string, string> = {
   INCOMPLETE: "\x1b[90m\u25D1\x1b[0m",
   SKIPPED: "\x1b[90m\u2298\x1b[0m",
   CANCELLED: "\x1b[31m\u2298\x1b[0m",
+  DORMANT: "\x1b[90m\u263E\x1b[0m",
 };
 
 export type LeftPaneEntry =
@@ -29,14 +31,22 @@ export type LeftPaneEntry =
 export function buildLeftPaneEntries(state: WorkflowUiState): LeftPaneEntry[] {
   const steps: LeftPaneEntry[] = [];
   const agents: LeftPaneEntry[] = [];
+  const seenAgentIds = new Set<string>();
 
   for (const stepId of state.stepOrder) {
     const mid = agentMemberId(stepId);
     if (mid) {
       agents.push({ kind: "agent", stepId, memberId: mid });
+      seenAgentIds.add(mid);
     } else {
       steps.push({ kind: "step", stepId });
     }
+  }
+
+  for (const memberId of state.agentRosterOrder) {
+    if (seenAgentIds.has(memberId)) continue;
+    agents.push({ kind: "agent", stepId: agentStepId(memberId), memberId });
+    seenAgentIds.add(memberId);
   }
 
   const entries: LeftPaneEntry[] = [...steps];
@@ -67,26 +77,35 @@ export function renderStepList(state: WorkflowUiState, width: number, height: nu
 
     const stepId = entry.stepId;
     const step = state.steps.get(stepId);
-    if (!step) continue;
+    const roster = entry.kind === "agent" ? state.agentRoster.get(entry.memberId) : undefined;
+    if (!step && !roster) continue;
 
     const isSelected = stepId === state.selectedStepId;
     const prefix = isSelected ? "\x1b[7m" : "";
     const suffix = isSelected ? "\x1b[0m" : "";
 
-    const icon = getStepIcon(step);
+    const effectiveStatus =
+      entry.kind === "agent"
+        ? getAgentStatus(step, roster?.role)
+        : (step?.status ?? "PENDING");
+    const icon = getStepIcon(effectiveStatus);
     const displayName = entry.kind === "agent"
-      ? `\x1b[36m\u25C6\x1b[0m ${entry.memberId}`
+      ? `\x1b[36m\u25C6\x1b[0m ${roster?.name ?? entry.memberId}`
       : stepId;
-    const iter = step.maxIterations > 1 ? ` ${step.iteration}/${step.maxIterations}` : "";
-    const duration = step.startedAt ? ` ${formatDuration(step)}` : "";
-    const phase = step.phase ? ` \x1b[90m${step.phase}\x1b[0m` : "";
+    const iter = step && step.maxIterations > 1 ? ` ${step.iteration}/${step.maxIterations}` : "";
+    const duration = step?.startedAt ? ` ${formatDuration(step)}` : "";
+    const phaseText =
+      entry.kind === "agent"
+        ? getAgentPhase(step, roster?.role)
+        : step?.phase;
+    const phase = phaseText ? ` \x1b[90m${phaseText}\x1b[0m` : "";
 
     const base = ` ${icon} ${displayName}${iter}${duration}${phase}`;
     const fitted = ansiFit(ansiTruncate(base, w, { ellipsis: "..." }), w);
     lines.push(`${prefix}${fitted}${suffix}`);
 
     // Add hint subline for RUNNING agents
-    if (entry.kind === "agent" && step.status === "RUNNING") {
+    if (entry.kind === "agent" && step?.status === "RUNNING") {
       const hint = getAgentHintText(step);
       if (hint) {
         const plain = stripAnsi(hint);
@@ -105,14 +124,34 @@ export function renderStepList(state: WorkflowUiState, width: number, height: nu
   return lines.slice(0, height).join("\n");
 }
 
-function getStepIcon(step: StepUiState): string {
-  if (step.status === "RUNNING") {
+function getStepIcon(status: string): string {
+  if (status === "RUNNING") {
     return `\x1b[33m${SPINNER_FRAMES[spinnerIdx]}\x1b[0m`;
   }
-  if (step.status === "CHECKING") {
+  if (status === "CHECKING") {
     return `\x1b[35m${SPINNER_FRAMES[spinnerIdx]}\x1b[0m`;
   }
-  return STATUS_ICONS[step.status] ?? "\x1b[90m?\x1b[0m";
+  return STATUS_ICONS[status] ?? "\x1b[90m?\x1b[0m";
+}
+
+function getAgentStatus(step: StepUiState | undefined, role?: string): string {
+  if (step && (step.status === "RUNNING" || step.status === "CHECKING")) {
+    return step.status;
+  }
+  if (role === "dormant") {
+    return "DORMANT";
+  }
+  return "IDLE";
+}
+
+function getAgentPhase(step: StepUiState | undefined, role?: string): string | undefined {
+  if (step && (step.status === "RUNNING" || step.status === "CHECKING")) {
+    return step.phase;
+  }
+  if (role === "dormant") {
+    return "sleeping";
+  }
+  return "idle";
 }
 
 function formatDuration(step: StepUiState): string {

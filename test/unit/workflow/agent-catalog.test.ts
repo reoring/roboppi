@@ -22,6 +22,27 @@ agents:
     expect(catalog.research!.base_instructions).toBe("You are a research agent");
   });
 
+  it("parses resident worker defaultArgs", () => {
+    const yaml = `
+version: "1"
+agents:
+  verifier:
+    worker: CODEX_CLI
+    defaultArgs:
+      - --full-auto
+      - --sandbox
+      - danger-full-access
+`;
+
+    const catalog = parseAgentCatalog(yaml);
+    expect(catalog.verifier).toBeDefined();
+    expect(catalog.verifier!.defaultArgs).toEqual([
+      "--full-auto",
+      "--sandbox",
+      "danger-full-access",
+    ]);
+  });
+
   it("rejects wrong version", () => {
     const yaml = `
 version: "2"

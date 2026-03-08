@@ -94,6 +94,7 @@ export class WorkerEngine implements ManagementAgentEngine {
     // Build the management worker step definition
     const mgmtStepDef: StepDefinition = {
       worker: this.agentConfig.worker ?? "OPENCODE",
+      defaultArgs: this.agentConfig.defaultArgs,
       model: this.agentConfig.model,
       instructions: this.agentConfig.base_instructions ?? "You are a workflow management agent.",
       capabilities: this.agentConfig.capabilities ?? ["READ"],

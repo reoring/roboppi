@@ -2130,6 +2130,7 @@ version: "1"
 agents:
   mgr:
     worker: CLAUDE_CODE
+    defaultArgs: [--verbose, --permission-mode, bypassPermissions]
     model: openai/gpt-5.2
     capabilities: [READ]
     base_instructions: |
@@ -2195,6 +2196,11 @@ steps:
       expect(state.status).toBe(WorkflowStatus.SUCCEEDED);
       expect(capturedMgmtStepDef).not.toBeNull();
       expect(capturedMgmtStepDef!.worker).toBe("CLAUDE_CODE");
+      expect(capturedMgmtStepDef!.defaultArgs).toEqual([
+        "--verbose",
+        "--permission-mode",
+        "bypassPermissions",
+      ]);
       expect(capturedMgmtStepDef!.model).toBe("openai/gpt-5.2");
       expect(capturedMgmtStepDef!.capabilities).toEqual(["READ"]);
       expect(capturedMgmtStepDef!.instructions).toContain("CATALOG BASE");

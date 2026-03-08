@@ -2,7 +2,7 @@ import { ErrorClass } from "../types/common.js";
 import type { Artifact, Observation, WorkerCost } from "../types/worker-result.js";
 import { mkdir, readFile, writeFile, cp, stat, rm } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   WorkflowDefinition,
   StepDefinition,
@@ -490,7 +490,7 @@ export class WorkflowExecutor {
         ([memberId, memberCfg]) => ({
           member_id: memberId,
           name: memberId,
-          role: memberId === "lead" ? "team_lead" : "member",
+          role: memberId === "lead" ? "team_lead" : (memberCfg.role ?? "member"),
           worker: undefined,
           capabilities: undefined,
           workspace: undefined,
@@ -521,12 +521,31 @@ export class WorkflowExecutor {
 
       // Seed initial tasks from DSL config
       if (agentsConfig.tasks) {
+        const seededTaskIds = new Map<string, string>();
         for (const taskDef of agentsConfig.tasks) {
+          if (taskDef.id) {
+            seededTaskIds.set(taskDef.id, randomUUID());
+          }
+        }
+        for (const taskDef of agentsConfig.tasks) {
+          const dependsOn = taskDef.depends_on?.map((dep) => {
+            const mapped = seededTaskIds.get(dep);
+            if (!mapped) {
+              throw new Error(`Unknown seed task dependency "${dep}"`);
+            }
+            return mapped;
+          });
           await addAgentsTask({
             contextDir: this.contextManager.contextDir,
+            ...(taskDef.id ? { taskId: seededTaskIds.get(taskDef.id) } : {}),
             title: taskDef.title,
             description: taskDef.description,
             assignedTo: taskDef.assigned_to,
+            ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
+            ...(taskDef.tags && taskDef.tags.length > 0 ? { tags: taskDef.tags } : {}),
+            ...(taskDef.requires_plan_approval !== undefined
+              ? { requiresPlanApproval: taskDef.requires_plan_approval }
+              : {}),
           });
         }
       }
@@ -863,6 +882,9 @@ export class WorkflowExecutor {
 
     if (resolvedAgent.worker === undefined && profile.worker !== undefined) {
       resolvedAgent.worker = profile.worker;
+    }
+    if (resolvedAgent.defaultArgs === undefined && profile.defaultArgs !== undefined) {
+      resolvedAgent.defaultArgs = [...profile.defaultArgs];
     }
     if (resolvedAgent.model === undefined && profile.model !== undefined) {
       resolvedAgent.model = profile.model;

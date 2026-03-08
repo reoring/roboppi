@@ -67,12 +67,13 @@ function countStatuses(state: WorkflowUiState): {
   agentRunning: number;
 } {
   const stepCounts: Record<string, number> = {};
-  let agentTotal = 0;
+  const seenAgents = new Set<string>(state.agentRosterOrder);
   let agentRunning = 0;
 
   for (const [stepId, step] of state.steps.entries()) {
     if (isAgentStep(stepId)) {
-      agentTotal++;
+      const memberId = stepId.slice("_agent:".length);
+      seenAgents.add(memberId);
       if (step.status === "RUNNING" || step.status === "CHECKING") {
         agentRunning++;
       }
@@ -81,7 +82,7 @@ function countStatuses(state: WorkflowUiState): {
     }
   }
 
-  return { stepCounts, agentTotal, agentRunning };
+  return { stepCounts, agentTotal: seenAgents.size, agentRunning };
 }
 
 function formatCounts(counts: Record<string, number>): string {

@@ -127,6 +127,21 @@ describe("OpenCodeAdapter", () => {
       expect(args[3]).toBe("--verbose");
     });
 
+    test("includes task defaultArgs after config defaultArgs", () => {
+      const config = { ...defaultConfig, defaultArgs: ["--verbose"] };
+      const task = makeTask({ defaultArgs: ["--sandbox", "danger-full-access"] });
+      const args = buildArgs(task, config);
+
+      expect(args.slice(0, 6)).toEqual([
+        "run",
+        "--format",
+        "json",
+        "--verbose",
+        "--sandbox",
+        "danger-full-access",
+      ]);
+    });
+
     test("places instructions as the last argument", () => {
       const task = makeTask({ instructions: "Do something special" });
       const args = buildArgs(task, defaultConfig);

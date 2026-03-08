@@ -15,6 +15,13 @@ describe("resolveEffectiveTab", () => {
     expect(resolveEffectiveTab("logs", "build")).toBe("logs");
   });
 
+  it("preserves raw_logs and usage tabs across step/agent", () => {
+    expect(resolveEffectiveTab("raw_logs", "_agent:impl")).toBe("raw_logs");
+    expect(resolveEffectiveTab("raw_logs", "build")).toBe("raw_logs");
+    expect(resolveEffectiveTab("usage", "_agent:impl")).toBe("usage");
+    expect(resolveEffectiveTab("usage", "build")).toBe("usage");
+  });
+
   it("maps diffs to agents for agent context", () => {
     expect(resolveEffectiveTab("diffs", "_agent:impl")).toBe("agents");
   });

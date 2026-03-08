@@ -39,6 +39,7 @@ export function validateArtifactPath(p: string): void {
 
 export interface AddTaskOptions {
   contextDir: string;
+  taskId?: string;
   title: string;
   description: string;
   dependsOn?: string[];
@@ -48,7 +49,7 @@ export interface AddTaskOptions {
 }
 
 export async function addTask(opts: AddTaskOptions): Promise<{ taskId: string }> {
-  const taskId = randomUUID();
+  const taskId = opts.taskId ?? randomUUID();
   const now = Date.now();
 
   const task: AgentTask = {
@@ -64,6 +65,10 @@ export async function addTask(opts: AddTaskOptions): Promise<{ taskId: string }>
     claimed_by: null,
     claimed_at: null,
     completed_at: null,
+    superseded_at: null,
+    superseded_by: null,
+    supersede_reason: null,
+    replacement_task_id: null,
     artifacts: [],
     tags: opts.tags ?? [],
     requires_plan_approval: opts.requiresPlanApproval ?? false,
@@ -101,7 +106,7 @@ export async function listTasks(
 ): Promise<AgentTask[]> {
   const statuses: TaskStatus[] = status
     ? [status]
-    : ["pending", "in_progress", "completed", "blocked"];
+    : ["pending", "in_progress", "completed", "blocked", "superseded"];
 
   const tasks: AgentTask[] = [];
 
@@ -128,6 +133,60 @@ export async function listTasks(
   }
 
   return tasks;
+}
+
+export function isTaskClaimableBy(
+  task: Pick<AgentTask, "assigned_to" | "claimed_by">,
+  memberId: string,
+): boolean {
+  if (task.claimed_by) {
+    return task.claimed_by === memberId;
+  }
+  return task.assigned_to === null || task.assigned_to === memberId;
+}
+
+export function areTaskDependenciesSatisfied(
+  task: Pick<AgentTask, "depends_on">,
+  completedTaskIds: ReadonlySet<string>,
+): boolean {
+  return task.depends_on.every((dep) => completedTaskIds.has(dep));
+}
+
+async function readCompletedTaskIds(contextDir: string): Promise<Set<string>> {
+  const completedDir = tasksStatusDir(contextDir, "completed");
+  let completedEntries: string[];
+  try {
+    completedEntries = await readdir(completedDir);
+  } catch {
+    completedEntries = [];
+  }
+
+  return new Set(
+    completedEntries
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.replace(".json", "")),
+  );
+}
+
+export async function hasActionableTaskForMember(
+  contextDir: string,
+  memberId: string,
+): Promise<boolean> {
+  const inProgress = await listTasks(contextDir, "in_progress");
+  if (inProgress.some((task) => task.claimed_by === memberId)) {
+    return true;
+  }
+
+  const pending = await listTasks(contextDir, "pending");
+  const claimablePending = pending.filter((task) => isTaskClaimableBy(task, memberId));
+  if (claimablePending.length === 0) {
+    return false;
+  }
+
+  const completedTaskIds = await readCompletedTaskIds(contextDir);
+  return claimablePending.some((task) =>
+    areTaskDependenciesSatisfied(task, completedTaskIds),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -173,21 +232,24 @@ export async function claimTask(
     return { ok: false, error: "Failed to read claimed task" };
   }
 
+  if (!isTaskClaimableBy(task, memberId)) {
+    try {
+      await rename(destPath, srcPath);
+    } catch {
+      // best-effort rollback
+    }
+    if (task.assigned_to) {
+      return {
+        ok: false,
+        error: `Task is assigned to "${task.assigned_to}" and cannot be claimed by "${memberId}"`,
+      };
+    }
+    return { ok: false, error: `Task cannot be claimed by "${memberId}"` };
+  }
+
   // Check dependencies
   if (task.depends_on.length > 0) {
-    const completedDir = tasksStatusDir(contextDir, "completed");
-    let completedEntries: string[];
-    try {
-      completedEntries = await readdir(completedDir);
-    } catch {
-      completedEntries = [];
-    }
-    const completedIds = new Set(
-      completedEntries
-        .filter((f) => f.endsWith(".json"))
-        .map((f) => f.replace(".json", "")),
-    );
-
+    const completedIds = await readCompletedTaskIds(contextDir);
     const unmet = task.depends_on.filter((dep) => !completedIds.has(dep));
     if (unmet.length > 0) {
       // Move to blocked/
@@ -280,6 +342,18 @@ export async function completeTask(
     return { ok: false, error: "Failed to read completed task" };
   }
 
+  if (task.claimed_by && task.claimed_by !== memberId) {
+    try {
+      await rename(destPath, srcPath);
+    } catch {
+      // best-effort rollback
+    }
+    return {
+      ok: false,
+      error: `Task is claimed by "${task.claimed_by}" and cannot be completed by "${memberId}"`,
+    };
+  }
+
   // Validate artifact paths before writing
   if (artifacts) {
     for (const a of artifacts) {
@@ -318,6 +392,79 @@ export async function completeTask(
     task_id: taskId,
     title: task.title,
     by: memberId,
+  });
+
+  return { ok: true };
+}
+
+
+export async function supersedeTask(
+  contextDir: string,
+  taskId: string,
+  memberId: string,
+  reason?: string,
+  replacementTaskId?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const activeStatuses: TaskStatus[] = ["pending", "in_progress", "blocked"];
+  const supersededDir = tasksStatusDir(contextDir, "superseded");
+
+  await mkdir(supersededDir, { recursive: true });
+
+  const filename = `${taskId}.json`;
+  const destPath = resolve(supersededDir, filename);
+
+  let fromStatus: TaskStatus | null = null;
+  for (const status of activeStatuses) {
+    const srcPath = resolve(tasksStatusDir(contextDir, status), filename);
+    try {
+      await rename(srcPath, destPath);
+      fromStatus = status;
+      break;
+    } catch {
+      // try next status
+    }
+  }
+
+  if (fromStatus === null) {
+    return { ok: false, error: "Task not found in pending/, in_progress/, or blocked/" };
+  }
+
+  let task: AgentTask;
+  try {
+    const raw = await readFile(destPath, "utf-8");
+    task = JSON.parse(raw) as AgentTask;
+  } catch {
+    return { ok: false, error: "Failed to read superseded task" };
+  }
+
+  const now = Date.now();
+  task.status = "superseded";
+  task.updated_at = now;
+  task.superseded_at = now;
+  task.superseded_by = memberId;
+  task.supersede_reason = reason ?? null;
+  task.replacement_task_id = replacementTaskId ?? null;
+
+  const supersedeJson = JSON.stringify(task, null, 2);
+  if (Buffer.byteLength(supersedeJson, "utf-8") > MAX_TASK_BYTES) {
+    const rollbackPath = resolve(tasksStatusDir(contextDir, fromStatus), filename);
+    try {
+      await rename(destPath, rollbackPath);
+    } catch { /* best-effort */ }
+    return { ok: false, error: `Task file exceeds max size (${MAX_TASK_BYTES} bytes) after supersede update` };
+  }
+
+  const tmpDir = tasksTmp(contextDir);
+  await atomicJsonWrite(tmpDir, destPath, task);
+
+  await appendTaskEvent(contextDir, {
+    ts: now,
+    type: "task_superseded",
+    task_id: taskId,
+    title: task.title,
+    by: memberId,
+    reason,
+    replacement_task_id: replacementTaskId,
   });
 
   return { ok: true };

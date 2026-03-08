@@ -24,9 +24,11 @@ import {
   listTasks,
   claimTask,
   completeTask,
+  supersedeTask,
 } from "./task-store.js";
 import { housekeepMailbox, housekeepTasksInProgress } from "./housekeeping.js";
 import { runChat } from "./chat.js";
+import { readWorkflowStatus, writeWorkflowStatus, clearWorkflowStatus } from "./status-store.js";
 import { DEFAULT_RECV_POLL_INTERVAL_MS, DEFAULT_CHAT_POLL_INTERVAL_MS } from "./constants.js";
 import { assertAgentsRootSafe, validateMemberIdPath, validateIdPath } from "./path-safety.js";
 import type { MemberEntry, MessageKind, TaskStatus } from "./types.js";
@@ -98,6 +100,16 @@ async function requireLeadIdentity(contextDir: string): Promise<void> {
   }
   if (team.lead_member_id !== callerMemberId) {
     die(`Only the lead ("${team.lead_member_id}") may mutate membership. Caller: "${callerMemberId}"`);
+  }
+}
+
+function requireCallerMatchesRequestedMember(memberId: string): void {
+  const callerMemberId = process.env.ROBOPPI_AGENTS_MEMBER_ID;
+  if (!callerMemberId) {
+    return;
+  }
+  if (callerMemberId !== memberId) {
+    die(`Requested member "${memberId}" does not match caller "${callerMemberId}"`);
   }
 }
 
@@ -640,6 +652,7 @@ async function handleTasksClaim(argv: string[]): Promise<void> {
 
   if (!taskId) die("--task-id is required");
   if (!memberId) die("--member is required (or set ROBOPPI_AGENTS_MEMBER_ID)");
+  requireCallerMatchesRequestedMember(memberId);
 
   // Spec 3.5: path safety
   await assertAgentsRootSafe(contextDir);
@@ -666,6 +679,7 @@ async function handleTasksComplete(argv: string[]): Promise<void> {
 
   if (!taskId) die("--task-id is required");
   if (!memberId) die("--member is required (or set ROBOPPI_AGENTS_MEMBER_ID)");
+  requireCallerMatchesRequestedMember(memberId);
 
   // Spec 3.5: path safety
   await assertAgentsRootSafe(contextDir);
@@ -678,6 +692,43 @@ async function handleTasksComplete(argv: string[]): Promise<void> {
     taskId,
     memberId,
     artifacts.length > 0 ? artifacts : undefined,
+  );
+  jsonOut(result);
+  if (!result.ok) process.exit(1);
+}
+
+
+
+async function handleTasksSupersede(argv: string[]): Promise<void> {
+  const contextDir = resolveContextDir(argv);
+  let taskId = "";
+  let memberId = resolveEnvDefault(argv, "--member", "ROBOPPI_AGENTS_MEMBER_ID") ?? "";
+  let reason: string | undefined;
+  let replacementTaskId: string | undefined;
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--task-id") taskId = requireArg(argv, i, "--task-id");
+    if (argv[i] === "--member") memberId = requireArg(argv, i, "--member");
+    if (argv[i] === "--reason") reason = requireArg(argv, i, "--reason");
+    if (argv[i] === "--replacement-task-id") replacementTaskId = requireArg(argv, i, "--replacement-task-id");
+  }
+
+  if (!taskId) die("--task-id is required");
+  if (!memberId) die("--member is required (or set ROBOPPI_AGENTS_MEMBER_ID)");
+  requireCallerMatchesRequestedMember(memberId);
+
+  await assertAgentsRootSafe(contextDir);
+  validateMemberIdPath(memberId);
+  validateIdPath(taskId, "task-id");
+  if (replacementTaskId) validateIdPath(replacementTaskId, "replacement-task-id");
+  await validateMember(contextDir, memberId);
+
+  const result = await supersedeTask(
+    contextDir,
+    taskId,
+    memberId,
+    reason,
+    replacementTaskId,
   );
   jsonOut(result);
   if (!result.ok) process.exit(1);
@@ -723,6 +774,64 @@ async function handleChat(argv: string[]): Promise<void> {
   await runChat({ contextDir, memberId, pollMs });
 }
 
+async function handleStatusGet(argv: string[]): Promise<void> {
+  const contextDir = resolveContextDir(argv);
+  const status = await readWorkflowStatus(contextDir);
+  jsonOut({ ok: true, status });
+}
+
+async function handleStatusSet(argv: string[]): Promise<void> {
+  const contextDir = resolveContextDir(argv);
+  let summary = "";
+  let ownerMemberId = resolveEnvDefault(argv, "--owner", "ROBOPPI_AGENTS_MEMBER_ID") ?? "";
+  const blockers: string[] = [];
+  const nextActions: string[] = [];
+  let useJsonStdin = false;
+  let clear = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--summary") summary = requireArg(argv, i, "--summary");
+    if (argv[i] === "--owner") ownerMemberId = requireArg(argv, i, "--owner");
+    if (argv[i] === "--blocker") blockers.push(requireArg(argv, i, "--blocker"));
+    if (argv[i] === "--next") nextActions.push(requireArg(argv, i, "--next"));
+    if (argv[i] === "--json-stdin") useJsonStdin = true;
+    if (argv[i] === "--clear") clear = true;
+  }
+
+  if (useJsonStdin) {
+    const input = await readJsonStdin() as Record<string, unknown>;
+    if (typeof input.summary === "string") summary = input.summary;
+    if (typeof input.owner_member_id === "string") ownerMemberId = input.owner_member_id;
+    if (Array.isArray(input.blockers)) {
+      blockers.splice(0, blockers.length, ...input.blockers.filter((v): v is string => typeof v === "string"));
+    }
+    if (Array.isArray(input.next_actions)) {
+      nextActions.splice(0, nextActions.length, ...input.next_actions.filter((v): v is string => typeof v === "string"));
+    }
+    if (input.clear === true) clear = true;
+  }
+
+  if (clear) {
+    await clearWorkflowStatus(contextDir);
+    jsonOut({ ok: true, cleared: true });
+    return;
+  }
+
+  if (!ownerMemberId) {
+    die("--owner <id> is required (or set ROBOPPI_AGENTS_MEMBER_ID)");
+  }
+  await validateMember(contextDir, ownerMemberId);
+
+  const status = await writeWorkflowStatus({
+    contextDir,
+    ownerMemberId,
+    summary,
+    blockers,
+    nextActions,
+  });
+  jsonOut({ ok: true, status });
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -742,9 +851,12 @@ USAGE
   roboppi agents message ack --context <dir> --for <id> --message-id <uuid>|--claim-token <token>
   roboppi agents message reply --context <dir> --for <id> --claim-token <token> --body <text> [--topic <t>] [--kind <k>] [--json-stdin]
   roboppi agents tasks add --context <dir> --title <t> --description <d> [--json-stdin]
-  roboppi agents tasks list --context <dir> [--status pending|in_progress|completed|blocked]
+  roboppi agents tasks list --context <dir> [--status pending|in_progress|completed|blocked|superseded]
   roboppi agents tasks claim --context <dir> --task-id <uuid> --member <id>
   roboppi agents tasks complete --context <dir> --task-id <uuid> --member <id> [--artifact <p>]
+  roboppi agents tasks supersede --context <dir> --task-id <uuid> --member <id> [--reason <text>] [--replacement-task-id <uuid>]
+  roboppi agents status get --context <dir>
+  roboppi agents status set --context <dir> --summary <text> [--owner <id>] [--blocker <text>]... [--next <text>]... [--json-stdin|--clear]
   roboppi agents chat --context <dir> [--as <member-id>] [--poll-ms <N>]
   roboppi agents housekeep --context <dir>
 
@@ -826,8 +938,24 @@ export async function runAgentsCli(argv: string[]): Promise<void> {
           case "complete":
             await handleTasksComplete(rest.slice(1));
             break;
+          case "supersede":
+            await handleTasksSupersede(rest.slice(1));
+            break;
           default:
-            die(`Unknown tasks subcommand: ${rest[0]}. Use: add|list|claim|complete`);
+            die(`Unknown tasks subcommand: ${rest[0]}. Use: add|list|claim|complete|supersede`);
+        }
+        break;
+
+      case "status":
+        switch (rest[0]) {
+          case "get":
+            await handleStatusGet(rest.slice(1));
+            break;
+          case "set":
+            await handleStatusSet(rest.slice(1));
+            break;
+          default:
+            die(`Unknown status subcommand: ${rest[0]}. Use: get|set`);
         }
         break;
 

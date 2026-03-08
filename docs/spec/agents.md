@@ -44,7 +44,7 @@ The following are treated as implemented baseline:
   - `init`
   - `members list`
   - `message send|broadcast|recv|ack`
-  - `tasks add|list|claim|complete`
+  - `tasks add|list|claim|complete|supersede`
   - `housekeep`
 - Metadata-only `_events.jsonl` emission for mailbox/tasks.
 - Capability wiring of `MAILBOX` / `TASKS` in workflow/daemon/type layers.

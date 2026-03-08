@@ -9,6 +9,7 @@ describe("TuiStateStore", () => {
     const store = new TuiStateStore();
     expect(store.state.steps.size).toBe(0);
     expect(store.state.stepOrder).toEqual([]);
+    expect(store.state.agentRosterOrder).toEqual([]);
     expect(store.state.followMode).toBe("running");
     expect(store.state.selectedTab).toBe("overview");
     expect(store.state.coreLogs.length).toBe(0);
@@ -113,6 +114,61 @@ describe("TuiStateStore", () => {
 
     const step = store.state.steps.get("s1")!;
     expect(step.phase).toBe("executing");
+  });
+
+  test("tracks current and last agent instructions from executing phases", () => {
+    const store = new TuiStateStore();
+    store.emit({
+      type: "step_phase",
+      stepId: "_agent:planner",
+      phase: "executing",
+      at: 1000,
+      detail: {
+        instructions: "You are planner.\nCheck tasks.",
+      },
+    });
+
+    let stats = store.state.agentRuntime.get("planner");
+    expect(stats?.dispatchCount).toBe(1);
+    expect(stats?.currentInstructions).toBe("You are planner.\nCheck tasks.");
+    expect(stats?.lastInstructions).toBe("You are planner.\nCheck tasks.");
+
+    store.emit({
+      type: "step_phase",
+      stepId: "_agent:planner",
+      phase: "ready",
+      at: 1500,
+    });
+
+    stats = store.state.agentRuntime.get("planner");
+    expect(stats?.currentInstructions).toBeUndefined();
+    expect(stats?.lastInstructions).toBe("You are planner.\nCheck tasks.");
+  });
+
+  test("syncs workflow status summary and marks store dirty only when changed", () => {
+    const store = new TuiStateStore();
+    store.syncWorkflowStatusSummary({
+      version: "1",
+      updated_at: 1000,
+      owner_member_id: "planner",
+      summary: "Implementer is working on the top blocker.",
+      blockers: ["kind bootstrap is failing"],
+      next_actions: ["wait for patch"],
+    });
+
+    expect(store.state.workflowStatusSummary?.owner_member_id).toBe("planner");
+    expect(store.dirty).toBe(true);
+
+    store.dirty = false;
+    store.syncWorkflowStatusSummary({
+      version: "1",
+      updated_at: 1000,
+      owner_member_id: "planner",
+      summary: "Implementer is working on the top blocker.",
+      blockers: ["kind bootstrap is failing"],
+      next_actions: ["wait for patch"],
+    });
+    expect(store.dirty).toBe(false);
   });
 
   test("handles worker_event stdout", () => {
@@ -296,6 +352,145 @@ describe("TuiStateStore", () => {
   test("accepts supervised option in constructor", () => {
     const store = new TuiStateStore({ supervised: true });
     expect(store.state.supervised).toBe(true);
+  });
+
+  test("syncs agent roster and marks the store dirty only when it changes", () => {
+    const store = new TuiStateStore();
+
+    store.syncAgentRoster([
+      { memberId: "manual_verifier", name: "manual_verifier", role: "dormant", agentId: "manual_verifier" },
+      { memberId: "reviewer", name: "reviewer", role: "member", agentId: "reviewer" },
+    ]);
+
+    expect(store.dirty).toBe(true);
+    expect(store.state.agentRosterOrder).toEqual(["manual_verifier", "reviewer"]);
+    expect(store.state.agentRoster.get("manual_verifier")?.role).toBe("dormant");
+
+    store.dirty = false;
+    store.syncAgentRoster([
+      { memberId: "manual_verifier", name: "manual_verifier", role: "dormant", agentId: "manual_verifier" },
+      { memberId: "reviewer", name: "reviewer", role: "member", agentId: "reviewer" },
+    ]);
+    expect(store.dirty).toBe(false);
+
+    store.syncAgentRoster([
+      { memberId: "manual_verifier", name: "manual_verifier", role: "member", agentId: "manual_verifier" },
+      { memberId: "reviewer", name: "reviewer", role: "member", agentId: "reviewer" },
+    ]);
+    expect(store.dirty).toBe(true);
+    expect(store.state.agentRoster.get("manual_verifier")?.role).toBe("member");
+  });
+
+  test("tracks agent dispatch counts, active time, and restarts", () => {
+    const store = new TuiStateStore();
+
+    store.emit({
+      type: "step_state",
+      stepId: "_agent:reviewer",
+      status: StepStatus.RUNNING,
+      iteration: 1,
+      maxIterations: 1,
+      startedAt: 1000,
+    });
+    store.emit({
+      type: "step_phase",
+      stepId: "_agent:reviewer",
+      phase: "executing",
+      at: 1200,
+    });
+    store.emit({
+      type: "step_phase",
+      stepId: "_agent:reviewer",
+      phase: "ready",
+      at: 1700,
+    });
+    store.emit({
+      type: "step_state",
+      stepId: "_agent:reviewer",
+      status: StepStatus.SUCCEEDED,
+      iteration: 1,
+      maxIterations: 1,
+      completedAt: 2000,
+    });
+    store.emit({
+      type: "step_state",
+      stepId: "_agent:reviewer",
+      status: StepStatus.RUNNING,
+      iteration: 2,
+      maxIterations: 2,
+      startedAt: 3000,
+    });
+    store.emit({
+      type: "step_phase",
+      stepId: "_agent:reviewer",
+      phase: "executing",
+      at: 3100,
+    });
+    store.emit({
+      type: "step_state",
+      stepId: "_agent:reviewer",
+      status: StepStatus.FAILED,
+      iteration: 2,
+      maxIterations: 2,
+      completedAt: 3600,
+      error: "timeout",
+    });
+
+    const stats = store.state.agentRuntime.get("reviewer");
+    expect(stats).toBeDefined();
+    expect(stats?.dispatchCount).toBe(2);
+    expect(stats?.restartCount).toBe(1);
+    expect(stats?.lastStartedAt).toBe(3000);
+    expect(stats?.lastStoppedAt).toBe(3600);
+    expect(stats?.lastDispatchStartedAt).toBe(3100);
+    expect(stats?.lastDispatchFinishedAt).toBe(3600);
+    expect(stats?.lastDispatchDurationMs).toBe(500);
+    expect(stats?.totalDispatchActiveMs).toBe(1000);
+    expect(stats?.currentlyDispatchingSince).toBeUndefined();
+  });
+
+  test("tracks token estimates and prompt bytes from agent worker results", () => {
+    const store = new TuiStateStore();
+
+    store.emit({
+      type: "worker_result",
+      stepId: "_agent:planner",
+      ts: 1000,
+      result: {
+        status: WorkerStatus.SUCCEEDED,
+        artifacts: [],
+        observations: [],
+        cost: {
+          wallTimeMs: 500,
+          estimatedTokens: 1200,
+          instructionBytes: 4096,
+        },
+        durationMs: 500,
+      },
+    });
+    store.emit({
+      type: "worker_result",
+      stepId: "_agent:planner",
+      ts: 2000,
+      result: {
+        status: WorkerStatus.SUCCEEDED,
+        artifacts: [],
+        observations: [],
+        cost: {
+          wallTimeMs: 300,
+          instructionBytes: 2048,
+        },
+        durationMs: 300,
+      },
+    });
+
+    const stats = store.state.agentRuntime.get("planner");
+    expect(stats).toBeDefined();
+    expect(stats?.tokenSampleCount).toBe(1);
+    expect(stats?.totalEstimatedTokens).toBe(1200);
+    expect(stats?.lastEstimatedTokens).toBe(1200);
+    expect(stats?.totalInstructionBytes).toBe(6144);
+    expect(stats?.lastInstructionBytes).toBe(2048);
   });
 
   // -------------------------------------------------------------------------

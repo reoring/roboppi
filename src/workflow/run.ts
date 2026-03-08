@@ -359,13 +359,17 @@ Options:
     printBranchContext(branchContext);
     console.log("");
 
+    const supervisedCoreEntryPoint = supervised
+      ? resolveCoreEntryPointForSupervised(coreEntryPointOverride)
+      : undefined;
+
     // Default supervised IPC transport.
     //
     // Probe child-stdio reliability first. If unavailable, prefer socket mode
     // (Supervisor already falls back socket -> tcp -> stdio at runtime).
     // (Override via ROBOPPI_SUPERVISED_IPC_TRANSPORT=stdio|socket|tcp.)
     if (supervised && process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT === undefined) {
-      const supportsStdio = await supportsChildBunStdinPipe();
+      const supportsStdio = await supportsChildBunStdinPipe(supervisedCoreEntryPoint);
       process.env.ROBOPPI_SUPERVISED_IPC_TRANSPORT = supportsStdio ? "stdio" : "socket";
       if (!supportsStdio) {
         process.stderr.write(
@@ -385,7 +389,7 @@ Options:
     const runner = supervised
       ? new CoreIpcStepRunner({
           verbose,
-          coreEntryPoint: resolveCoreEntryPointForSupervised(coreEntryPointOverride),
+          coreEntryPoint: supervisedCoreEntryPoint,
           ipcRequestTimeoutMs: resolveIpcRequestTimeoutMs(true, ipcRequestTimeout),
           captureCoreStderr: useTui && sink instanceof TuiStateStore,
           sink,
