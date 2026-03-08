@@ -147,31 +147,96 @@ export function isTaskClaimableBy(
 
 export function areTaskDependenciesSatisfied(
   task: Pick<AgentTask, "depends_on">,
-  completedTaskIds: ReadonlySet<string>,
+  taskStates: ReadonlyMap<string, Pick<AgentTask, "status" | "replacement_task_id">>,
 ): boolean {
-  return task.depends_on.every((dep) => completedTaskIds.has(dep));
+  return task.depends_on.every((dep) => isDependencyResolved(dep, taskStates));
 }
 
-async function readCompletedTaskIds(contextDir: string): Promise<Set<string>> {
-  const completedDir = tasksStatusDir(contextDir, "completed");
-  let completedEntries: string[];
-  try {
-    completedEntries = await readdir(completedDir);
-  } catch {
-    completedEntries = [];
+function isDependencyResolved(
+  taskId: string,
+  taskStates: ReadonlyMap<string, Pick<AgentTask, "status" | "replacement_task_id">>,
+  visiting: Set<string> = new Set(),
+): boolean {
+  const state = taskStates.get(taskId);
+  if (!state) return false;
+  if (state.status === "completed") return true;
+  if (state.status !== "superseded") return false;
+  if (!state.replacement_task_id) return true;
+  if (visiting.has(taskId)) return false;
+  visiting.add(taskId);
+  const resolved = isDependencyResolved(state.replacement_task_id, taskStates, visiting);
+  visiting.delete(taskId);
+  return resolved;
+}
+
+async function readTaskDependencyStates(
+  contextDir: string,
+): Promise<Map<string, Pick<AgentTask, "status" | "replacement_task_id">>> {
+  const tasks = await listTasks(contextDir);
+  return new Map(
+    tasks.map((task) => [
+      task.task_id,
+      {
+        status: task.status,
+        replacement_task_id: task.replacement_task_id,
+      },
+    ]),
+  );
+}
+
+async function unblockSatisfiedBlockedTasks(contextDir: string): Promise<number> {
+  const blocked = await listTasks(contextDir, "blocked");
+  if (blocked.length === 0) return 0;
+
+  const taskStates = await readTaskDependencyStates(contextDir);
+  const blockedDir = tasksStatusDir(contextDir, "blocked");
+  const pendingDir = tasksStatusDir(contextDir, "pending");
+  const tmpDir = tasksTmp(contextDir);
+  await mkdir(pendingDir, { recursive: true });
+
+  let unblocked = 0;
+  for (const task of blocked) {
+    if (!areTaskDependenciesSatisfied(task, taskStates)) continue;
+
+    const filename = `${task.task_id}.json`;
+    const blockedPath = resolve(blockedDir, filename);
+    const pendingPath = resolve(pendingDir, filename);
+    const now = Date.now();
+    task.status = "pending";
+    task.updated_at = now;
+    task.claimed_by = null;
+    task.claimed_at = null;
+
+    try {
+      await atomicJsonWrite(tmpDir, blockedPath, task);
+      await rename(blockedPath, pendingPath);
+    } catch {
+      continue;
+    }
+
+    taskStates.set(task.task_id, {
+      status: "pending",
+      replacement_task_id: task.replacement_task_id,
+    });
+
+    await appendTaskEvent(contextDir, {
+      ts: now,
+      type: "task_requeued",
+      task_id: task.task_id,
+      title: task.title,
+    });
+    unblocked++;
   }
 
-  return new Set(
-    completedEntries
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => f.replace(".json", "")),
-  );
+  return unblocked;
 }
 
 export async function hasActionableTaskForMember(
   contextDir: string,
   memberId: string,
 ): Promise<boolean> {
+  await unblockSatisfiedBlockedTasks(contextDir);
+
   const inProgress = await listTasks(contextDir, "in_progress");
   if (inProgress.some((task) => task.claimed_by === memberId)) {
     return true;
@@ -183,9 +248,9 @@ export async function hasActionableTaskForMember(
     return false;
   }
 
-  const completedTaskIds = await readCompletedTaskIds(contextDir);
+  const taskStates = await readTaskDependencyStates(contextDir);
   return claimablePending.some((task) =>
-    areTaskDependenciesSatisfied(task, completedTaskIds),
+    areTaskDependenciesSatisfied(task, taskStates),
   );
 }
 
@@ -249,8 +314,8 @@ export async function claimTask(
 
   // Check dependencies
   if (task.depends_on.length > 0) {
-    const completedIds = await readCompletedTaskIds(contextDir);
-    const unmet = task.depends_on.filter((dep) => !completedIds.has(dep));
+    const taskStates = await readTaskDependencyStates(contextDir);
+    const unmet = task.depends_on.filter((dep) => !isDependencyResolved(dep, taskStates));
     if (unmet.length > 0) {
       // Move to blocked/
       const blockedPath = resolve(blockedDir, filename);
@@ -394,6 +459,8 @@ export async function completeTask(
     by: memberId,
   });
 
+  await unblockSatisfiedBlockedTasks(contextDir);
+
   return { ok: true };
 }
 
@@ -466,6 +533,8 @@ export async function supersedeTask(
     reason,
     replacement_task_id: replacementTaskId,
   });
+
+  await unblockSatisfiedBlockedTasks(contextDir);
 
   return { ok: true };
 }

@@ -18,6 +18,7 @@ import {
   listTasks,
   claimTask,
   completeTask,
+  hasActionableTaskForMember,
   supersedeTask,
   validateArtifactPath,
 } from "../../../src/agents/task-store.js";
@@ -167,6 +168,42 @@ describe("claimTask", () => {
 
     const result = await claimTask(contextDir, taskId, "lead");
     expect(result.ok).toBe(true);
+  });
+
+  it("allows claim when dependencies are superseded without replacement", async () => {
+    const { taskId: dep } = await addTask({ contextDir, title: "Dependency", description: "" });
+    await supersedeTask(contextDir, dep, "lead", "no longer needed");
+
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+    });
+
+    const result = await claimTask(contextDir, taskId, "lead");
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps dependencies unmet when superseded task has unresolved replacement", async () => {
+    const { taskId: dep } = await addTask({ contextDir, title: "Dependency", description: "" });
+    const { taskId: replacement } = await addTask({
+      contextDir,
+      title: "Replacement",
+      description: "",
+    });
+    await supersedeTask(contextDir, dep, "lead", "moved", replacement);
+
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+    });
+
+    const result = await claimTask(contextDir, taskId, "lead");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Unmet dependencies");
   });
 
   it("emits task_claimed event", async () => {
@@ -341,5 +378,32 @@ describe("supersedeTask", () => {
     expect(superseded.by).toBe("lead");
     expect(superseded.reason).toBe("duplicate");
     expect(superseded.replacement_task_id).toBe("replacement-task");
+  });
+
+  it("requeues blocked dependents when a dependency is superseded terminally", async () => {
+    const { taskId: dep } = await addTask({
+      contextDir,
+      title: "Dependency",
+      description: "",
+      assignedTo: "lead",
+    });
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+      assignedTo: "alice",
+    });
+
+    const blockedClaim = await claimTask(contextDir, taskId, "alice");
+    expect(blockedClaim.ok).toBe(false);
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(false);
+
+    const superseded = await supersedeTask(contextDir, dep, "lead", "obsolete");
+    expect(superseded.ok).toBe(true);
+
+    const pendingEntries = await readdir(tasksStatusDir(contextDir, "pending"));
+    expect(pendingEntries).toContain(`${taskId}.json`);
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(true);
   });
 });
