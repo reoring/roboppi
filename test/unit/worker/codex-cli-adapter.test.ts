@@ -169,6 +169,40 @@ describe("CodexCliAdapter", () => {
       ]);
     });
 
+    test("should inject MCP server config overrides from adapter config", () => {
+      const customAdapter = new CodexCliAdapter(mockPm.pm, {
+        mcpServers: [
+          {
+            name: "apthctl_loop",
+            command: "bun",
+            args: ["run", "tools/apthctl-loop-mcp.ts"],
+            env: { LOOP_MODE: "test" },
+          },
+        ],
+      });
+      const task = createTask({
+        capabilities: [WorkerCapability.READ],
+      });
+      const command = customAdapter.buildCommand(task);
+
+      expect(command).toEqual([
+        "codex",
+        "exec",
+        "-c",
+        'mcp_servers.apthctl_loop.command="bun"',
+        "-c",
+        'mcp_servers.apthctl_loop.args=["run", "tools/apthctl-loop-mcp.ts"]',
+        "-c",
+        'mcp_servers.apthctl_loop.env={ LOOP_MODE = "test" }',
+        "--json",
+        "--cd",
+        "/tmp/test-workspace",
+        "--sandbox",
+        "read-only",
+        "Fix the bug in main.ts",
+      ]);
+    });
+
     test("should not append full-auto or sandbox when bypass mode is already requested", () => {
       const task = createTask({
         defaultArgs: ["--dangerously-bypass-approvals-and-sandbox"],

@@ -98,6 +98,15 @@ export function renderAgentOverviewTab(
     lines.push(`\x1b[1mBusy Time:\x1b[0m  ${formatMs(runtime.totalDispatchActiveMs)}`);
   }
 
+  if ((runtime?.mcpAvailable?.length ?? 0) > 0 || (runtime?.observedMcpTools?.length ?? 0) > 0) {
+    lines.push(`\x1b[1mMCP Ready:\x1b[0m ${formatList(runtime?.mcpAvailable, "none configured")}`);
+    lines.push(`\x1b[1mMCP Used:\x1b[0m  ${formatList(runtime?.observedMcpTools, "none observed")}`);
+  }
+  if ((runtime?.skillHints?.length ?? 0) > 0 || (runtime?.observedSkills?.length ?? 0) > 0) {
+    lines.push(`\x1b[1mSkill Hints:\x1b[0m ${formatList(runtime?.skillHints, "none referenced")}`);
+    lines.push(`\x1b[1mSkills Read:\x1b[0m ${formatList(runtime?.observedSkills, "none observed")}`);
+  }
+
   const instructionText = runtime?.currentInstructions ?? runtime?.lastInstructions;
   if (instructionText) {
     lines.push("");
@@ -226,6 +235,11 @@ function formatCompactCount(value: number): string {
 function formatTs(ts: number): string {
   const d = new Date(ts);
   return d.toISOString().replace("T", " ").slice(0, 19);
+}
+
+function formatList(values: string[] | undefined, emptyLabel: string): string {
+  if (!values || values.length === 0) return `\x1b[90m${emptyLabel}\x1b[0m`;
+  return values.map((value) => sanitizeForTui(value)).join(", ");
 }
 
 function appendWrappedBlock(

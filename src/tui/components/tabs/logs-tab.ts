@@ -91,6 +91,8 @@ function summarizeStructuredEvent(parsed: Record<string, unknown>): Array<{ chan
   const entries: Array<{ channel: string; line: string }> = [];
   const part = isRecord(parsed.part) ? parsed.part : undefined;
 
+  entries.push(...summarizeResponseItemLifecycle(parsed));
+
   if (part) {
     entries.push(...summarizeNestedPart(parsed, part));
   }
@@ -121,6 +123,86 @@ function summarizeStructuredEvent(parsed: Record<string, unknown>): Array<{ chan
   }
 
   return entries;
+}
+
+function summarizeResponseItemLifecycle(
+  parsed: Record<string, unknown>,
+): Array<{ channel: string; line: string }> {
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type !== "item.started" && type !== "item.completed") {
+    return [];
+  }
+
+  const phase = type === "item.started" ? "started" : "completed";
+  const item = isRecord(parsed.item) ? parsed.item : undefined;
+  if (!item) {
+    return [{ channel: "llm_turn", line: `response item ${phase}` }];
+  }
+
+  const itemType = typeof item.type === "string" ? item.type : undefined;
+  const itemName = typeof item.name === "string"
+    ? item.name
+    : (typeof item.role === "string" ? item.role : undefined);
+
+  if (itemType === "command_execution") {
+    const command = summarizeCommandExecution(item);
+    if (phase === "started") {
+      return [{
+        channel: "llm_tool_call",
+        line: command ? `Command started | ${command}` : "Command started",
+      }];
+    }
+
+    const result = summarizeCommandExecutionResult(item);
+    return [{
+      channel: "llm_result",
+      line: result ?? (command ? `Command completed | ${command}` : "Command completed"),
+    }];
+  }
+
+  if (itemType === "agent_message") {
+    const text = extractLifecycleDetail(item);
+    if (text) {
+      return [{ channel: "llm_message", line: text }];
+    }
+    return [{ channel: "llm_turn", line: `agent message ${phase}` }];
+  }
+
+  if (itemType && (itemType.includes("tool") || itemType.includes("function"))) {
+    const toolName = normalizeToolName(itemName ?? "tool");
+    const detail = extractLifecycleDetail(item);
+    return [{
+      channel: phase === "started" ? "llm_tool_call" : "llm_result",
+      line: detail ? `${toolName} ${phase} | ${detail}` : `${toolName} ${phase}`,
+    }];
+  }
+
+  if (itemType === "reasoning" || itemType === "analysis") {
+    const detail = extractLifecycleDetail(item);
+    return [{
+      channel: detail ? "llm_thinking" : "llm_turn",
+      line: detail ? detail : `reasoning ${phase}`,
+    }];
+  }
+
+  const contentItems = getContentItems(item);
+  if (phase === "completed" && contentItems.length > 0) {
+    const summarized = contentItems
+      .map((content) => summarizeContentItem(content))
+      .filter((value): value is { channel: string; line: string } => Boolean(value));
+    if (summarized.length > 0) {
+      return summarized;
+    }
+  }
+
+  const label = [itemType, itemName].filter(Boolean).join(" ");
+  const detail = extractLifecycleDetail(item);
+  return [{
+    channel: "llm_turn",
+    line: detail
+      ? `${label || "response item"} ${phase} | ${detail}`
+      : `${label || "response item"} ${phase}`,
+  }];
 }
 
 function summarizeNestedPart(
@@ -407,6 +489,77 @@ function formatCount(value: number): string {
 function normalizeToolName(name: string): string {
   if (!name) return "tool";
   return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function extractLifecycleDetail(item: Record<string, unknown>): string | undefined {
+  if (typeof item.summary === "string" && item.summary.trim()) {
+    return truncateInline(item.summary, 180);
+  }
+  if (typeof item.text === "string" && item.text.trim()) {
+    return truncateInline(item.text, 180);
+  }
+  if (typeof item.content === "string" && item.content.trim()) {
+    return truncateInline(item.content, 180);
+  }
+  if (typeof item.arguments === "string" && item.arguments.trim()) {
+    return truncateInline(item.arguments, 180);
+  }
+
+  const input = isRecord(item.input) ? item.input : undefined;
+  if (input) {
+    if (typeof input.description === "string" && input.description.trim()) {
+      return truncateInline(input.description, 180);
+    }
+    if (typeof input.command === "string" && input.command.trim()) {
+      return truncateInline(input.command, 180);
+    }
+  }
+
+  return undefined;
+}
+
+function summarizeCommandExecution(item: Record<string, unknown>): string | undefined {
+  if (typeof item.command !== "string" || !item.command.trim()) {
+    return undefined;
+  }
+
+  return truncateInline(stripShellWrapper(item.command), 180);
+}
+
+function summarizeCommandExecutionResult(item: Record<string, unknown>): string | undefined {
+  const command = summarizeCommandExecution(item);
+  const status = typeof item.status === "string" ? item.status : "completed";
+  const exitCode = typeof item.exit_code === "number" ? `exit=${item.exit_code}` : undefined;
+  const firstLine = typeof item.aggregated_output === "string"
+    ? truncateInline(
+        item.aggregated_output
+          .split("\n")
+          .map((line) => line.trim())
+          .find(Boolean) ?? "",
+        180,
+      )
+    : undefined;
+
+  const summary = ["Command", status, exitCode].filter(Boolean).join(" ");
+  if (firstLine) return `${summary} | ${firstLine}`;
+  if (command) return `${summary} | ${command}`;
+  return summary || undefined;
+}
+
+function stripShellWrapper(command: string): string {
+  const bashLcMatch = command.match(/^\/usr\/bin\/bash -lc (.+)$/);
+  if (!bashLcMatch) {
+    return command;
+  }
+
+  const wrapped = bashLcMatch[1] ?? "";
+  if (
+    (wrapped.startsWith("'") && wrapped.endsWith("'")) ||
+    (wrapped.startsWith("\"") && wrapped.endsWith("\""))
+  ) {
+    return wrapped.slice(1, -1);
+  }
+  return wrapped;
 }
 
 function padLines(lines: string[], height: number): string {

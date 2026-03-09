@@ -490,10 +490,10 @@ Implementation note:
 - Prefer `roboppi agents message ...` subcommands that accept structured JSON via
   stdin (`--json-stdin`) to avoid quoting errors.
 
-### 6.3 Optional: MCP server (future)
+### 6.3 MCP server
 
-For better ergonomics (no shell quoting, richer schemas), provide an MCP server
-`roboppi agents mcp` that exposes tools:
+For better ergonomics (no shell quoting, richer schemas), `roboppi agents mcp`
+exposes a stdio MCP server with tools:
 
 - `agents_send_message`
 - `agents_broadcast`
@@ -503,6 +503,11 @@ For better ergonomics (no shell quoting, richer schemas), provide an MCP server
 - `agents_tasks_list`
 - `agents_tasks_claim`
 - `agents_tasks_complete`
+- `agents_tasks_supersede`
+- `agents_status_get`
+- `agents_status_set`
+- `agents_specialist_activate`
+- `agents_specialist_deactivate`
 
 Teammate sessions (Claude Code) already load MCP servers as part of context.
 This aligns with the Claude agent teams note that teammates "load the same

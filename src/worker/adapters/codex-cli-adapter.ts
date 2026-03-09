@@ -1,6 +1,7 @@
 import { WorkerKind, WorkerCapability } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
 import type { Artifact, Observation } from "../../types/index.js";
+import type { McpServerConfig } from "../../types/mcp-server.js";
 import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
 import type { ProcessManager } from "../process-manager.js";
 import { BaseProcessAdapter } from "./base-process-adapter.js";
@@ -8,7 +9,51 @@ import { BaseProcessAdapter } from "./base-process-adapter.js";
 export interface CodexCliAdapterConfig {
   codexCommand?: string;
   defaultArgs?: string[];
+  mcpServers?: McpServerConfig[];
   gracePeriodMs?: number;
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlStringArray(values: string[]): string {
+  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
+}
+
+function tomlInlineTable(values: Record<string, string>): string {
+  return `{ ${Object.entries(values)
+    .map(([key, value]) => `${key} = ${tomlString(value)}`)
+    .join(", ")} }`;
+}
+
+function buildCodexMcpOverrides(servers: McpServerConfig[]): string[] {
+  const args: string[] = [];
+  for (const server of servers) {
+    const base = `mcp_servers.${server.name}`;
+    if (server.enabled !== undefined) {
+      args.push("-c", `${base}.enabled=${server.enabled ? "true" : "false"}`);
+    }
+    if (server.url) {
+      args.push("-c", `${base}.url=${tomlString(server.url)}`);
+      if (server.bearer_token_env_var) {
+        args.push(
+          "-c",
+          `${base}.bearer_token_env_var=${tomlString(server.bearer_token_env_var)}`,
+        );
+      }
+      continue;
+    }
+    if (!server.command) continue;
+    args.push("-c", `${base}.command=${tomlString(server.command)}`);
+    if (Array.isArray(server.args) && server.args.length > 0) {
+      args.push("-c", `${base}.args=${tomlStringArray(server.args)}`);
+    }
+    if (server.env && Object.keys(server.env).length > 0) {
+      args.push("-c", `${base}.env=${tomlInlineTable(server.env)}`);
+    }
+  }
+  return args;
 }
 
 function normalizeLegacyCodexArgs(args: string[]): string[] {
@@ -65,6 +110,7 @@ export class CodexCliAdapter extends BaseProcessAdapter {
     this.config = {
       codexCommand: config.codexCommand ?? "codex",
       defaultArgs: config.defaultArgs ?? [],
+      mcpServers: config.mcpServers ?? [],
       gracePeriodMs: config.gracePeriodMs ?? 5000,
     };
   }
@@ -93,6 +139,10 @@ export class CodexCliAdapter extends BaseProcessAdapter {
       args.push("--model", normalizeCodexModel(task.model));
     } else {
       args.push(...defaultArgs);
+    }
+
+    if (this.config.mcpServers.length > 0) {
+      args.push(...buildCodexMcpOverrides(this.config.mcpServers));
     }
 
     // Always use JSONL output for reliable parsing/logging.

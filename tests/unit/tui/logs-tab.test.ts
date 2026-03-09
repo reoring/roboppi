@@ -153,4 +153,48 @@ describe("renderLogsTab", () => {
     expect(output).toContain("[roboppi note]");
     expect(output).toContain("roboppi truncated worker logs");
   });
+
+  it("summarizes codex item lifecycle events for command execution and agent messages", () => {
+    const step = makeStep();
+    step.logs.stdout.push(JSON.stringify({
+      type: "item.started",
+      item: {
+        id: "item_32",
+        type: "command_execution",
+        command: "/usr/bin/bash -lc 'kind get clusters || true'",
+        aggregated_output: "",
+        exit_code: null,
+        status: "in_progress",
+      },
+    }));
+    step.logs.stdout.push(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_32",
+        type: "command_execution",
+        command: "/usr/bin/bash -lc 'kind get clusters || true'",
+        aggregated_output: "No kind clusters found.\n",
+        exit_code: 0,
+        status: "completed",
+      },
+    }));
+    step.logs.stdout.push(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_33",
+        type: "agent_message",
+        text: "I have confirmed the exact CLI surfaces I need before spending on create flow.",
+      },
+    }));
+
+    const output = renderLogsTab(step, 180, 20);
+    expect(output).toContain("[tool call]");
+    expect(output).toContain("Command started | kind get clusters || true");
+    expect(output).toContain("[result]");
+    expect(output).toContain("Command completed exit=0 | No kind clusters found.");
+    expect(output).toContain("[message]");
+    expect(output).toContain("I have confirmed the exact CLI surfaces I need");
+    expect(output).not.toContain("structured event: item.started");
+    expect(output).not.toContain("structured event: item.completed");
+  });
 });

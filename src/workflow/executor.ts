@@ -80,6 +80,44 @@ const CONVERGENCE_ARTIFACT_DIR = "_convergence";
 const MAX_CONVERGENCE_SIGNAL_ITEMS = 40;
 const DEFAULT_PRE_STEP_HOOK_CONCURRENCY = 2;
 
+function extractSkillHints(text?: string): string[] {
+  if (!text) return [];
+  const matches = text.match(/(?:\.\/)?skills\/[A-Za-z0-9._-]+\/SKILL\.md/g) ?? [];
+  const names = new Set<string>();
+  for (const match of matches) {
+    const normalized = match.trim().replace(/^\.\/?/, "");
+    const parts = normalized.split("/");
+    if (parts.length >= 3 && parts[0] === "skills") {
+      names.add(parts[1]!);
+    }
+  }
+  return [...names].sort();
+}
+
+function summarizeAgentProfileUsage(profile: AgentProfile | undefined): {
+  mcpAvailable?: string[];
+  skillHints?: string[];
+} {
+  if (!profile) return {};
+  const mcpAvailable = new Set<string>();
+  for (const config of profile.mcp_configs ?? []) {
+    const trimmed = config.trim();
+    if (!trimmed) continue;
+    const base = path.basename(trimmed).replace(/\.claude\.json$/i, "").replace(/\.json$/i, "");
+    mcpAvailable.add(base);
+  }
+  for (const server of profile.mcp_servers ?? []) {
+    if (server.name?.trim()) {
+      mcpAvailable.add(server.name.trim());
+    }
+  }
+  const skillHints = extractSkillHints(profile.base_instructions);
+  return {
+    mcpAvailable: mcpAvailable.size > 0 ? [...mcpAvailable].sort() : undefined,
+    skillHints: skillHints.length > 0 ? skillHints : undefined,
+  };
+}
+
 export interface StepRunner {
   runStep(
     stepId: string,
@@ -458,6 +496,17 @@ export class WorkflowExecutor {
         steps: Object.keys(this.stepDefs),
         concurrency: this.concurrency === Infinity ? undefined : this.concurrency,
         timeout: this.definition.timeout,
+        agentProfiles: this.definition.agents?.members
+          ? Object.fromEntries(
+              Object.entries(this.definition.agents.members).map(([memberId, memberCfg]) => [
+                memberId,
+                {
+                  agentId: memberCfg.agent,
+                  ...summarizeAgentProfileUsage(this.agentCatalog?.[memberCfg.agent]),
+                },
+              ]),
+            )
+          : undefined,
       },
     });
     for (const [stepId, stepDef] of Object.entries(this.stepDefs)) {

@@ -857,6 +857,7 @@ USAGE
   roboppi agents tasks supersede --context <dir> --task-id <uuid> --member <id> [--reason <text>] [--replacement-task-id <uuid>]
   roboppi agents status get --context <dir>
   roboppi agents status set --context <dir> --summary <text> [--owner <id>] [--blocker <text>]... [--next <text>]... [--json-stdin|--clear]
+  roboppi agents mcp [--context <dir>]
   roboppi agents chat --context <dir> [--as <member-id>] [--poll-ms <N>]
   roboppi agents housekeep --context <dir>
 
@@ -958,6 +959,12 @@ export async function runAgentsCli(argv: string[]): Promise<void> {
             die(`Unknown status subcommand: ${rest[0]}. Use: get|set`);
         }
         break;
+
+      case "mcp": {
+        const { runAgentsMcp } = await import("./mcp.js");
+        await runAgentsMcp(rest);
+        break;
+      }
 
       case "chat":
         await handleChat(rest);

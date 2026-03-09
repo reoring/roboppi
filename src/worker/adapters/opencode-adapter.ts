@@ -1,6 +1,7 @@
 import { WorkerKind } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
 import type { Artifact, Observation } from "../../types/index.js";
+import type { McpServerConfig } from "../../types/mcp-server.js";
 import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
 import type { ProcessManager } from "../process-manager.js";
 import { BaseProcessAdapter } from "./base-process-adapter.js";
@@ -8,6 +9,7 @@ import { BaseProcessAdapter } from "./base-process-adapter.js";
 export interface OpenCodeAdapterConfig {
   openCodeCommand?: string;
   defaultArgs?: string[];
+  mcpServers?: McpServerConfig[];
   gracePeriodMs?: number;
 }
 
@@ -75,6 +77,7 @@ export class OpenCodeAdapter extends BaseProcessAdapter {
     this.config = {
       openCodeCommand: config.openCodeCommand ?? "opencode",
       defaultArgs: config.defaultArgs ?? [],
+      mcpServers: config.mcpServers ?? [],
       gracePeriodMs: config.gracePeriodMs ?? 5000,
     };
   }
@@ -82,6 +85,63 @@ export class OpenCodeAdapter extends BaseProcessAdapter {
   buildCommand(task: WorkerTask): string[] {
     const args = buildArgs(task, this.config);
     return [this.config.openCodeCommand, ...args];
+  }
+
+  protected override buildProcessEnv(task: WorkerTask): Record<string, string> | undefined {
+    const base = task.env ? { ...task.env } : {};
+    if (this.config.mcpServers.length === 0) {
+      return Object.keys(base).length > 0 ? base : undefined;
+    }
+
+    const existingContent = base.OPENCODE_CONFIG_CONTENT;
+    let parsed: Record<string, unknown> = {};
+    if (typeof existingContent === "string" && existingContent.trim() !== "") {
+      try {
+        const candidate = JSON.parse(existingContent);
+        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+          parsed = candidate as Record<string, unknown>;
+        }
+      } catch {
+        // Ignore malformed caller-provided content and replace it with a valid object.
+      }
+    }
+
+    const mcp = parsed["mcp"] && typeof parsed["mcp"] === "object" && !Array.isArray(parsed["mcp"])
+      ? { ...(parsed["mcp"] as Record<string, unknown>) }
+      : {};
+
+    for (const server of this.config.mcpServers) {
+      if (server.url) {
+        const remoteRecord: Record<string, unknown> = {
+          type: "remote",
+          url: server.url,
+        };
+        if (server.enabled !== undefined) {
+          remoteRecord.enabled = server.enabled;
+        }
+        mcp[server.name] = remoteRecord;
+        continue;
+      }
+      if (!server.command) continue;
+      const localRecord: Record<string, unknown> = {
+        type: "local",
+        command: [server.command, ...(server.args ?? [])],
+      };
+      if (server.enabled !== undefined) {
+        localRecord.enabled = server.enabled;
+      }
+      if (server.env && Object.keys(server.env).length > 0) {
+        localRecord.environment = server.env;
+      }
+      mcp[server.name] = localRecord;
+    }
+
+    const configContent = {
+      ...parsed,
+      mcp,
+    };
+    base.OPENCODE_CONFIG_CONTENT = JSON.stringify(configContent);
+    return base;
   }
 
   async cancel(handle: WorkerHandle): Promise<void> {

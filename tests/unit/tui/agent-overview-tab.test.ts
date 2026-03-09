@@ -166,6 +166,43 @@ describe("renderAgentOverviewTab", () => {
     expect(output).toContain("Reply to lead.");
   });
 
+  it("renders configured and observed MCP/skill usage", () => {
+    const step = makeStep("_agent:manual_verifier", {
+      startedAt: Date.parse("2026-03-09T00:10:00.000Z"),
+      phase: "ready",
+    });
+    const state = makeState([step], [{ memberId: "manual_verifier", name: "manual_verifier", role: "member", agentId: "manual_verifier" }]);
+    state.agentRuntime.set("manual_verifier", {
+      memberId: "manual_verifier",
+      dispatchCount: 1,
+      restartCount: 0,
+      totalDispatchActiveMs: 10_000,
+      mcpAvailable: ["apthctl_loop"],
+      skillHints: ["apthctl-live-cluster-retention", "apthctl-kubernetes-debug"],
+      observedMcpTools: ["apthctl_loop.live_cluster_reuse_candidates"],
+      observedSkills: ["apthctl-live-cluster-retention"],
+    });
+
+    const output = renderAgentOverviewTab(
+      state,
+      step,
+      state.agentRoster.get("manual_verifier"),
+      "manual_verifier",
+      120,
+      30,
+    );
+
+    expect(output).toContain("MCP Ready:");
+    expect(output).toContain("apthctl_loop");
+    expect(output).toContain("MCP Used:");
+    expect(output).toContain("apthctl_loop.live_cluster_reuse_candidates");
+    expect(output).toContain("Skill Hints:");
+    expect(output).toContain("apthctl-live-cluster-retention");
+    expect(output).toContain("apthctl-kubernetes-debug");
+    expect(output).toContain("Skills Read:");
+    expect(output).toContain("apthctl-live-cluster-retention");
+  });
+
   it("renders last instructions after a dispatch has finished", () => {
     const step = makeStep("_agent:planner", {
       startedAt: Date.parse("2026-03-09T00:10:00.000Z"),

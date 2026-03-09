@@ -65,6 +65,10 @@ export interface AgentRuntimeStats {
   memberId: string;
   dispatchCount: number;
   restartCount: number;
+  mcpAvailable?: string[];
+  skillHints?: string[];
+  observedMcpTools?: string[];
+  observedSkills?: string[];
   tokenSampleCount?: number;
   totalEstimatedTokens?: number;
   lastEstimatedTokens?: number;
@@ -164,6 +168,40 @@ function arraysEqual(a?: string[], b?: string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function uniqueSorted(values?: string[]): string[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return [...new Set(values.filter((value) => value.trim().length > 0))].sort();
+}
+
+function mergeUniqueSorted(existing: string[] | undefined, next: string[]): string[] | undefined {
+  if (next.length === 0) return existing;
+  return uniqueSorted([...(existing ?? []), ...next]);
+}
+
+function extractSkillNames(text: string): string[] {
+  const matches = text.match(/(?:\.\/)?skills\/[A-Za-z0-9._-]+\/SKILL\.md/g) ?? [];
+  const names = new Set<string>();
+  for (const match of matches) {
+    const normalized = match.trim().replace(/^\.\/?/, "");
+    const parts = normalized.split("/");
+    if (parts.length >= 3 && parts[0] === "skills") {
+      names.add(parts[1]!);
+    }
+  }
+  return [...names].sort();
+}
+
+function extractObservedMcpTools(text: string): string[] {
+  const matches = [...text.matchAll(/mcp__([A-Za-z0-9_-]+)__([A-Za-z0-9_-]+)/g)];
+  const tools = new Set<string>();
+  for (const match of matches) {
+    const server = match[1];
+    const tool = match[2];
+    if (server && tool) tools.add(`${server}.${tool}`);
+  }
+  return [...tools].sort();
 }
 
 export class TuiStateStore implements ExecEventSink {
@@ -345,6 +383,11 @@ export class TuiStateStore implements ExecEventSink {
       for (const stepId of event.definitionSummary.steps) {
         this.getOrCreateStep(stepId);
       }
+      for (const [memberId, profile] of Object.entries(event.definitionSummary.agentProfiles ?? {})) {
+        const stats = this.getOrCreateAgentRuntime(memberId);
+        stats.mcpAvailable = uniqueSorted(profile.mcpAvailable);
+        stats.skillHints = uniqueSorted(profile.skillHints);
+      }
     }
   }
 
@@ -411,6 +454,7 @@ export class TuiStateStore implements ExecEventSink {
       if (instructions) {
         stats.currentInstructions = instructions;
         stats.lastInstructions = instructions;
+        stats.skillHints = mergeUniqueSorted(stats.skillHints, extractSkillNames(instructions));
       }
       return;
     }
@@ -429,13 +473,23 @@ export class TuiStateStore implements ExecEventSink {
   ): void {
     const step = this.getOrCreateStep(event.stepId);
     const we = event.event;
+    const memberId = agentMemberId(event.stepId);
+    const stats = memberId ? this.getOrCreateAgentRuntime(memberId) : undefined;
 
     switch (we.type) {
       case "stdout":
         step.logs.stdout.push(we.data);
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.data));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.data));
+        }
         break;
       case "stderr":
         step.logs.stderr.push(we.data);
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.data));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.data));
+        }
         break;
       case "progress":
         step.logs.progress.push(we.message);
@@ -444,6 +498,10 @@ export class TuiStateStore implements ExecEventSink {
           message: we.message,
           percent: we.percent,
         };
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.message));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.message));
+        }
         break;
       case "patch": {
         const id = generateId();

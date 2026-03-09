@@ -38,6 +38,7 @@ import type { WorkerTask, WorkerResult } from "../types/index.js";
 import type { WorkerAdapter } from "../worker/worker-adapter.js";
 import type { ExecEventSink } from "../tui/exec-event.js";
 import type { AgentProfile } from "../workflow/agent-catalog.js";
+import type { McpServerConfig } from "../types/mcp-server.js";
 import type { ReceivedMessage } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -64,7 +65,26 @@ interface SessionEntry {
 }
 
 function cloneProfileDefaultArgs(profile: AgentProfile): string[] {
-  return Array.isArray(profile.defaultArgs) ? [...profile.defaultArgs] : [];
+  const args = Array.isArray(profile.defaultArgs) ? [...profile.defaultArgs] : [];
+  if (profile.worker === "CLAUDE_CODE" && Array.isArray(profile.mcp_configs)) {
+    for (const config of profile.mcp_configs) {
+      args.push("--mcp-config", config);
+    }
+    if (profile.strict_mcp_config) {
+      args.push("--strict-mcp-config");
+    }
+  }
+  return args;
+}
+
+function cloneProfileMcpServers(profile: AgentProfile): McpServerConfig[] {
+  return Array.isArray(profile.mcp_servers)
+    ? profile.mcp_servers.map((server) => ({
+        ...server,
+        ...(server.args ? { args: [...server.args] } : {}),
+        ...(server.env ? { env: { ...server.env } } : {}),
+      }))
+    : [];
 }
 
 export function createAdapterForAgentProfile(
@@ -72,12 +92,13 @@ export function createAdapterForAgentProfile(
   profile: AgentProfile,
 ): WorkerAdapter {
   const defaultArgs = cloneProfileDefaultArgs(profile);
+  const mcpServers = cloneProfileMcpServers(profile);
 
   switch (profile.worker) {
     case "OPENCODE":
-      return new OpenCodeAdapter(processManager, { defaultArgs });
+      return new OpenCodeAdapter(processManager, { defaultArgs, mcpServers });
     case "CODEX_CLI":
-      return new CodexCliAdapter(processManager, { defaultArgs });
+      return new CodexCliAdapter(processManager, { defaultArgs, mcpServers });
     case "CLAUDE_CODE":
     default:
       return new ClaudeCodeAdapter(

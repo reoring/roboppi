@@ -30,6 +30,13 @@ describe("TuiStateStore", () => {
         steps: ["step-a", "step-b"],
         concurrency: 2,
         timeout: "30m",
+        agentProfiles: {
+          planner: {
+            agentId: "implementation_planner",
+            mcpAvailable: ["apthctl_loop", "roboppi_agents"],
+            skillHints: ["apthctl-todo-sync", "apthctl-rerun-provenance"],
+          },
+        },
       },
     };
 
@@ -45,6 +52,11 @@ describe("TuiStateStore", () => {
     expect(store.state.stepOrder).toEqual(["step-a", "step-b"]);
     expect(store.state.steps.get("step-a")?.status).toBe("PENDING");
     expect(store.state.steps.get("step-b")?.status).toBe("PENDING");
+    expect(store.state.agentRuntime.get("planner")?.mcpAvailable).toEqual(["apthctl_loop", "roboppi_agents"]);
+    expect(store.state.agentRuntime.get("planner")?.skillHints).toEqual([
+      "apthctl-rerun-provenance",
+      "apthctl-todo-sync",
+    ]);
   });
 
   test("handles workflow_finished event", () => {
@@ -124,14 +136,15 @@ describe("TuiStateStore", () => {
       phase: "executing",
       at: 1000,
       detail: {
-        instructions: "You are planner.\nCheck tasks.",
+        instructions: "You are planner.\nUse skills/apthctl-todo-sync/SKILL.md.\nCheck tasks.",
       },
     });
 
     let stats = store.state.agentRuntime.get("planner");
     expect(stats?.dispatchCount).toBe(1);
-    expect(stats?.currentInstructions).toBe("You are planner.\nCheck tasks.");
-    expect(stats?.lastInstructions).toBe("You are planner.\nCheck tasks.");
+    expect(stats?.currentInstructions).toBe("You are planner.\nUse skills/apthctl-todo-sync/SKILL.md.\nCheck tasks.");
+    expect(stats?.lastInstructions).toBe("You are planner.\nUse skills/apthctl-todo-sync/SKILL.md.\nCheck tasks.");
+    expect(stats?.skillHints).toEqual(["apthctl-todo-sync"]);
 
     store.emit({
       type: "step_phase",
@@ -142,7 +155,40 @@ describe("TuiStateStore", () => {
 
     stats = store.state.agentRuntime.get("planner");
     expect(stats?.currentInstructions).toBeUndefined();
-    expect(stats?.lastInstructions).toBe("You are planner.\nCheck tasks.");
+    expect(stats?.lastInstructions).toBe("You are planner.\nUse skills/apthctl-todo-sync/SKILL.md.\nCheck tasks.");
+  });
+
+  test("tracks observed MCP tools and skills from worker logs", () => {
+    const store = new TuiStateStore();
+
+    store.emit({
+      type: "worker_event",
+      stepId: "_agent:manual_verifier",
+      ts: 1000,
+      event: {
+        type: "stdout",
+        data: JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              name: "mcp__apthctl_loop__live_cluster_reuse_candidates",
+              input: { issue_id: "issue-1" },
+            },
+            {
+              type: "tool_use",
+              name: "Read",
+              input: { file_path: "skills/apthctl-live-cluster-retention/SKILL.md" },
+            },
+          ],
+        }),
+      },
+    });
+
+    const stats = store.state.agentRuntime.get("manual_verifier");
+    expect(stats?.observedMcpTools).toEqual(["apthctl_loop.live_cluster_reuse_candidates"]);
+    expect(stats?.observedSkills).toEqual(["apthctl-live-cluster-retention"]);
   });
 
   test("syncs workflow status summary and marks store dirty only when changed", () => {

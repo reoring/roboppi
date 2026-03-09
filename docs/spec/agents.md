@@ -24,7 +24,7 @@ Out of scope for this document:
 
 - multi-host agents support
 - nested agentss
-- MCP transport delivery (`roboppi agents mcp`) in v1
+- broader MCP coverage beyond the current `roboppi agents mcp` surface
 
 ## 1. Source Of Truth
 

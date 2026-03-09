@@ -1,6 +1,7 @@
 import YAML from "yaml";
 
 import type { StepDefinition, DurationString } from "./types.js";
+import type { McpServerConfig } from "../types/mcp-server.js";
 
 export type AgentWorkerKind = NonNullable<StepDefinition["worker"]>;
 export type AgentCapability = NonNullable<StepDefinition["capabilities"]>[number];
@@ -13,6 +14,15 @@ export interface AgentProfile {
 
   /** Optional CLI arguments forwarded to the selected resident worker adapter. */
   defaultArgs?: string[];
+
+  /** Optional Claude Code MCP config files or JSON strings. */
+  mcp_configs?: string[];
+
+  /** Optional generic MCP server definitions for worker-native injection. */
+  mcp_servers?: McpServerConfig[];
+
+  /** Optional Claude Code flag to ignore non-explicit MCP sources. */
+  strict_mcp_config?: boolean;
 
   /** Default model identifier (adapter-specific). */
   model?: string;
@@ -92,6 +102,58 @@ function validateOptionalStringArray(value: unknown, field: string): void {
   for (const item of value) {
     if (typeof item !== "string") {
       throw new AgentCatalogParseError(`"${field}" must contain only strings`);
+    }
+  }
+}
+
+function validateOptionalBoolean(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw new AgentCatalogParseError(`"${field}" must be a boolean`);
+  }
+}
+
+function validateOptionalStringRecord(value: unknown, field: string): void {
+  if (value === undefined) return;
+  assertObject(value, field);
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") {
+      throw new AgentCatalogParseError(`"${field}.${key}" must be a string`);
+    }
+  }
+}
+
+function validateOptionalMcpServers(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new AgentCatalogParseError(`"${field}" must be an array`);
+  }
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    assertObject(item, `${field}[${i}]`);
+    validateOptionalNonEmptyString(item["name"], `${field}[${i}].name`);
+    const name = item["name"];
+    if (typeof name === "string" && !/^[A-Za-z0-9_-]+$/.test(name)) {
+      throw new AgentCatalogParseError(
+        `"${field}[${i}].name" must match /^[A-Za-z0-9_-]+$/ (got "${name}")`,
+      );
+    }
+    validateOptionalNonEmptyString(item["command"], `${field}[${i}].command`);
+    validateOptionalStringArray(item["args"], `${field}[${i}].args`);
+    validateOptionalStringRecord(item["env"], `${field}[${i}].env`);
+    validateOptionalNonEmptyString(item["url"], `${field}[${i}].url`);
+    validateOptionalNonEmptyString(
+      item["bearer_token_env_var"],
+      `${field}[${i}].bearer_token_env_var`,
+    );
+    validateOptionalBoolean(item["enabled"], `${field}[${i}].enabled`);
+
+    const hasCommand = typeof item["command"] === "string";
+    const hasUrl = typeof item["url"] === "string";
+    if (hasCommand === hasUrl) {
+      throw new AgentCatalogParseError(
+        `"${field}[${i}]" must specify exactly one of "command" or "url"`,
+      );
     }
   }
 }
@@ -180,6 +242,9 @@ export function parseAgentCatalog(yamlContent: string): AgentCatalog {
     validateOptionalNonEmptyString(obj["description"], `agents.${agentId}.description`);
     validateOptionalWorker(obj["worker"], `agents.${agentId}.worker`);
     validateOptionalStringArray(obj["defaultArgs"], `agents.${agentId}.defaultArgs`);
+    validateOptionalStringArray(obj["mcp_configs"], `agents.${agentId}.mcp_configs`);
+    validateOptionalMcpServers(obj["mcp_servers"], `agents.${agentId}.mcp_servers`);
+    validateOptionalBoolean(obj["strict_mcp_config"], `agents.${agentId}.strict_mcp_config`);
     validateOptionalNonEmptyString(obj["model"], `agents.${agentId}.model`);
     validateOptionalNonEmptyString(obj["variant"], `agents.${agentId}.variant`);
     // Allow empty string to intentionally clear inherited base_instructions.

@@ -51,6 +51,9 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
   abstract streamEvents(handle: WorkerHandle): AsyncIterable<WorkerEvent>;
   protected abstract parseArtifacts(stdout: string): Artifact[];
   protected abstract parseObservations(stdout: string): Observation[];
+  protected buildProcessEnv(task: WorkerTask): Record<string, string> | undefined {
+    return task.env;
+  }
 
   async startTask(task: WorkerTask): Promise<WorkerHandle> {
     const command = this.buildCommand(task);
@@ -58,13 +61,14 @@ export abstract class BaseProcessAdapter implements WorkerAdapter {
 
     // Merge process.env with task.env so we don't accidentally drop PATH/HOME/etc.
     // (Bun.spawn replaces the environment when `env` is provided.)
-    const mergedEnv: Record<string, string> | undefined = task.env
+    const builtEnv = this.buildProcessEnv(task);
+    const mergedEnv: Record<string, string> | undefined = builtEnv
       ? (() => {
           const base: Record<string, string> = {};
           for (const [k, v] of Object.entries(process.env)) {
             if (v !== undefined) base[k] = v;
           }
-          return { ...base, ...task.env };
+          return { ...base, ...builtEnv };
         })()
       : undefined;
 
