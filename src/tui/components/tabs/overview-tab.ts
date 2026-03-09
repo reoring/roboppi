@@ -51,6 +51,29 @@ export function renderOverviewTab(
     );
   }
 
+  lines.push("");
+  lines.push("\x1b[1m\u2500\u2500 Summary \u2500\u2500\x1b[0m");
+
+  const summary = state.workflowStatusSummary;
+  if (!summary) {
+    lines.push("\x1b[90mNo agent summary yet\x1b[0m");
+  } else {
+    lines.push(...wrapParagraph(summary.summary, w, ""));
+    lines.push(
+      ...wrapKeyValue(
+        `\x1b[1mUpdated:\x1b[0m `,
+        sanitizeForTui(`${formatTs(summary.updated_at)} by ${summary.owner_member_id}`),
+        w,
+      ),
+    );
+    if (summary.blockers.length > 0) {
+      lines.push(...wrapList("Blockers", summary.blockers, w));
+    }
+    if (summary.next_actions.length > 0) {
+      lines.push(...wrapList("Next", summary.next_actions, w));
+    }
+  }
+
   // Workflow summary
   lines.push("");
   lines.push("\x1b[1m\u2500\u2500 Workflow Summary \u2500\u2500\x1b[0m");
@@ -88,6 +111,34 @@ function formatMs(ms: number): string {
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   return `${m}m${s % 60}s`;
+}
+
+function formatTs(ts: number): string {
+  return new Date(ts).toISOString().replace("T", " ").slice(0, 19);
+}
+
+function wrapParagraph(text: string, width: number, indent: string): string[] {
+  const available = Math.max(0, width - ansiWidth(indent));
+  const lines: string[] = [];
+  for (const raw of sanitizeForTui(text).split("\n")) {
+    const chunks = ansiWrap(raw, available);
+    if (chunks.length === 0) {
+      lines.push(indent);
+      continue;
+    }
+    for (const chunk of chunks) {
+      lines.push(indent + chunk);
+    }
+  }
+  return lines;
+}
+
+function wrapList(title: string, items: string[], width: number): string[] {
+  const lines: string[] = [`\x1b[1m${title}:\x1b[0m`];
+  for (const item of items) {
+    lines.push(...wrapParagraph(item, width, "  - "));
+  }
+  return lines;
 }
 
 function padLines(lines: string[], height: number): string {

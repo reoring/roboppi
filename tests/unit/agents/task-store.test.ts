@@ -18,6 +18,8 @@ import {
   listTasks,
   claimTask,
   completeTask,
+  hasActionableTaskForMember,
+  supersedeTask,
   validateArtifactPath,
 } from "../../../src/agents/task-store.js";
 import {
@@ -168,6 +170,42 @@ describe("claimTask", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("allows claim when dependencies are superseded without replacement", async () => {
+    const { taskId: dep } = await addTask({ contextDir, title: "Dependency", description: "" });
+    await supersedeTask(contextDir, dep, "lead", "no longer needed");
+
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+    });
+
+    const result = await claimTask(contextDir, taskId, "lead");
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps dependencies unmet when superseded task has unresolved replacement", async () => {
+    const { taskId: dep } = await addTask({ contextDir, title: "Dependency", description: "" });
+    const { taskId: replacement } = await addTask({
+      contextDir,
+      title: "Replacement",
+      description: "",
+    });
+    await supersedeTask(contextDir, dep, "lead", "moved", replacement);
+
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+    });
+
+    const result = await claimTask(contextDir, taskId, "lead");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Unmet dependencies");
+  });
+
   it("emits task_claimed event", async () => {
     const { taskId } = await addTask({ contextDir, title: "Claim Event", description: "" });
     await claimTask(contextDir, taskId, "alice");
@@ -292,5 +330,80 @@ describe("metadata-only task events", () => {
     expect(eventsRaw).not.toContain("SECRET_DESCRIPTION_CONTENT");
     // Title IS included (metadata-only contract allows title)
     expect(eventsRaw).toContain("Public Title");
+  });
+});
+
+
+describe("supersedeTask", () => {
+  it("moves a pending task to superseded/ with metadata", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Supersede Me", description: "" });
+
+    const result = await supersedeTask(contextDir, taskId, "lead", "stale contract", "replacement-task");
+    expect(result.ok).toBe(true);
+
+    const supersededEntries = await readdir(tasksStatusDir(contextDir, "superseded"));
+    expect(supersededEntries).toContain(`${taskId}.json`);
+
+    const raw = await readFile(
+      path.join(tasksStatusDir(contextDir, "superseded"), `${taskId}.json`),
+      "utf-8",
+    );
+    const task = JSON.parse(raw);
+    expect(task.status).toBe("superseded");
+    expect(task.superseded_by).toBe("lead");
+    expect(task.supersede_reason).toBe("stale contract");
+    expect(task.replacement_task_id).toBe("replacement-task");
+  });
+
+  it("moves an in_progress task to superseded/", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Claim Then Supersede", description: "" });
+    await claimTask(contextDir, taskId, "alice");
+
+    const result = await supersedeTask(contextDir, taskId, "lead", "replaced");
+    expect(result.ok).toBe(true);
+
+    const supersededEntries = await readdir(tasksStatusDir(contextDir, "superseded"));
+    expect(supersededEntries).toContain(`${taskId}.json`);
+  });
+
+  it("emits task_superseded event", async () => {
+    const { taskId } = await addTask({ contextDir, title: "Supersede Event", description: "" });
+
+    await supersedeTask(contextDir, taskId, "lead", "duplicate", "replacement-task");
+
+    const eventsRaw = await readFile(tasksEventsPath(contextDir), "utf-8");
+    const events = eventsRaw.trim().split("\n").map((l) => JSON.parse(l));
+    const superseded = events.find((e: any) => e.type === "task_superseded");
+    expect(superseded).toBeTruthy();
+    expect(superseded.by).toBe("lead");
+    expect(superseded.reason).toBe("duplicate");
+    expect(superseded.replacement_task_id).toBe("replacement-task");
+  });
+
+  it("requeues blocked dependents when a dependency is superseded terminally", async () => {
+    const { taskId: dep } = await addTask({
+      contextDir,
+      title: "Dependency",
+      description: "",
+      assignedTo: "lead",
+    });
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Dependent Task",
+      description: "",
+      dependsOn: [dep],
+      assignedTo: "alice",
+    });
+
+    const blockedClaim = await claimTask(contextDir, taskId, "alice");
+    expect(blockedClaim.ok).toBe(false);
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(false);
+
+    const superseded = await supersedeTask(contextDir, dep, "lead", "obsolete");
+    expect(superseded.ok).toBe(true);
+
+    const pendingEntries = await readdir(tasksStatusDir(contextDir, "pending"));
+    expect(pendingEntries).toContain(`${taskId}.json`);
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(true);
   });
 });

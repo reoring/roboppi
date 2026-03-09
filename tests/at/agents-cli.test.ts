@@ -7,9 +7,10 @@
  * Covers design §11.3.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 
 const REPO_ROOT = process.cwd();
 const TEST_TMP_ROOT = path.join(REPO_ROOT, ".roboppi-loop", "tmp", "at-agents-cli");
@@ -50,13 +51,44 @@ function createCleanEnv(extra?: Record<string, string | undefined>): NodeJS.Proc
 
 const CLI_TIMEOUT_MS = 45_000; // hard timeout — must be lower than AT_TIMEOUT so the test runner doesn't race the harness kill
 
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?: string): Promise<CliResult> {
+  const stdinDir = stdinData !== undefined
+    ? await mkdtemp(path.join(tmpdir(), "roboppi-agents-stdin-"))
+    : null;
+  const stdinPath = stdinDir ? path.join(stdinDir, "input.json") : null;
+  if (stdinPath) {
+    await writeFile(stdinPath, stdinData ?? "", "utf8");
+  }
+
   return new Promise<CliResult>((resolve) => {
-    const child = spawn(process.execPath, ["run", "src/cli.ts", "--", "agents", ...args], {
-      cwd: REPO_ROOT,
-      env: env ?? createCleanEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-    }) as ChildProcessWithoutNullStreams;
+    const command = [
+      "exec",
+      shellQuote(process.execPath),
+      "run",
+      "src/cli.ts",
+      "--",
+      "agents",
+      ...args.map(shellQuote),
+    ].join(" ");
+    const child = spawn(
+      "bash",
+      [
+        "-lc",
+        stdinPath ? `${command} < ${shellQuote(stdinPath)}` : command,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: env ?? createCleanEnv(),
+        // Always route through `bash -lc exec ...` because Bun 1.3.8 can
+        // intermittently hang when a `bun run ...` process is spawned directly
+        // under this AT harness on CI.
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
 
     let stdout = "";
     let stderr = "";
@@ -66,11 +98,6 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-
-    if (stdinData !== undefined) {
-      child.stdin.write(stdinData);
-    }
-    child.stdin.end();
 
     // Handle process error (e.g. ENOENT, spawn failure)
     child.once("error", (err) => {
@@ -84,6 +111,7 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      void rm(stdinDir ?? "", { recursive: true, force: true });
       resolve({ code, signal, stdout, stderr });
     });
 
@@ -94,6 +122,7 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       child.kill("SIGKILL");
       // Wait for the child to actually close (or resolve after a grace period)
       const graceTimer = setTimeout(() => {
+        void rm(stdinDir ?? "", { recursive: true, force: true });
         resolve({
           code: null,
           signal: "SIGKILL" as NodeJS.Signals,
@@ -103,6 +132,7 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       }, 3_000);
       child.once("close", (code, signal) => {
         clearTimeout(graceTimer);
+        void rm(stdinDir ?? "", { recursive: true, force: true });
         resolve({
           code,
           signal: signal ?? ("SIGKILL" as NodeJS.Signals),
@@ -231,6 +261,39 @@ describe("roboppi agents CLI roundtrip", () => {
     const recv2Json = parseJsonStdout(recv2Result);
     expect(recv2Json.ok).toBe(true);
     expect(recv2Json.messages.length).toBe(0);
+  }, AT_TIMEOUT);
+
+  it("status set + get roundtrip", async () => {
+    await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
+
+    const env = createCleanEnv({
+      ROBOPPI_AGENTS_CONTEXT_DIR: contextDir,
+      ROBOPPI_AGENTS_MEMBER_ID: "lead",
+    });
+
+    const setResult = await runAgentsCli([
+      "status", "set",
+      "--context", contextDir,
+      "--summary", "Implementer is addressing the current blocker.",
+      "--blocker", "manual verification missing",
+      "--next", "wait for implementer patch",
+      "--next", "rerun tester",
+    ], env);
+    const setJson = parseJsonStdout(setResult);
+    expect(setJson.ok).toBe(true);
+    expect(setJson.status.owner_member_id).toBe("lead");
+    expect(setJson.status.summary).toBe("Implementer is addressing the current blocker.");
+    expect(setJson.status.blockers).toEqual(["manual verification missing"]);
+    expect(setJson.status.next_actions).toEqual(["wait for implementer patch", "rerun tester"]);
+
+    const getResult = await runAgentsCli([
+      "status", "get",
+      "--context", contextDir,
+    ], env);
+    const getJson = parseJsonStdout(getResult);
+    expect(getJson.ok).toBe(true);
+    expect(getJson.status.summary).toBe("Implementer is addressing the current blocker.");
+    expect(getJson.status.owner_member_id).toBe("lead");
   }, AT_TIMEOUT);
 
   it("message reply sends to original sender and acks the claimed message", async () => {
@@ -390,6 +453,47 @@ describe("roboppi agents CLI roundtrip", () => {
     expect(doneJson.tasks.length).toBe(1);
   }, AT_TIMEOUT);
 
+  it("tasks supersede roundtrip", async () => {
+    await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
+
+    const env = createCleanEnv({
+      ROBOPPI_AGENTS_CONTEXT_DIR: contextDir,
+      ROBOPPI_AGENTS_MEMBER_ID: "lead",
+    });
+
+    const addResult = await runAgentsCli([
+      "tasks", "add",
+      "--context", contextDir,
+      "--title", "Supersede CLI Task",
+      "--description", "Replace me",
+    ], env);
+    const addJson = parseJsonStdout(addResult);
+    expect(addJson.ok).toBe(true);
+
+    const taskId = addJson.task_id;
+    const supersedeResult = await runAgentsCli([
+      "tasks", "supersede",
+      "--context", contextDir,
+      "--task-id", taskId,
+      "--member", "lead",
+      "--reason", "stale contract",
+      "--replacement-task-id", "replacement-task",
+    ], env);
+    const supersedeJson = parseJsonStdout(supersedeResult);
+    expect(supersedeJson.ok).toBe(true);
+
+    const listResult = await runAgentsCli([
+      "tasks", "list",
+      "--context", contextDir,
+      "--status", "superseded",
+    ], env);
+    const listJson = parseJsonStdout(listResult);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.tasks.length).toBe(1);
+    expect(listJson.tasks[0].task_id).toBe(taskId);
+    expect(listJson.tasks[0].status).toBe("superseded");
+  }, AT_TIMEOUT);
+
   it("housekeep returns JSON", async () => {
     await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
 
@@ -424,6 +528,77 @@ describe("roboppi agents CLI roundtrip", () => {
     const json = parseJsonStdout(result);
     expect(json.ok).toBe(false);
     expect(json.error).toBeTruthy();
+  }, AT_TIMEOUT);
+
+  it("tasks claim rejects claiming a task assigned to another member", async () => {
+    await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
+    const leadEnv = createCleanEnv({
+      ROBOPPI_AGENTS_CONTEXT_DIR: contextDir,
+      ROBOPPI_AGENTS_MEMBER_ID: "lead",
+    });
+
+    const upsertResult = await runAgentsCli([
+      "members", "upsert",
+      "--context", contextDir,
+      "--member", "manual_verifier",
+      "--agent", "manual-verifier-agent",
+    ], leadEnv);
+    expect(parseJsonStdout(upsertResult).ok).toBe(true);
+
+    const addResult = await runAgentsCli([
+      "tasks", "add",
+      "--context", contextDir,
+      "--title", "Manual preflight",
+      "--description", "Run manual verification",
+      "--assigned-to", "manual_verifier",
+    ], leadEnv);
+    const addJson = parseJsonStdout(addResult);
+    expect(addJson.ok).toBe(true);
+
+    const claimResult = await runAgentsCli([
+      "tasks", "claim",
+      "--context", contextDir,
+      "--task-id", addJson.task_id,
+      "--member", "lead",
+    ], leadEnv);
+    const claimJson = parseJsonStdout(claimResult);
+    expect(claimJson.ok).toBe(false);
+    expect(claimJson.error).toContain('assigned to "manual_verifier"');
+  }, AT_TIMEOUT);
+
+  it("tasks claim rejects member spoofing when caller identity is set", async () => {
+    await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
+    const leadEnv = createCleanEnv({
+      ROBOPPI_AGENTS_CONTEXT_DIR: contextDir,
+      ROBOPPI_AGENTS_MEMBER_ID: "lead",
+    });
+
+    const upsertResult = await runAgentsCli([
+      "members", "upsert",
+      "--context", contextDir,
+      "--member", "manual_verifier",
+      "--agent", "manual-verifier-agent",
+    ], leadEnv);
+    expect(parseJsonStdout(upsertResult).ok).toBe(true);
+
+    const addResult = await runAgentsCli([
+      "tasks", "add",
+      "--context", contextDir,
+      "--title", "Manual preflight",
+      "--description", "Run manual verification",
+    ], leadEnv);
+    const addJson = parseJsonStdout(addResult);
+    expect(addJson.ok).toBe(true);
+
+    const claimResult = await runAgentsCli([
+      "tasks", "claim",
+      "--context", contextDir,
+      "--task-id", addJson.task_id,
+      "--member", "manual_verifier",
+    ], leadEnv);
+    const claimJson = parseJsonStdout(claimResult);
+    expect(claimJson.ok).toBe(false);
+    expect(claimJson.error).toContain('does not match caller "lead"');
   }, AT_TIMEOUT);
 
   it("all stdout output is valid JSON", async () => {

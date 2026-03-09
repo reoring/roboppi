@@ -1,6 +1,7 @@
 import type { WorkerResult } from "../types/index.js";
 import type { ExecEventSink, ExecEvent } from "./exec-event.js";
 import type { ChatMessageEntry } from "./components/tabs/chat-tab.js";
+import type { WorkflowStatusSummary } from "../agents/status-store.js";
 import { RingBuffer } from "./ring-buffer.js";
 import { generateId } from "../types/index.js";
 
@@ -39,7 +40,7 @@ export interface StepUiState {
 
 export interface AgentActivityEntry {
   ts: number;
-  type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed";
+  type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed" | "agent_task_superseded";
   teamId: string;
   /** messageId for message events, taskId for task events */
   id: string;
@@ -51,6 +52,37 @@ export interface AgentActivityEntry {
   label?: string;
   /** Truncated message body preview */
   bodyPreview?: string;
+}
+
+export interface AgentRosterEntry {
+  memberId: string;
+  name: string;
+  role: string;
+  agentId?: string;
+}
+
+export interface AgentRuntimeStats {
+  memberId: string;
+  dispatchCount: number;
+  restartCount: number;
+  mcpAvailable?: string[];
+  skillHints?: string[];
+  observedMcpTools?: string[];
+  observedSkills?: string[];
+  tokenSampleCount?: number;
+  totalEstimatedTokens?: number;
+  lastEstimatedTokens?: number;
+  totalInstructionBytes?: number;
+  lastInstructionBytes?: number;
+  lastStartedAt?: number;
+  lastStoppedAt?: number;
+  lastDispatchStartedAt?: number;
+  lastDispatchFinishedAt?: number;
+  lastDispatchDurationMs?: number;
+  totalDispatchActiveMs: number;
+  currentlyDispatchingSince?: number;
+  currentInstructions?: string;
+  lastInstructions?: string;
 }
 
 export interface WorkflowUiState {
@@ -67,11 +99,26 @@ export interface WorkflowUiState {
   stepOrder: string[];
   selectedStepId?: string;
   followMode: "selected" | "running";
-  selectedTab: "overview" | "logs" | "diffs" | "result" | "core" | "agents" | "chat" | "help" | "agent_overview";
+  selectedTab:
+    | "overview"
+    | "logs"
+    | "raw_logs"
+    | "usage"
+    | "diffs"
+    | "result"
+    | "core"
+    | "agents"
+    | "chat"
+    | "help"
+    | "agent_overview";
   coreLogs: RingBuffer<string>;
   warnings: RingBuffer<string>;
   agentActivity: RingBuffer<string>;
   agentEntries: AgentActivityEntry[];
+  agentRoster: Map<string, AgentRosterEntry>;
+  agentRosterOrder: string[];
+  agentRuntime: Map<string, AgentRuntimeStats>;
+  workflowStatusSummary?: WorkflowStatusSummary;
   chatMessages: ChatMessageEntry[];
   /** Whether the chat input line is active (text input mode). */
   chatInputActive: boolean;
@@ -94,6 +141,10 @@ export function isAgentStep(stepId: string): boolean {
   return stepId.startsWith("_agent:");
 }
 
+export function agentStepId(memberId: string): string {
+  return `_agent:${memberId}`;
+}
+
 /** Extract the memberId from an agent pseudo-step id, or undefined if not an agent step. */
 export function agentMemberId(stepId: string): string | undefined {
   if (!stepId.startsWith("_agent:")) return undefined;
@@ -106,6 +157,51 @@ export function getAgentHintText(step: StepUiState): string {
   if (lastOut?.trim()) return lastOut.trim();
   if (step.phase) return step.phase;
   return "";
+}
+
+function arraysEqual(a?: string[], b?: string[]): boolean {
+  if (a === b) return true;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function uniqueSorted(values?: string[]): string[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return [...new Set(values.filter((value) => value.trim().length > 0))].sort();
+}
+
+function mergeUniqueSorted(existing: string[] | undefined, next: string[]): string[] | undefined {
+  if (next.length === 0) return existing;
+  return uniqueSorted([...(existing ?? []), ...next]);
+}
+
+function extractSkillNames(text: string): string[] {
+  const matches = text.match(/(?:\.\/)?skills\/[A-Za-z0-9._-]+\/SKILL\.md/g) ?? [];
+  const names = new Set<string>();
+  for (const match of matches) {
+    const normalized = match.trim().replace(/^\.\/?/, "");
+    const parts = normalized.split("/");
+    if (parts.length >= 3 && parts[0] === "skills") {
+      names.add(parts[1]!);
+    }
+  }
+  return [...names].sort();
+}
+
+function extractObservedMcpTools(text: string): string[] {
+  const matches = [...text.matchAll(/mcp__([A-Za-z0-9_-]+)__([A-Za-z0-9_-]+)/g)];
+  const tools = new Set<string>();
+  for (const match of matches) {
+    const server = match[1];
+    const tool = match[2];
+    if (server && tool) tools.add(`${server}.${tool}`);
+  }
+  return [...tools].sort();
 }
 
 export class TuiStateStore implements ExecEventSink {
@@ -140,11 +236,63 @@ export class TuiStateStore implements ExecEventSink {
         maxBytes: this.logLimitBytes,
       }),
       agentEntries: [],
+      agentRoster: new Map(),
+      agentRosterOrder: [],
+      agentRuntime: new Map(),
+      workflowStatusSummary: undefined,
       chatMessages: [],
       chatInputActive: false,
       chatInputBuffer: "",
       chatInputTarget: "",
     };
+  }
+
+  syncAgentRoster(entries: AgentRosterEntry[]): void {
+    const sorted = [...entries].sort((a, b) => a.memberId.localeCompare(b.memberId));
+    const prevOrder = this.state.agentRosterOrder;
+    let changed = prevOrder.length !== sorted.length;
+
+    if (!changed) {
+      for (let i = 0; i < sorted.length; i++) {
+        const next = sorted[i]!;
+        const prevId = prevOrder[i]!;
+        const prev = this.state.agentRoster.get(prevId);
+        if (
+          prevId !== next.memberId ||
+          !prev ||
+          prev.name !== next.name ||
+          prev.role !== next.role ||
+          prev.agentId !== next.agentId
+        ) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) return;
+
+    this.state.agentRoster = new Map(sorted.map((entry) => [entry.memberId, entry]));
+    this.state.agentRosterOrder = sorted.map((entry) => entry.memberId);
+    this.dirty = true;
+  }
+
+  syncWorkflowStatusSummary(summary: WorkflowStatusSummary | null | undefined): void {
+    const prev = this.state.workflowStatusSummary;
+    const next = summary ?? undefined;
+
+    if (
+      prev?.updated_at === next?.updated_at &&
+      prev?.owner_member_id === next?.owner_member_id &&
+      prev?.summary === next?.summary &&
+      arraysEqual(prev?.blockers, next?.blockers) &&
+      arraysEqual(prev?.next_actions, next?.next_actions)
+    ) {
+      return;
+    }
+
+    this.state.workflowStatusSummary = next;
+    this.dirty = true;
   }
 
   emit(event: ExecEvent): void {
@@ -179,6 +327,7 @@ export class TuiStateStore implements ExecEventSink {
       case "agent_message_received":
       case "agent_task_claimed":
       case "agent_task_completed":
+      case "agent_task_superseded":
         this.reduceAgentEvent(event);
         break;
     }
@@ -234,6 +383,11 @@ export class TuiStateStore implements ExecEventSink {
       for (const stepId of event.definitionSummary.steps) {
         this.getOrCreateStep(stepId);
       }
+      for (const [memberId, profile] of Object.entries(event.definitionSummary.agentProfiles ?? {})) {
+        const stats = this.getOrCreateAgentRuntime(memberId);
+        stats.mcpAvailable = uniqueSorted(profile.mcpAvailable);
+        stats.skillHints = uniqueSorted(profile.skillHints);
+      }
     }
   }
 
@@ -248,12 +402,36 @@ export class TuiStateStore implements ExecEventSink {
     event: Extract<ExecEvent, { type: "step_state" }>,
   ): void {
     const step = this.getOrCreateStep(event.stepId);
+    const prevStatus = step.status;
     step.status = event.status;
     step.iteration = event.iteration;
     step.maxIterations = event.maxIterations;
     if (event.startedAt !== undefined) step.startedAt = event.startedAt;
     if (event.completedAt !== undefined) step.completedAt = event.completedAt;
     if (event.error !== undefined) step.error = event.error;
+
+    const memberId = agentMemberId(event.stepId);
+    if (!memberId) return;
+
+    const stats = this.getOrCreateAgentRuntime(memberId);
+    if (event.status === "RUNNING" && event.startedAt !== undefined) {
+      if (stats.lastStartedAt !== undefined || prevStatus !== "PENDING") {
+        stats.restartCount += 1;
+      }
+      stats.lastStartedAt = event.startedAt;
+      stats.lastStoppedAt = undefined;
+    }
+
+    if (event.completedAt !== undefined && event.status !== "RUNNING") {
+      stats.lastStoppedAt = event.completedAt;
+      if (stats.currentlyDispatchingSince !== undefined) {
+        stats.lastDispatchFinishedAt = event.completedAt;
+        stats.lastDispatchDurationMs = Math.max(0, event.completedAt - stats.currentlyDispatchingSince);
+        stats.totalDispatchActiveMs += stats.lastDispatchDurationMs;
+        stats.currentlyDispatchingSince = undefined;
+      }
+      stats.currentInstructions = undefined;
+    }
   }
 
   private reduceStepPhase(
@@ -261,6 +439,33 @@ export class TuiStateStore implements ExecEventSink {
   ): void {
     const step = this.getOrCreateStep(event.stepId);
     step.phase = event.phase;
+
+    const memberId = agentMemberId(event.stepId);
+    if (!memberId) return;
+
+    const stats = this.getOrCreateAgentRuntime(memberId);
+    if (event.phase === "executing") {
+      stats.dispatchCount += 1;
+      stats.lastDispatchStartedAt = event.at;
+      stats.currentlyDispatchingSince = event.at;
+      const instructions = typeof event.detail?.instructions === "string"
+        ? event.detail.instructions
+        : undefined;
+      if (instructions) {
+        stats.currentInstructions = instructions;
+        stats.lastInstructions = instructions;
+        stats.skillHints = mergeUniqueSorted(stats.skillHints, extractSkillNames(instructions));
+      }
+      return;
+    }
+
+    if (event.phase === "ready" && stats.currentlyDispatchingSince !== undefined) {
+      stats.lastDispatchFinishedAt = event.at;
+      stats.lastDispatchDurationMs = Math.max(0, event.at - stats.currentlyDispatchingSince);
+      stats.totalDispatchActiveMs += stats.lastDispatchDurationMs;
+      stats.currentlyDispatchingSince = undefined;
+      stats.currentInstructions = undefined;
+    }
   }
 
   private reduceWorkerEvent(
@@ -268,13 +473,23 @@ export class TuiStateStore implements ExecEventSink {
   ): void {
     const step = this.getOrCreateStep(event.stepId);
     const we = event.event;
+    const memberId = agentMemberId(event.stepId);
+    const stats = memberId ? this.getOrCreateAgentRuntime(memberId) : undefined;
 
     switch (we.type) {
       case "stdout":
         step.logs.stdout.push(we.data);
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.data));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.data));
+        }
         break;
       case "stderr":
         step.logs.stderr.push(we.data);
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.data));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.data));
+        }
         break;
       case "progress":
         step.logs.progress.push(we.message);
@@ -283,6 +498,10 @@ export class TuiStateStore implements ExecEventSink {
           message: we.message,
           percent: we.percent,
         };
+        if (stats) {
+          stats.observedMcpTools = mergeUniqueSorted(stats.observedMcpTools, extractObservedMcpTools(we.message));
+          stats.observedSkills = mergeUniqueSorted(stats.observedSkills, extractSkillNames(we.message));
+        }
         break;
       case "patch": {
         const id = generateId();
@@ -312,6 +531,23 @@ export class TuiStateStore implements ExecEventSink {
   ): void {
     const step = this.getOrCreateStep(event.stepId);
     step.result = event.result;
+
+    const memberId = agentMemberId(event.stepId);
+    if (!memberId) return;
+
+    const stats = this.getOrCreateAgentRuntime(memberId);
+    const estimatedTokens = event.result.cost.estimatedTokens;
+    if (estimatedTokens !== undefined) {
+      stats.tokenSampleCount = (stats.tokenSampleCount ?? 0) + 1;
+      stats.totalEstimatedTokens = (stats.totalEstimatedTokens ?? 0) + estimatedTokens;
+      stats.lastEstimatedTokens = estimatedTokens;
+    }
+
+    const instructionBytes = event.result.cost.instructionBytes;
+    if (instructionBytes !== undefined) {
+      stats.totalInstructionBytes = (stats.totalInstructionBytes ?? 0) + instructionBytes;
+      stats.lastInstructionBytes = instructionBytes;
+    }
   }
 
   private reduceCoreLog(
@@ -336,7 +572,7 @@ export class TuiStateStore implements ExecEventSink {
   }
 
   private reduceAgentEvent(
-    event: Extract<ExecEvent, { type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed" }>,
+    event: Extract<ExecEvent, { type: "agent_message_sent" | "agent_message_received" | "agent_task_claimed" | "agent_task_completed" | "agent_task_superseded" }>,
   ): void {
     let entry: AgentActivityEntry;
     let summary: string;
@@ -390,6 +626,17 @@ export class TuiStateStore implements ExecEventSink {
         };
         summary = `[agents] task completed by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
         break;
+      case "agent_task_superseded":
+        entry = {
+          ts: event.ts,
+          type: event.type,
+          teamId: event.teamId,
+          id: event.taskId,
+          memberId: event.byMemberId,
+          label: event.title,
+        };
+        summary = `[agents] task superseded by ${event.byMemberId}${event.title ? ` title=${event.title}` : ""}`;
+        break;
     }
 
     this.state.agentActivity.push(summary);
@@ -424,5 +671,19 @@ export class TuiStateStore implements ExecEventSink {
         }
       }
     }
+  }
+
+  private getOrCreateAgentRuntime(memberId: string): AgentRuntimeStats {
+    let stats = this.state.agentRuntime.get(memberId);
+    if (!stats) {
+      stats = {
+        memberId,
+        dispatchCount: 0,
+        restartCount: 0,
+        totalDispatchActiveMs: 0,
+      };
+      this.state.agentRuntime.set(memberId, stats);
+    }
+    return stats;
   }
 }

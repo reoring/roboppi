@@ -109,6 +109,10 @@ export function inboxSummaryPath(contextDir: string): string {
   return resolve(agentsRoot(contextDir), "inbox-summary.json");
 }
 
+export function workflowStatusPath(contextDir: string): string {
+  return resolve(agentsRoot(contextDir), "workflow-status.json");
+}
+
 // -- Agent-level events (survive mailbox/tasks cleanup) -------------------
 
 export function agentEventsPath(contextDir: string): string {
@@ -136,6 +140,7 @@ export function allDirs(contextDir: string, memberIds: string[]): string[] {
     tasksStatusDir(contextDir, "in_progress"),
     tasksStatusDir(contextDir, "completed"),
     tasksStatusDir(contextDir, "blocked"),
+    tasksStatusDir(contextDir, "superseded"),
     locksDir(contextDir),
   ];
   for (const id of memberIds) {

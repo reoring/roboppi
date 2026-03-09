@@ -1,6 +1,7 @@
 import { WorkerKind, WorkerCapability } from "../../types/index.js";
 import type { WorkerTask } from "../../types/index.js";
 import type { Artifact, Observation } from "../../types/index.js";
+import type { McpServerConfig } from "../../types/mcp-server.js";
 import type { WorkerEvent, WorkerHandle } from "../worker-adapter.js";
 import type { ProcessManager } from "../process-manager.js";
 import { BaseProcessAdapter } from "./base-process-adapter.js";
@@ -8,7 +9,93 @@ import { BaseProcessAdapter } from "./base-process-adapter.js";
 export interface CodexCliAdapterConfig {
   codexCommand?: string;
   defaultArgs?: string[];
+  mcpServers?: McpServerConfig[];
   gracePeriodMs?: number;
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlStringArray(values: string[]): string {
+  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
+}
+
+function tomlInlineTable(values: Record<string, string>): string {
+  return `{ ${Object.entries(values)
+    .map(([key, value]) => `${key} = ${tomlString(value)}`)
+    .join(", ")} }`;
+}
+
+function buildCodexMcpOverrides(servers: McpServerConfig[]): string[] {
+  const args: string[] = [];
+  for (const server of servers) {
+    const base = `mcp_servers.${server.name}`;
+    if (server.enabled !== undefined) {
+      args.push("-c", `${base}.enabled=${server.enabled ? "true" : "false"}`);
+    }
+    if (server.url) {
+      args.push("-c", `${base}.url=${tomlString(server.url)}`);
+      if (server.bearer_token_env_var) {
+        args.push(
+          "-c",
+          `${base}.bearer_token_env_var=${tomlString(server.bearer_token_env_var)}`,
+        );
+      }
+      continue;
+    }
+    if (!server.command) continue;
+    args.push("-c", `${base}.command=${tomlString(server.command)}`);
+    if (Array.isArray(server.args) && server.args.length > 0) {
+      args.push("-c", `${base}.args=${tomlStringArray(server.args)}`);
+    }
+    if (server.env && Object.keys(server.env).length > 0) {
+      args.push("-c", `${base}.env=${tomlInlineTable(server.env)}`);
+    }
+  }
+  return args;
+}
+
+function normalizeLegacyCodexArgs(args: string[]): string[] {
+  let needsBypass = false;
+  const preserved: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--dangerously-bypass-approvals-and-sandbox") {
+      needsBypass = true;
+      continue;
+    }
+    if (arg === "--ask-for-approval") {
+      const value = args[i + 1];
+      if (value === "never") {
+        needsBypass = true;
+        i++;
+        continue;
+      }
+    }
+    preserved.push(arg);
+  }
+
+  if (!needsBypass) {
+    return preserved;
+  }
+
+  const normalized: string[] = [];
+  for (let i = 0; i < preserved.length; i++) {
+    const arg = preserved[i]!;
+    if (arg === "--full-auto") {
+      continue;
+    }
+    if (arg === "--sandbox") {
+      i++; // drop the sandbox value as well; bypass supersedes sandbox selection
+      continue;
+    }
+    normalized.push(arg);
+  }
+
+  normalized.push("--dangerously-bypass-approvals-and-sandbox");
+  return normalized;
 }
 
 export class CodexCliAdapter extends BaseProcessAdapter {
@@ -23,6 +110,7 @@ export class CodexCliAdapter extends BaseProcessAdapter {
     this.config = {
       codexCommand: config.codexCommand ?? "codex",
       defaultArgs: config.defaultArgs ?? [],
+      mcpServers: config.mcpServers ?? [],
       gracePeriodMs: config.gracePeriodMs ?? 5000,
     };
   }
@@ -31,12 +119,16 @@ export class CodexCliAdapter extends BaseProcessAdapter {
     // Codex CLI supports non-interactive execution via `codex exec`.
     // We pass instructions as the positional [PROMPT] argument.
     const args: string[] = [this.config.codexCommand, "exec"];
+    const defaultArgs = normalizeLegacyCodexArgs([
+      ...this.config.defaultArgs,
+      ...(task.defaultArgs ?? []),
+    ]);
 
     // Default args, with optional model override.
     if (task.model) {
       // Prefer task-level model over config default args.
-      for (let i = 0; i < this.config.defaultArgs.length; i++) {
-        const a = this.config.defaultArgs[i]!;
+      for (let i = 0; i < defaultArgs.length; i++) {
+        const a = defaultArgs[i]!;
         if (a === "--model") {
           i++; // skip value
           continue;
@@ -46,7 +138,11 @@ export class CodexCliAdapter extends BaseProcessAdapter {
       }
       args.push("--model", normalizeCodexModel(task.model));
     } else {
-      args.push(...this.config.defaultArgs);
+      args.push(...defaultArgs);
+    }
+
+    if (this.config.mcpServers.length > 0) {
+      args.push(...buildCodexMcpOverrides(this.config.mcpServers));
     }
 
     // Always use JSONL output for reliable parsing/logging.
@@ -66,8 +162,11 @@ export class CodexCliAdapter extends BaseProcessAdapter {
     const hasRunCommands =
       task.capabilities.includes(WorkerCapability.RUN_COMMANDS) ||
       task.capabilities.includes(WorkerCapability.RUN_TESTS);
+    const hasBypass = args.includes("--dangerously-bypass-approvals-and-sandbox");
 
-    if (hasWrite && hasRunCommands) {
+    if (hasBypass) {
+      // Current Codex CLI bypass mode already implies no sandbox / no approvals.
+    } else if (hasWrite && hasRunCommands) {
       // Low-friction sandboxed auto execution.
       if (!args.includes("--full-auto")) {
         args.push("--full-auto");

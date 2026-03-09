@@ -8,21 +8,35 @@
 import { describe, it, expect } from "bun:test";
 import { renderAgentsTab } from "../../../src/tui/components/tabs/agents-tab.js";
 import { RingBuffer } from "../../../src/tui/ring-buffer.js";
-import type { WorkflowUiState, AgentActivityEntry } from "../../../src/tui/state-store.js";
+import type { WorkflowUiState, AgentActivityEntry, AgentRosterEntry, AgentRuntimeStats, StepUiState } from "../../../src/tui/state-store.js";
 
-function makeState(entries: AgentActivityEntry[] = [], activityLines: string[] = []): WorkflowUiState {
+function makeState(
+  entries: AgentActivityEntry[] = [],
+  activityLines: string[] = [],
+  opts?: {
+    roster?: AgentRosterEntry[];
+    runtime?: AgentRuntimeStats[];
+    steps?: StepUiState[];
+  },
+): WorkflowUiState {
   const buf = new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 });
   for (const l of activityLines) buf.push(l);
+  const steps = new Map((opts?.steps ?? []).map((step) => [step.stepId, step]));
+  const roster = opts?.roster ?? [];
+  const runtime = opts?.runtime ?? [];
 
   return {
-    steps: new Map(),
-    stepOrder: [],
+    steps,
+    stepOrder: [...steps.keys()],
     followMode: "running",
     selectedTab: "agents",
     coreLogs: new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 }),
     warnings: new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 }),
     agentActivity: buf,
     agentEntries: entries,
+    agentRoster: new Map(roster.map((entry) => [entry.memberId, entry])),
+    agentRosterOrder: roster.map((entry) => entry.memberId),
+    agentRuntime: new Map(runtime.map((entry) => [entry.memberId, entry])),
     chatMessages: [],
     chatInputActive: false,
     chatInputBuffer: "",
@@ -35,6 +49,85 @@ describe("renderAgentsTab", () => {
     const state = makeState();
     const output = renderAgentsTab(state, 80, 20);
     expect(output).toContain("No agent activity");
+  });
+
+  it("renders cross-agent summary rows in the global Agents tab", () => {
+    const state = makeState([], [], {
+      roster: [
+        { memberId: "implementer", name: "implementer", role: "member", agentId: "implementer" },
+        { memberId: "manual_verifier", name: "manual_verifier", role: "dormant", agentId: "manual_verifier" },
+      ],
+      runtime: [
+        {
+          memberId: "implementer",
+          dispatchCount: 5,
+          restartCount: 2,
+          totalEstimatedTokens: 23_400,
+          totalInstructionBytes: 32_768,
+          lastStartedAt: Date.parse("2026-03-09T01:00:00.000Z"),
+          lastStoppedAt: Date.parse("2026-03-09T01:05:00.000Z"),
+          lastDispatchStartedAt: Date.parse("2026-03-09T01:00:10.000Z"),
+          lastDispatchFinishedAt: Date.parse("2026-03-09T01:00:50.000Z"),
+          lastDispatchDurationMs: 40_000,
+          totalDispatchActiveMs: 125_000,
+        },
+      ],
+      steps: [
+        {
+          stepId: "_agent:implementer",
+          status: "RUNNING",
+          phase: "executing",
+          iteration: 1,
+          maxIterations: 1,
+          startedAt: Date.parse("2026-03-09T01:00:00.000Z"),
+          logs: {
+            stdout: new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 }),
+            stderr: new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 }),
+            progress: new RingBuffer<string>({ maxLines: 100, maxBytes: 10000 }),
+          },
+          patches: {
+            byId: new Map(),
+            order: [],
+            byFilePath: new Map(),
+          },
+        },
+      ],
+    });
+
+    const output = renderAgentsTab(state, 110, 20);
+    expect(output).toContain("Agent Summary");
+    expect(output).toContain("implementer");
+    expect(output).toContain("RUNNING");
+    expect(output).toContain("manual_verifier");
+    expect(output).toContain("DORMANT");
+    expect(output).toContain("Disp");
+    expect(output).toContain("Re");
+    expect(output).toContain("Tok");
+    expect(output).toContain("Prompt");
+    expect(output).toContain("23k");
+    expect(output).toContain("32K");
+  });
+
+  it("uses available height to show all summary rows when activity is empty", () => {
+    const roster: AgentRosterEntry[] = Array.from({ length: 12 }, (_, i) => ({
+      memberId: `agent_${i}`,
+      name: `agent_${i}`,
+      role: i < 5 ? "member" : "dormant",
+      agentId: `profile_${i}`,
+    }));
+    const runtime: AgentRuntimeStats[] = roster.map((entry, i) => ({
+      memberId: entry.memberId,
+      dispatchCount: i,
+      restartCount: 0,
+      totalDispatchActiveMs: i * 1000,
+      lastStartedAt: Date.parse(`2026-03-09T01:${String(i).padStart(2, "0")}:00.000Z`),
+    }));
+
+    const output = renderAgentsTab(makeState([], [], { roster, runtime }), 110, 24);
+    expect(output).toContain("agent_0");
+    expect(output).toContain("agent_11");
+    expect(output).not.toContain("+");
+    expect(output).not.toContain("Recent Activity");
   });
 
   it("renders message sent entries", () => {
@@ -126,6 +219,36 @@ describe("renderAgentsTab", () => {
     const output = renderAgentsTab(state, 80, 10);
     const lines = output.split("\n");
     expect(lines.length).toBe(10);
+  });
+
+  it("keeps filtered agent activity view focused on activity", () => {
+    const state = makeState([
+      {
+        ts: Date.now(),
+        type: "agent_message_sent",
+        teamId: "team-1",
+        id: "msg-1",
+        memberId: "reviewer",
+        targetMemberId: "lead",
+        label: "review",
+      },
+    ], [], {
+      roster: [
+        { memberId: "reviewer", name: "reviewer", role: "member", agentId: "reviewer" },
+      ],
+      runtime: [
+        {
+          memberId: "reviewer",
+          dispatchCount: 2,
+          restartCount: 1,
+          totalDispatchActiveMs: 15_000,
+        },
+      ],
+    });
+
+    const output = renderAgentsTab(state, 80, 20, "reviewer");
+    expect(output).toContain("Activity: reviewer");
+    expect(output).not.toContain("Agent Summary");
   });
 });
 

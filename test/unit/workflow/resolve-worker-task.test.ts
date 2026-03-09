@@ -190,6 +190,19 @@ describe("resolveTaskLike", () => {
     expect(resolved.env).toEqual(env);
   });
 
+  it("passes through defaultArgs", () => {
+    const resolved = resolveTaskLike(
+      {
+        worker: "CODEX_CLI",
+        instructions: "do work",
+        capabilities: ["READ"],
+        defaultArgs: ["--sandbox", "danger-full-access"],
+      },
+      baseWorkspace,
+    );
+    expect(resolved.defaultArgs).toEqual(["--sandbox", "danger-full-access"]);
+  });
+
   it("omits env when not provided", () => {
     const resolved = resolveTaskLike(
       {
@@ -262,6 +275,15 @@ describe("buildWorkerTask", () => {
     const env = { KEY: "val" };
     const task = buildWorkerTask({ ...baseResolved, env }, ac.signal);
     expect(task.env).toEqual(env);
+  });
+
+  it("passes defaultArgs to WorkerTask", () => {
+    const ac = new AbortController();
+    const task = buildWorkerTask(
+      { ...baseResolved, defaultArgs: ["--sandbox", "danger-full-access"] },
+      ac.signal,
+    );
+    expect(task.defaultArgs).toEqual(["--sandbox", "danger-full-access"]);
   });
 
   it("passes abortSignal to WorkerTask", () => {

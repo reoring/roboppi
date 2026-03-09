@@ -188,6 +188,7 @@ version: "1"
 agents:
   research:
     worker: OPENCODE
+    defaultArgs: [--sandbox, danger-full-access]
     model: openai/gpt-5.2
     capabilities: [READ]
     base_instructions: |
@@ -206,6 +207,7 @@ steps:
 
       const wf = parseWorkflow(yaml, { agents });
       expect(wf.steps["s"]!.worker).toBe("OPENCODE");
+      expect(wf.steps["s"]!.defaultArgs).toEqual(["--sandbox", "danger-full-access"]);
       expect(wf.steps["s"]!.model).toBe("openai/gpt-5.2");
       expect(wf.steps["s"]!.capabilities).toEqual(["READ"]);
       expect(wf.steps["s"]!.instructions).toBe("You are a research agent.\n\nFind relevant docs");
@@ -216,7 +218,9 @@ steps:
 version: "1"
 agents:
   checker:
-    worker: CUSTOM
+    worker: CODEX_CLI
+    defaultArgs: [--sandbox, danger-full-access]
+    model: gpt-5.4
     capabilities: [READ]
 `);
 
@@ -237,7 +241,12 @@ steps:
 `;
 
       const wf = parseWorkflow(yaml, { agents });
-      expect(wf.steps["s"]!.completion_check!.worker).toBe("CUSTOM");
+      expect(wf.steps["s"]!.completion_check!.worker).toBe("CODEX_CLI");
+      expect(wf.steps["s"]!.completion_check!.defaultArgs).toEqual([
+        "--sandbox",
+        "danger-full-access",
+      ]);
+      expect(wf.steps["s"]!.completion_check!.model).toBe("gpt-5.4");
       expect(wf.steps["s"]!.completion_check!.capabilities).toEqual(["READ"]);
     });
   });
@@ -724,6 +733,7 @@ agents:
       agent: lead-agent
     researcher:
       agent: research-agent
+      role: dormant
   tasks:
     - title: "Investigate"
       description: "Look at the code"
@@ -741,6 +751,7 @@ steps:
       expect(wf.agents!.members).toBeDefined();
       expect(wf.agents!.members!["lead"]!.agent).toBe("lead-agent");
       expect(wf.agents!.members!["researcher"]!.agent).toBe("research-agent");
+      expect(wf.agents!.members!["researcher"]!.role).toBe("dormant");
       expect(wf.agents!.tasks).toHaveLength(1);
       expect(wf.agents!.tasks![0]!.title).toBe("Investigate");
       expect(wf.agents!.tasks![0]!.assigned_to).toBe("researcher");
@@ -975,6 +986,112 @@ steps:
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
       expect(() => parseWorkflow(yaml)).toThrow(/assigned_to references unknown member/);
+    });
+
+    it("parses agent seed task ids, dependencies, and tags", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+    reviewer:
+      agent: b
+  tasks:
+    - id: bootstrap
+      title: "Bootstrap"
+      description: "Create initial plan"
+      assigned_to: lead
+      tags: [core, bootstrap]
+    - id: review
+      title: "Review"
+      description: "Review implementation"
+      assigned_to: reviewer
+      depends_on: [bootstrap]
+      requires_plan_approval: true
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.agents?.tasks).toEqual([
+        {
+          id: "bootstrap",
+          title: "Bootstrap",
+          description: "Create initial plan",
+          assigned_to: "lead",
+          tags: ["core", "bootstrap"],
+        },
+        {
+          id: "review",
+          title: "Review",
+          description: "Review implementation",
+          assigned_to: "reviewer",
+          depends_on: ["bootstrap"],
+          requires_plan_approval: true,
+        },
+      ]);
+    });
+
+    it("rejects task dependencies when a seed task id is missing", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - title: "Bootstrap"
+      description: "Create initial plan"
+    - id: review
+      title: "Review"
+      description: "Review implementation"
+      depends_on: [bootstrap]
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(/agents.tasks\[0\].id is required when agents.tasks uses depends_on/);
+    });
+
+    it("rejects unknown task dependencies", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - id: bootstrap
+      title: "Bootstrap"
+      description: "Create initial plan"
+    - id: review
+      title: "Review"
+      description: "Review implementation"
+      depends_on: [unknown]
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(/depends_on references unknown task "unknown"/);
     });
   });
 });

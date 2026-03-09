@@ -1,21 +1,77 @@
 import path from "node:path";
 
-let cachedProbe: Promise<boolean> | null = null;
+const cachedProbes = new Map<string, Promise<boolean>>();
+
+const BUN_SCRIPT_EXTENSIONS = new Set([".ts", ".js", ".tsx", ".jsx"]);
 
 function isBunExecutable(executablePath: string): boolean {
   const base = path.basename(executablePath).toLowerCase();
   return base === "bun" || base === "bun.exe";
 }
 
-export async function supportsChildBunStdinPipe(): Promise<boolean> {
-  if (!isBunExecutable(process.execPath)) {
+type RuntimeVersions = NodeJS.ProcessVersions & { bun?: string };
+
+function isBunScriptEntryPoint(childEntryPoint: string | undefined): boolean {
+  if (!childEntryPoint) return false;
+  return BUN_SCRIPT_EXTENSIONS.has(path.extname(childEntryPoint).toLowerCase());
+}
+
+export function isBunRuntime(
+  executablePath: string = process.execPath,
+  versions: RuntimeVersions = process.versions,
+): boolean {
+  return typeof versions.bun === "string" && versions.bun.trim() !== ""
+    ? true
+    : isBunExecutable(executablePath);
+}
+
+export function usesBunChildRuntime(
+  childEntryPoint: string | undefined,
+  executablePath: string = process.execPath,
+  versions: RuntimeVersions = process.versions,
+): boolean {
+  return isBunScriptEntryPoint(childEntryPoint) || isBunRuntime(executablePath, versions);
+}
+
+function resolveProbeCommand(
+  childEntryPoint: string | undefined,
+  executablePath: string = process.execPath,
+  versions: RuntimeVersions = process.versions,
+): string[] | null {
+  if (isBunScriptEntryPoint(childEntryPoint)) {
+    return ["bun", "-e"];
+  }
+  if (isBunExecutable(executablePath)) {
+    return [executablePath, "-e"];
+  }
+  if (typeof versions.bun === "string" && versions.bun.trim() !== "") {
+    // Bun-compiled binaries spawn as executables, but they do not support `-e`.
+    // Prefer the safer socket transport instead of probing with a mismatched command.
+    return null;
+  }
+  return null;
+}
+
+export async function supportsChildBunStdinPipe(
+  childEntryPoint?: string,
+  executablePath: string = process.execPath,
+  versions: RuntimeVersions = process.versions,
+): Promise<boolean> {
+  if (!usesBunChildRuntime(childEntryPoint, executablePath, versions)) {
     // The known stdin pipe issue is Bun-runtime specific.
     return true;
   }
 
-  if (cachedProbe) return cachedProbe;
+  const probeCommand = resolveProbeCommand(childEntryPoint, executablePath, versions);
+  if (!probeCommand) {
+    return false;
+  }
 
-  cachedProbe = new Promise<boolean>((resolve) => {
+  const cacheKey = probeCommand.join("\0");
+  const cached = cachedProbes.get(cacheKey);
+  if (cached) return cached;
+
+  const probe = new Promise<boolean>((resolve) => {
     const token = `probe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const script =
       "process.stdin.setEncoding('utf8');" +
@@ -33,7 +89,7 @@ export async function supportsChildBunStdinPipe(): Promise<boolean> {
     }
 
     const child = bunAny.spawn({
-      cmd: [process.execPath, "-e", script],
+      cmd: [...probeCommand, script],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
@@ -91,5 +147,6 @@ export async function supportsChildBunStdinPipe(): Promise<boolean> {
     setTimeout(() => finish(stdout.includes(token)), 2000);
   });
 
-  return cachedProbe;
+  cachedProbes.set(cacheKey, probe);
+  return probe;
 }

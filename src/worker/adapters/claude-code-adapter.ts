@@ -46,7 +46,7 @@ export function buildArgs(
   task: WorkerTask,
   config: Required<ClaudeCodeAdapterConfig>
 ): string[] {
-  const args: string[] = [...config.defaultArgs];
+  const args: string[] = [...config.defaultArgs, ...(task.defaultArgs ?? [])];
 
   if (task.model) {
     // If defaultArgs already specify a model, prefer the task-level model.

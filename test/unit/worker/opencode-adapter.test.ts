@@ -60,7 +60,7 @@ function makeMockProcess(exitCode: number = 0, stdoutData: string = "", stderrDa
 }
 
 function makeMockProcessManager(): ProcessManager & {
-  spawnCalls: Array<{ command: string[]; cwd?: string; abortSignal?: AbortSignal }>;
+  spawnCalls: Array<{ command: string[]; cwd?: string; abortSignal?: AbortSignal; env?: Record<string, string> }>;
   gracefulShutdownCalls: Array<{ pid: number; graceMs: number }>;
   killCalls: Array<{ pid: number; signal?: string }>;
   _setMockProcess: (proc: ManagedProcess) => void;
@@ -68,7 +68,7 @@ function makeMockProcessManager(): ProcessManager & {
   let mockProcess: ManagedProcess = makeMockProcess();
 
   const pm = {
-    spawnCalls: [] as Array<{ command: string[]; cwd?: string; abortSignal?: AbortSignal }>,
+    spawnCalls: [] as Array<{ command: string[]; cwd?: string; abortSignal?: AbortSignal; env?: Record<string, string> }>,
     gracefulShutdownCalls: [] as Array<{ pid: number; graceMs: number }>,
     killCalls: [] as Array<{ pid: number; signal?: string }>,
     _setMockProcess(proc: ManagedProcess) {
@@ -78,6 +78,7 @@ function makeMockProcessManager(): ProcessManager & {
       pm.spawnCalls.push({
         command: options.command,
         cwd: options.cwd,
+        env: options.env,
         abortSignal: options.abortSignal,
       });
       return mockProcess;
@@ -103,6 +104,7 @@ describe("OpenCodeAdapter", () => {
     const defaultConfig = {
       openCodeCommand: "opencode",
       defaultArgs: [] as string[],
+      mcpServers: [] as any[],
       gracePeriodMs: 5000,
     };
 
@@ -125,6 +127,45 @@ describe("OpenCodeAdapter", () => {
       expect(args[1]).toBe("--format");
       expect(args[2]).toBe("json");
       expect(args[3]).toBe("--verbose");
+    });
+
+    test("includes task defaultArgs after config defaultArgs", () => {
+      const config = { ...defaultConfig, defaultArgs: ["--verbose"] };
+      const task = makeTask({ defaultArgs: ["--sandbox", "danger-full-access"] });
+      const args = buildArgs(task, config);
+
+      expect(args.slice(0, 6)).toEqual([
+        "run",
+        "--format",
+        "json",
+        "--verbose",
+        "--sandbox",
+        "danger-full-access",
+      ]);
+    });
+
+    test("keeps default args order stable when MCP servers are configured", () => {
+      const config = {
+        ...defaultConfig,
+        defaultArgs: ["--print-logs"],
+        mcpServers: [
+          {
+            name: "apthctl_loop",
+            command: "bun",
+            args: ["run", "tools/apthctl-loop-mcp.ts"],
+          },
+        ],
+      };
+      const task = makeTask();
+      const args = buildArgs(task, config);
+
+      expect(args).toEqual([
+        "run",
+        "--format",
+        "json",
+        "--print-logs",
+        "Fix the bug in main.ts",
+      ]);
     });
 
     test("places instructions as the last argument", () => {
@@ -204,6 +245,41 @@ describe("OpenCodeAdapter", () => {
       expect(handle.workerKind).toBe(WorkerKind.OPENCODE);
       expect(handle.handleId).toBeTruthy();
       expect(handle.abortSignal).toBe(task.abortSignal);
+    });
+
+    test("injects OPENCODE_CONFIG_CONTENT when MCP servers are configured", async () => {
+      const pm = makeMockProcessManager();
+      const adapter = new OpenCodeAdapter(pm, {
+        mcpServers: [
+          {
+            name: "apthctl_loop",
+            command: "bun",
+            args: ["run", "tools/apthctl-loop-mcp.ts"],
+            env: { LOOP_MODE: "test" },
+          },
+          {
+            name: "remote_docs",
+            url: "https://example.test/mcp",
+            enabled: false,
+          },
+        ],
+      });
+
+      await adapter.startTask(makeTask());
+
+      const env = pm.spawnCalls[0]!.env;
+      expect(env).toBeDefined();
+      const content = JSON.parse(env!.OPENCODE_CONFIG_CONTENT!);
+      expect(content.mcp.apthctl_loop).toEqual({
+        type: "local",
+        command: ["bun", "run", "tools/apthctl-loop-mcp.ts"],
+        environment: { LOOP_MODE: "test" },
+      });
+      expect(content.mcp.remote_docs).toEqual({
+        type: "remote",
+        url: "https://example.test/mcp",
+        enabled: false,
+      });
     });
   });
 

@@ -248,6 +248,17 @@ roboppi agents tasks complete \
 
 Artifact paths must be relative and must not contain `..` segments.
 
+Supersede stale coordination work without pretending it succeeded:
+
+```bash
+roboppi agents tasks supersede \
+  --context "$ROBOPPI_AGENTS_CONTEXT_DIR" \
+  --task-id "<uuid>" \
+  --member lead \
+  --reason "stale rerun contract" \
+  --replacement-task-id "<new-uuid>"
+```
+
 ### Housekeeping
 
 Requeue stale processing messages and stale in-progress tasks:

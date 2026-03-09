@@ -2,7 +2,7 @@ import { ErrorClass } from "../types/common.js";
 import type { Artifact, Observation, WorkerCost } from "../types/worker-result.js";
 import { mkdir, readFile, writeFile, cp, stat, rm } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   WorkflowDefinition,
   StepDefinition,
@@ -79,6 +79,44 @@ const DEFAULT_CONVERGENCE_MAX_STAGE = 3;
 const CONVERGENCE_ARTIFACT_DIR = "_convergence";
 const MAX_CONVERGENCE_SIGNAL_ITEMS = 40;
 const DEFAULT_PRE_STEP_HOOK_CONCURRENCY = 2;
+
+function extractSkillHints(text?: string): string[] {
+  if (!text) return [];
+  const matches = text.match(/(?:\.\/)?skills\/[A-Za-z0-9._-]+\/SKILL\.md/g) ?? [];
+  const names = new Set<string>();
+  for (const match of matches) {
+    const normalized = match.trim().replace(/^\.\/?/, "");
+    const parts = normalized.split("/");
+    if (parts.length >= 3 && parts[0] === "skills") {
+      names.add(parts[1]!);
+    }
+  }
+  return [...names].sort();
+}
+
+function summarizeAgentProfileUsage(profile: AgentProfile | undefined): {
+  mcpAvailable?: string[];
+  skillHints?: string[];
+} {
+  if (!profile) return {};
+  const mcpAvailable = new Set<string>();
+  for (const config of profile.mcp_configs ?? []) {
+    const trimmed = config.trim();
+    if (!trimmed) continue;
+    const base = path.basename(trimmed).replace(/\.claude\.json$/i, "").replace(/\.json$/i, "");
+    mcpAvailable.add(base);
+  }
+  for (const server of profile.mcp_servers ?? []) {
+    if (server.name?.trim()) {
+      mcpAvailable.add(server.name.trim());
+    }
+  }
+  const skillHints = extractSkillHints(profile.base_instructions);
+  return {
+    mcpAvailable: mcpAvailable.size > 0 ? [...mcpAvailable].sort() : undefined,
+    skillHints: skillHints.length > 0 ? skillHints : undefined,
+  };
+}
 
 export interface StepRunner {
   runStep(
@@ -458,6 +496,17 @@ export class WorkflowExecutor {
         steps: Object.keys(this.stepDefs),
         concurrency: this.concurrency === Infinity ? undefined : this.concurrency,
         timeout: this.definition.timeout,
+        agentProfiles: this.definition.agents?.members
+          ? Object.fromEntries(
+              Object.entries(this.definition.agents.members).map(([memberId, memberCfg]) => [
+                memberId,
+                {
+                  agentId: memberCfg.agent,
+                  ...summarizeAgentProfileUsage(this.agentCatalog?.[memberCfg.agent]),
+                },
+              ]),
+            )
+          : undefined,
       },
     });
     for (const [stepId, stepDef] of Object.entries(this.stepDefs)) {
@@ -490,7 +539,7 @@ export class WorkflowExecutor {
         ([memberId, memberCfg]) => ({
           member_id: memberId,
           name: memberId,
-          role: memberId === "lead" ? "team_lead" : "member",
+          role: memberId === "lead" ? "team_lead" : (memberCfg.role ?? "member"),
           worker: undefined,
           capabilities: undefined,
           workspace: undefined,
@@ -521,12 +570,31 @@ export class WorkflowExecutor {
 
       // Seed initial tasks from DSL config
       if (agentsConfig.tasks) {
+        const seededTaskIds = new Map<string, string>();
         for (const taskDef of agentsConfig.tasks) {
+          if (taskDef.id) {
+            seededTaskIds.set(taskDef.id, randomUUID());
+          }
+        }
+        for (const taskDef of agentsConfig.tasks) {
+          const dependsOn = taskDef.depends_on?.map((dep) => {
+            const mapped = seededTaskIds.get(dep);
+            if (!mapped) {
+              throw new Error(`Unknown seed task dependency "${dep}"`);
+            }
+            return mapped;
+          });
           await addAgentsTask({
             contextDir: this.contextManager.contextDir,
+            ...(taskDef.id ? { taskId: seededTaskIds.get(taskDef.id) } : {}),
             title: taskDef.title,
             description: taskDef.description,
             assignedTo: taskDef.assigned_to,
+            ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
+            ...(taskDef.tags && taskDef.tags.length > 0 ? { tags: taskDef.tags } : {}),
+            ...(taskDef.requires_plan_approval !== undefined
+              ? { requiresPlanApproval: taskDef.requires_plan_approval }
+              : {}),
           });
         }
       }
@@ -863,6 +931,9 @@ export class WorkflowExecutor {
 
     if (resolvedAgent.worker === undefined && profile.worker !== undefined) {
       resolvedAgent.worker = profile.worker;
+    }
+    if (resolvedAgent.defaultArgs === undefined && profile.defaultArgs !== undefined) {
+      resolvedAgent.defaultArgs = [...profile.defaultArgs];
     }
     if (resolvedAgent.model === undefined && profile.model !== undefined) {
       resolvedAgent.model = profile.model;

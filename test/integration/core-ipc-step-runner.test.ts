@@ -8,9 +8,19 @@ import { IpcProtocol } from "../../src/ipc/protocol.js";
 import { AgentCore } from "../../src/core/agentcore.js";
 import { MockWorkerAdapter } from "../../src/worker/adapters/mock-adapter.js";
 import { WorkerKind } from "../../src/types/index.js";
+import type { WorkerTask } from "../../src/types/index.js";
 import type { StepDefinition } from "../../src/workflow/types.js";
 import { CoreIpcStepRunner } from "../../src/workflow/core-ipc-step-runner.js";
 import { createIpcStreamPair } from "../helpers/fixtures.js";
+
+class CaptureWorkerAdapter extends MockWorkerAdapter {
+  lastTask: WorkerTask | null = null;
+
+  override async startTask(task: WorkerTask) {
+    this.lastTask = task;
+    return super.startTask(task);
+  }
+}
 
 describe("CoreIpcStepRunner (in-process IPC)", () => {
   let core: AgentCore | null = null;
@@ -108,5 +118,39 @@ describe("CoreIpcStepRunner (in-process IPC)", () => {
     expect(result.status).toBe("FAILED");
     // No ghost workers remain.
     expect(core!.getWorkerGateway().getActiveWorkerCount()).toBe(0);
+  });
+
+  test("preserves defaultArgs and model across Core IPC", async () => {
+    await setup({ delayMs: 10 });
+
+    const captureAdapter = new CaptureWorkerAdapter(WorkerKind.CODEX_CLI, { delayMs: 10 });
+    core!.getWorkerGateway().registerAdapter(WorkerKind.CODEX_CLI, captureAdapter);
+
+    const step: StepDefinition = {
+      worker: "CODEX_CLI",
+      instructions: "Run manual cluster verification",
+      capabilities: ["READ"],
+      timeout: "10s",
+      defaultArgs: ["--sandbox", "danger-full-access", "--ask-for-approval", "never"],
+      model: "gpt-5.4",
+    };
+
+    const result = await runner!.runStep(
+      "step-default-args",
+      step,
+      workspaceDir!,
+      new AbortController().signal,
+    );
+
+    expect(result.status).toBe("SUCCEEDED");
+    expect(captureAdapter.lastTask).not.toBeNull();
+    expect(captureAdapter.lastTask!.workerKind).toBe(WorkerKind.CODEX_CLI);
+    expect(captureAdapter.lastTask!.defaultArgs).toEqual([
+      "--sandbox",
+      "danger-full-access",
+      "--ask-for-approval",
+      "never",
+    ]);
+    expect(captureAdapter.lastTask!.model).toBe("gpt-5.4");
   });
 });

@@ -85,12 +85,17 @@ export interface StallPolicy {
 
 export interface AgentMemberConfig {
   agent: string;
+  role?: string;
 }
 
 export interface AgentSeedTaskConfig {
+  id?: string;
   title: string;
   description: string;
   assigned_to?: string;
+  depends_on?: string[];
+  tags?: string[];
+  requires_plan_approval?: boolean;
 }
 
 export interface AgentsWorkflowConfig {
@@ -140,6 +145,8 @@ export interface StepDefinition {
   /** Optional agent profile id (resolved from an agent catalog). */
   agent?: string;
   worker?: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  /** Optional CLI args forwarded to the resolved worker adapter. */
+  defaultArgs?: string[];
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
   /** Optional model variant / reasoning-effort hint (worker-specific). */
@@ -254,6 +261,8 @@ export interface CompletionCheckDef {
   /** Optional agent profile id (resolved from an agent catalog). */
   agent?: string;
   worker: "CODEX_CLI" | "CLAUDE_CODE" | "OPENCODE" | "CUSTOM";
+  /** Optional CLI args forwarded to the resolved worker adapter. */
+  defaultArgs?: string[];
   /** Optional model identifier for LLM-backed workers (adapter-specific format). */
   model?: string;
   /** Optional model variant / reasoning-effort hint (worker-specific). */

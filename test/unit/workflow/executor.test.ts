@@ -1532,6 +1532,8 @@ describe("WorkflowExecutor", () => {
         const memberIds = membersJson.members.map((m: { member_id: string }) => m.member_id);
         expect(memberIds).toContain("lead");
         expect(memberIds).toContain("researcher");
+        const researcher = membersJson.members.find((m: { member_id: string }) => m.member_id === "researcher");
+        expect(researcher.role).toBe("member");
 
         // Verify tasks were seeded (check pending dir)
         const { readdir: rd } = await import("node:fs/promises");
@@ -1539,6 +1541,106 @@ describe("WorkflowExecutor", () => {
         const pendingFiles = await rd(pendingDir);
         const taskFiles = pendingFiles.filter((f: string) => f.endsWith(".json"));
         expect(taskFiles).toHaveLength(2);
+      });
+    });
+
+    it("translates agent seed task dependencies into concrete task ids", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow(
+          { s1: makeStep() },
+          {
+            agents: {
+              enabled: true,
+              team_name: "deps-team",
+              members: {
+                lead: { agent: "lead-agent" },
+                reviewer: { agent: "review-agent" },
+              },
+              tasks: [
+                { id: "bootstrap", title: "Bootstrap", description: "Desc 1", assigned_to: "lead" },
+                {
+                  id: "review",
+                  title: "Review",
+                  description: "Desc 2",
+                  assigned_to: "reviewer",
+                  depends_on: ["bootstrap"],
+                  tags: ["phase:review"],
+                  requires_plan_approval: true,
+                },
+              ],
+            },
+          },
+        );
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+
+        const { readdir: rd } = await import("node:fs/promises");
+        const pendingDir = path.join(ctxDir, "_agents", "tasks", "pending");
+        const pendingFiles = (await rd(pendingDir)).filter((f: string) => f.endsWith(".json"));
+        expect(pendingFiles).toHaveLength(2);
+
+        const tasks = await Promise.all(
+          pendingFiles.map(async (filename) =>
+            JSON.parse(await readFile(path.join(pendingDir, filename), "utf-8")) as {
+              task_id: string;
+              title: string;
+              depends_on: string[];
+              tags: string[];
+              requires_plan_approval: boolean;
+            },
+          ),
+        );
+
+        const bootstrap = tasks.find((task) => task.title === "Bootstrap");
+        const review = tasks.find((task) => task.title === "Review");
+        expect(bootstrap).toBeDefined();
+        expect(review).toBeDefined();
+        expect(review?.depends_on).toEqual([bootstrap!.task_id]);
+        expect(review?.tags).toEqual(["phase:review"]);
+        expect(review?.requires_plan_approval).toBe(true);
+      });
+    });
+
+    it("persists dormant member roles without making them the lead", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner();
+        const wf = makeWorkflow(
+          { s1: makeStep() },
+          {
+            agents: {
+              enabled: true,
+              team_name: "roles-team",
+              members: {
+                lead: { agent: "lead-agent" },
+                reviewer: { agent: "review-agent", role: "dormant" },
+              },
+            },
+          },
+        );
+
+        const ctxDir = path.join(dir, "context");
+        const ctx = new ContextManager(ctxDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
+
+        const membersJson = JSON.parse(
+          await readFile(path.join(ctxDir, "_agents", "members.json"), "utf-8"),
+        );
+        const reviewer = membersJson.members.find((m: { member_id: string }) => m.member_id === "reviewer");
+        expect(reviewer.role).toBe("dormant");
+
+        const teamJson = JSON.parse(
+          await readFile(path.join(ctxDir, "_agents", "team.json"), "utf-8"),
+        );
+        expect(teamJson.lead_member_id).toBe("lead");
       });
     });
 

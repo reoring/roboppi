@@ -25,6 +25,7 @@ describe("isWorkerTaskJobPayload", () => {
   it("returns true when all optional fields are present", () => {
     const p = {
       ...validPayload(),
+      defaultArgs: ["--sandbox", "danger-full-access"],
       model: "claude-sonnet-4-6",
       env: { FOO: "bar", BAZ: "qux" },
       budget: {
@@ -131,5 +132,9 @@ describe("isWorkerTaskJobPayload", () => {
 
   it("returns false when env is null", () => {
     expect(isWorkerTaskJobPayload({ ...validPayload(), env: null })).toBe(false);
+  });
+
+  it("returns false when defaultArgs contain a non-string", () => {
+    expect(isWorkerTaskJobPayload({ ...validPayload(), defaultArgs: ["--sandbox", 42] })).toBe(false);
   });
 });

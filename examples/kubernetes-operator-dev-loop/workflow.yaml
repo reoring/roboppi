@@ -1,0 +1,268 @@
+name: kubernetes-operator-dev-loop
+version: "1"
+timeout: "720m"
+concurrency: 3
+
+# Store workflow state under .roboppi-loop (gitignored by the target repo).
+context_dir: ".roboppi-loop/operator-dev/context"
+
+# Persistent shared context:
+# - Current run pointer: .roboppi-loop/current-run.json
+# - Run alias:           .roboppi-loop/operator-dev/run.json
+# - Living TODO:         .roboppi-loop/operator-dev/todo.md
+# - Team memory:         .roboppi-loop/operator-dev/memory.md
+# - Issue index:         .roboppi-loop/operator-dev/issues/index.md
+# - Canonical issue:     .roboppi-loop/operator-dev/issues/<safe-issue-id>/issue.json
+# - Rerun contract:      .roboppi-loop/operator-dev/current-rerun-contract.json
+
+# Notes:
+# - This workflow expects `request.md` to exist at the workspace root.
+# - It also expects a repo-local implementation plan such as
+#   `implementation-plan.md` or equivalent design docs.
+# - The agent catalog is loaded from the colocated `agents.yaml`.
+
+agents:
+  enabled: true
+  team_name: "kubernetes-operator-dev"
+  members:
+    lead:
+      agent: lead_agent
+    scout:
+      agent: scout
+    planner:
+      agent: implementation_planner
+    implementer:
+      agent: implementer
+    reviewer:
+      agent: reviewer
+    tester:
+      agent: tester
+    publisher:
+      agent: publisher
+      role: dormant
+    manual_verifier:
+      agent: manual_verifier
+      role: dormant
+    e2e_runner:
+      agent: e2e_runner
+      role: dormant
+    kubernetes_debugger:
+      agent: kubernetes_debugger
+      role: dormant
+    spec_referee:
+      agent: spec_referee
+      role: dormant
+    gatekeeper:
+      agent: gatekeeper
+      role: dormant
+    loop_resolver:
+      agent: loop_resolver
+      role: dormant
+    stall_watcher:
+      agent: stall_watcher
+      role: dormant
+
+  tasks:
+    - id: scout-gap-scan
+      title: "Spec-to-code gap scan"
+      description: |
+        Read:
+        - request.md
+        - implementation-plan.md (or the repo's source-of-truth implementation plan)
+        - ARCHITECTURE.md / docs/** for controller design
+
+        Do:
+        - Scan the current codebase and identify the top missing or incorrect parts.
+        - Focus on CRDs, reconciliation logic, admission/webhook behavior, chart wiring,
+          RBAC/codegen, and acceptance coverage.
+        - Call out the highest-value files and commands for the next iteration.
+
+        Output:
+        - Send the lead a concise gap list with file paths and likely verification commands.
+      assigned_to: scout
+
+    - id: planner-initial-plan
+      title: "Create implementation plan + living TODO"
+      description: |
+        Create a concrete, ordered plan and living TODO list for this operator work.
+
+        Read first:
+        - .roboppi-loop/current-run.json
+        - .roboppi-loop/operator-dev/run.json
+        - .roboppi-loop/operator-dev/memory.md (create if missing)
+        - .roboppi-loop/operator-dev/todo.md (preserve existing checkmarks if present)
+        - .roboppi-loop/operator-dev/issues/index.md (create if missing)
+
+        Read:
+        - request.md
+        - implementation-plan.md (or equivalent repo-local plan)
+        - ARCHITECTURE.md / docs/**
+        - AGENTS.md
+
+        Output:
+        - Write or update `.roboppi-loop/operator-dev/todo.md`
+        - Refresh `.roboppi-loop/operator-dev/memory.md`
+        - Record active blockers/remediation items in `.roboppi-loop/operator-dev/issues/`
+
+        TODO requirements:
+        - Ordered and file-oriented when possible
+        - Include CRD/codegen/RBAC/chart gates when relevant
+        - Separate fast local gates from cluster-backed verification
+      assigned_to: planner
+
+    - id: implement-main
+      title: "Implement operator changes end-to-end"
+      description: |
+        Implement the current plan end-to-end.
+
+        Read:
+        - request.md
+        - implementation-plan.md
+        - .roboppi-loop/operator-dev/todo.md
+        - .roboppi-loop/operator-dev/memory.md
+        - ARCHITECTURE.md / docs/**
+        - AGENTS.md
+
+        Deliverables (high level):
+        - CRDs/types/controller logic/charts/RBAC updated as required
+        - Fast validation/tests updated
+        - No secret leakage
+        - Minimal, targeted changes
+
+        When ready for review, message reviewer + lead with:
+        - what changed
+        - where the risky parts are
+        - which fast gates to run
+      assigned_to: implementer
+      depends_on:
+        - scout-gap-scan
+        - planner-initial-plan
+
+    - id: review-main
+      title: "Review implementation"
+      description: |
+        Review the implementation against request.md and the implementation plan.
+
+        Checklist:
+        - API / CRD contract matches the spec
+        - Reconciliation logic is coherent and safe
+        - Generated artifacts / RBAC / chart changes are consistent
+        - Required tests and commands were updated
+        - No destructive behavior by default
+
+        Send actionable feedback to implementer; concise summary to lead.
+      assigned_to: reviewer
+      depends_on:
+        - implement-main
+
+    - id: test-fast-gates
+      title: "Run fast acceptance gates"
+      description: |
+        Run the fast acceptance commands for this operator repo and report results.
+
+        Minimum categories:
+        - build target (for example: make build / make <binary>)
+        - unit/integration tests (for example: go test ./...)
+        - codegen / generated-file checks when relevant
+        - chart / manifest consistency checks when relevant
+
+        Notes:
+        - Cluster-backed E2E runs are handled by the dedicated e2e_runner.
+        - If kubectl/helm/kind are missing, prefer the repo's tool wrapper
+          (for example devbox, mise, asdf, nix, or make targets).
+
+        Output:
+        - Send PASS/FAIL to implementer + lead.
+        - If FAIL: include the first failing command and key error lines.
+      assigned_to: tester
+      depends_on:
+        - implement-main
+
+    - id: todo-sync-initial
+      title: "TODO sync (living checklist + memory)"
+      description: |
+        Keep the TODO, memory, issue index, and rerun contract in sync after each loop.
+
+        Inputs:
+        - .roboppi-loop/current-run.json
+        - .roboppi-loop/operator-dev/run.json
+        - .roboppi-loop/operator-dev/todo.md
+        - .roboppi-loop/operator-dev/memory.md
+        - .roboppi-loop/operator-dev/issues/index.md
+        - .roboppi-loop/operator-dev/current-rerun-contract.json
+        - Latest messages from implementer/reviewer/tester/manual_verifier/e2e_runner/kubernetes_debugger/gatekeeper
+
+        Do:
+        - Update the living TODO in-place; preserve completed checkmarks.
+        - Create or refresh canonical issue state for blocker/remediation/stall items.
+        - Keep the latest rerun contract aligned with the active blocker and authoritative verification target.
+        - Refresh memory.md with current focus, next actions, and active issue ids/paths.
+        - If cluster-backed work is waiting on fresh preflight evidence, tell the lead whether to wake
+          `manual_verifier`, `e2e_runner`, or `kubernetes_debugger`, and which stale tasks to supersede.
+
+        Output:
+        - Message lead + implementer with updated next actions and blockers.
+      assigned_to: planner
+      depends_on:
+        - review-main
+        - test-fast-gates
+
+steps:
+  orchestrate:
+    description: "Lead orchestrates the operator implement -> review -> verify loop"
+    agent: lead_agent
+    instructions: |
+      Orchestrate the implement -> review -> verify loop.
+
+      Persistent context:
+      - .roboppi-loop/current-run.json is the startup pointer for the active run.
+      - .roboppi-loop/operator-dev/run.json is the authoritative current-run alias.
+      - .roboppi-loop/operator-dev/todo.md is the living checklist (planner-owned).
+      - .roboppi-loop/operator-dev/memory.md is the team memory (planner-owned).
+      - .roboppi-loop/operator-dev/issues/index.md and canonical issue.json files are the source of truth for blockers/remediation.
+      - .roboppi-loop/operator-dev/current-rerun-contract.json is the latest machine pointer for cluster-backed reruns.
+
+      Loop hygiene:
+      - This workflow seeds only the core loop tasks. Specialist work is created on demand by the lead.
+      - Trigger "TODO sync (living checklist + memory)" after each meaningful implementation/review/test result.
+      - Do not route blocker/remediation work from mailbox-only state once canonical issue state exists.
+      - Do not start a new implementation iteration until TODO sync has updated next actions and blockers.
+      - Wake dormant specialists only when there is a concrete blocker or gate that requires them.
+      - After a coherent slice is complete and fast gates are green, wake `publisher` only if a stable milestone should be committed.
+
+      Use specialists as follows:
+      - `manual_verifier`: cluster-preserving verification before authoritative reruns
+      - `e2e_runner`: long-running kind/k8s acceptance flows
+      - `kubernetes_debugger`: infrastructure or cluster-backed blocker classification
+      - `spec_referee`: ambiguous API/spec interpretation
+      - `gatekeeper`: clean-tree / provenance verification before reruns
+      - `loop_resolver`: duplicated tasks, stale artifacts, or reused run state
+      - `stall_watcher`: repeated discussion without code movement
+
+    completion_check:
+      agent: completion_checker
+      decision_file: ".roboppi-loop/operator-dev/decision.json"
+      instructions: |
+        Determine whether this operator-development loop is complete.
+
+        Read:
+        - request.md
+        - implementation-plan.md (or equivalent repo-local plan)
+        - .roboppi-loop/operator-dev/todo.md
+        - .roboppi-loop/operator-dev/memory.md
+        - .roboppi-loop/operator-dev/issues/index.md
+        - .roboppi-loop/operator-dev/current-rerun-contract.json if it exists
+
+        Complete only when:
+        1. The requested implementation slice is reflected in code/config/tests.
+        2. The living TODO has no unresolved must-do items for the current slice.
+        3. Fast acceptance gates are green or explicitly waived with written rationale.
+        4. Any active blocker/remediation issue is either resolved or clearly out of scope.
+        5. If cluster-backed verification was required, the latest authoritative result is recorded.
+
+        Write the decision JSON to `.roboppi-loop/operator-dev/decision.json`.
+      capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+      timeout: "15m"
+
+    max_iterations: 12
+    on_iterations_exhausted: abort

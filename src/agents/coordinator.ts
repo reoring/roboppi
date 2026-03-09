@@ -10,21 +10,33 @@
  *
  * See `docs/features/agents.md` §3, §7.
  */
-import { readFile, rm, rename as fsRename, mkdir } from "node:fs/promises";
+import { readFile, readdir, rm, rename as fsRename, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { housekeepMailbox, housekeepTasksInProgress } from "./housekeeping.js";
 import { readTeam, readMembers, deliverMessage } from "./store.js";
 import { appendAgentEvent } from "./agent-events.js";
-import { mailboxEventsPath, tasksEventsPath, membersJsonPath, mailboxRoot, tasksRoot, agentsRoot } from "./paths.js";
+import {
+  mailboxEventsPath,
+  tasksEventsPath,
+  membersJsonPath,
+  mailboxRoot,
+  tasksRoot,
+  agentsRoot,
+  inboxNew,
+  inboxProcessing,
+  inboxCur,
+  inboxDead,
+} from "./paths.js";
 import { ResidentAgent } from "./resident-agent.js";
 import {
   DEFAULT_RECONCILE_INTERVAL_MS,
   DEFAULT_MAX_TEAMMATES,
   DEFAULT_MAX_SPAWNS_PER_MINUTE,
+  DEFAULT_BROKER_PREVIEW_MAX_BYTES,
 } from "./constants.js";
 import type { ExecEventSink } from "../tui/exec-event.js";
-import type { MailboxEvent, TaskEvent, CleanupPolicy, MemberEntry } from "./types.js";
+import type { AgentMessage, MailboxEvent, TaskEvent, CleanupPolicy, MemberEntry } from "./types.js";
 import type { StepRunner, StepRunResult } from "../workflow/executor.js";
 import type { AgentMemberConfig } from "../workflow/types.js";
 import type { AgentCatalog, AgentProfile } from "../workflow/agent-catalog.js";
@@ -33,6 +45,18 @@ import type { StepDefinition } from "../workflow/types.js";
 const DEFAULT_HOUSEKEEP_INTERVAL_MS = 60_000; // 1 minute
 const DEFAULT_TAIL_INTERVAL_MS = 2_000; // 2 seconds
 const DEFAULT_TEAMMATE_SHUTDOWN_WAIT_MS = 30_000; // 30 seconds
+const CHAT_BODY_PREVIEW_MAX_BYTES = DEFAULT_BROKER_PREVIEW_MAX_BYTES;
+
+function truncateBodyPreview(body: string): string | undefined {
+  if (!body) return undefined;
+
+  const bodyBytes = Buffer.from(body, "utf-8");
+  if (bodyBytes.length <= CHAT_BODY_PREVIEW_MAX_BYTES) {
+    return body;
+  }
+
+  return `${bodyBytes.subarray(0, CHAT_BODY_PREVIEW_MAX_BYTES).toString("utf-8")}...`;
+}
 
 export interface AgentCoordinatorOptions {
   contextDir: string;
@@ -350,13 +374,22 @@ export class AgentCoordinator {
       return; // members.json not readable yet
     }
 
+    if (this.stopped) return;
+
     // Sort by member_id for determinism
     desiredMembers.sort((a, b) => a.member_id.localeCompare(b.member_id));
+
+    // A desired member may still need to respawn if its prior ResidentAgent
+    // stopped unexpectedly. Prune stopped entries before computing spawn gaps
+    // so reconcile does not treat a dead agent as satisfying desired state.
+    this.removeStoppedResidentAgents();
+
+    if (this.stopped) return;
 
     // Build sets for diff
     const desiredIds = new Set(
       desiredMembers
-        .filter((m) => m.member_id !== this.leadMemberId && m.role !== "human")
+        .filter((m) => m.member_id !== this.leadMemberId && m.role !== "human" && m.role !== "dormant")
         .map((m) => m.member_id),
     );
     const runningResidentIds = new Set(
@@ -372,8 +405,10 @@ export class AgentCoordinator {
 
     // Spawn missing (desired but not running)
     for (const member of desiredMembers) {
+      if (this.stopped) return;
       if (member.member_id === this.leadMemberId) continue;
       if (member.role === "human") continue;
+      if (member.role === "dormant") continue;
       if (runningResidentIds.has(member.member_id)) continue;
       if (runningLegacyIds.has(member.member_id)) continue;
       // Skip members with existing resident agents (even stopped — cleaned below)
@@ -403,7 +438,11 @@ export class AgentCoordinator {
       }
 
       await this.spawnSingleTeammate(member);
+
+      if (this.stopped) return;
     }
+
+    if (this.stopped) return;
 
     // Shutdown removed resident agents
     for (const agent of this.residentAgents) {
@@ -431,6 +470,15 @@ export class AgentCoordinator {
       const h = this.teammates[i]!;
       if (!desiredIds.has(h.memberId) && h.settled) {
         this.teammates.splice(i, 1);
+      }
+    }
+  }
+
+  private removeStoppedResidentAgents(): void {
+    for (let i = this.residentAgents.length - 1; i >= 0; i--) {
+      const agent = this.residentAgents[i]!;
+      if (!agent.isRunning) {
+        this.residentAgents.splice(i, 1);
       }
     }
   }
@@ -672,7 +720,7 @@ export class AgentCoordinator {
     for (const line of newLines) {
       try {
         const event = JSON.parse(line) as MailboxEvent;
-        this.emitMailboxEvent(event);
+        await this.emitMailboxEvent(event);
       } catch {
         // skip malformed lines
       }
@@ -702,8 +750,9 @@ export class AgentCoordinator {
     }
   }
 
-  private emitMailboxEvent(event: MailboxEvent): void {
+  private async emitMailboxEvent(event: MailboxEvent): Promise<void> {
     const teamId = this.teamId ?? "unknown";
+    const bodyPreview = await this.resolveMailboxBodyPreview(event);
 
     switch (event.type) {
       case "message_delivered":
@@ -715,7 +764,7 @@ export class AgentCoordinator {
           fromMemberId: event.from ?? "unknown",
           toMemberId: event.to,
           topic: event.topic ?? "",
-          bodyPreview: event.body_preview,
+          bodyPreview,
         });
         break;
 
@@ -728,7 +777,7 @@ export class AgentCoordinator {
           fromMemberId: event.from ?? "unknown",
           toMemberId: event.by ?? event.to ?? "unknown",
           topic: event.topic ?? "",
-          bodyPreview: event.body_preview,
+          bodyPreview,
         });
         break;
 
@@ -742,6 +791,56 @@ export class AgentCoordinator {
         });
         break;
     }
+  }
+
+  private async resolveMailboxBodyPreview(
+    event: MailboxEvent,
+  ): Promise<string | undefined> {
+    if (event.body_preview) return event.body_preview;
+    if (event.type !== "message_delivered" && event.type !== "message_claimed") {
+      return undefined;
+    }
+
+    const recipientId = event.to ?? event.by;
+    if (!recipientId) return undefined;
+
+    const message = await this.readMailboxMessage(recipientId, event.message_id);
+    if (!message?.body) return undefined;
+
+    return truncateBodyPreview(message.body);
+  }
+
+  private async readMailboxMessage(
+    memberId: string,
+    messageId: string,
+  ): Promise<AgentMessage | null> {
+    const dirs = [
+      inboxNew(this.contextDir, memberId),
+      inboxProcessing(this.contextDir, memberId),
+      inboxCur(this.contextDir, memberId),
+      inboxDead(this.contextDir, memberId),
+    ];
+
+    for (const dir of dirs) {
+      let entries: string[];
+      try {
+        entries = await readdir(dir);
+      } catch {
+        continue;
+      }
+
+      const filename = entries.find((entry) => entry.endsWith(".json") && entry.includes(messageId));
+      if (!filename) continue;
+
+      try {
+        const raw = await readFile(resolve(dir, filename), "utf-8");
+        return JSON.parse(raw) as AgentMessage;
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
   }
 
   private emitTaskEvent(event: TaskEvent): void {
@@ -762,6 +861,17 @@ export class AgentCoordinator {
       case "task_completed":
         this.sink.emit({
           type: "agent_task_completed",
+          ts: event.ts,
+          teamId,
+          taskId: event.task_id,
+          byMemberId: event.by ?? "unknown",
+          title: event.title,
+        });
+        break;
+
+      case "task_superseded":
+        this.sink.emit({
+          type: "agent_task_superseded",
           ts: event.ts,
           teamId,
           taskId: event.task_id,

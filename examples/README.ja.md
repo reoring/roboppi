@@ -42,6 +42,7 @@ timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 - `examples/todo-loop.yaml`: 反復ループの最小パターン
 - `examples/agent-pr-loop.yaml`: 大きめのエージェントループ（デモは `examples/agent-pr-loop-demo/`）
 - `examples/appthrust-dashboard/workflow.yaml`: チームプロジェクト向けの本番ワークフロー（design -> todo -> implement -> validate）
+- `examples/kubernetes-operator-dev-loop/workflow.yaml`: Kubernetes operator / controller 開発向けの汎用的な長期 agents ループ
 
 ## daemon の例
 

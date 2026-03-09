@@ -20,6 +20,11 @@ export type ExecEvent =
         steps: string[];
         concurrency?: number;
         timeout: string;
+        agentProfiles?: Record<string, {
+          agentId?: string;
+          mcpAvailable?: string[];
+          skillHints?: string[];
+        }>;
       };
     }
   | {
@@ -108,6 +113,14 @@ export type ExecEvent =
     }
   | {
       type: "agent_task_completed";
+      ts: number;
+      teamId: string;
+      taskId: string;
+      byMemberId: string;
+      title?: string;
+    }
+  | {
+      type: "agent_task_superseded";
       ts: number;
       teamId: string;
       taskId: string;

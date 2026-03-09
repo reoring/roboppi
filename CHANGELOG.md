@@ -13,6 +13,25 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Fixed
 
 
+## [0.1.10] - 2026-03-09
+
+### Added
+
+- Added `roboppi agents tasks supersede` and `roboppi agents status get|set` for file-backed workflow status summaries and task replacement flow.
+- Extended the agents workflow DSL with seed task `id`/`depends_on`/`tags`/`requires_plan_approval`, member `role`, and worker `defaultArgs`.
+- Added TUI Timeline/Raw/Usage tabs with structured LLM log summaries, agent runtime usage stats, and dormant-agent visibility.
+
+### Changed
+
+- Agent coordination now prunes stopped resident agents before reconcile, skips dormant members, restores mailbox body previews, and emits task-superseded activity events.
+- The Codex CLI adapter now normalizes legacy sandbox/approval flags and merges task/profile `defaultArgs` before dispatch.
+
+### Fixed
+
+- Clarified agent task claimability and dependency handling, including seeded dependency resolution and broader test coverage.
+- Added verification around supervised IPC capability detection, TUI state/runtime accounting, and prompt-byte tracking in worker costs.
+
+
 ## [0.1.9] - 2026-03-06
 
 ### Added

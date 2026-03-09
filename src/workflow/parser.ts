@@ -381,6 +381,9 @@ function resolveTaskLikeWithAgent(
   if (resolved["worker"] === undefined && agent.worker !== undefined) {
     resolved["worker"] = agent.worker;
   }
+  if (resolved["defaultArgs"] === undefined && agent.defaultArgs !== undefined) {
+    resolved["defaultArgs"] = [...agent.defaultArgs];
+  }
   if (resolved["model"] === undefined && agent.model !== undefined) {
     resolved["model"] = agent.model;
   }
@@ -429,6 +432,7 @@ function validateCompletionCheck(check: unknown, stepId: string, agents?: AgentC
   assertString(obj["instructions"], `steps.${stepId}.completion_check.instructions`);
   validateWorker(obj["worker"], `steps.${stepId}.completion_check.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.completion_check.capabilities`);
+  validateOptionalStringArray(obj["defaultArgs"], `steps.${stepId}.completion_check.defaultArgs`);
   validateOptionalString(obj["model"], `steps.${stepId}.completion_check.model`);
   validateOptionalString(obj["variant"], `steps.${stepId}.completion_check.variant`);
 
@@ -453,6 +457,7 @@ function validateSubworkflowStep(stepId: string, obj: Record<string, unknown>): 
     "agent",
     "workspace",
     "worker",
+    "defaultArgs",
     "model",
     "instructions",
     "capabilities",
@@ -611,6 +616,7 @@ function validateStep(stepId: string, step: unknown, agents?: AgentCatalog): Ste
   assertString(obj["instructions"], `steps.${stepId}.instructions`);
   validateWorker(obj["worker"], `steps.${stepId}.worker`);
   validateCapabilities(obj["capabilities"], `steps.${stepId}.capabilities`);
+  validateOptionalStringArray(obj["defaultArgs"], `steps.${stepId}.defaultArgs`);
   validateOptionalString(obj["model"], `steps.${stepId}.model`);
   validateOptionalString(obj["variant"], `steps.${stepId}.variant`);
 
@@ -773,6 +779,7 @@ function validateManagementAgent(value: unknown, fieldPrefix: string, agents?: A
   }
 
   validateOptionalString(obj["model"], `${fieldPrefix}.model`);
+  validateOptionalStringArray(obj["defaultArgs"], `${fieldPrefix}.defaultArgs`);
   if (obj["capabilities"] !== undefined) {
     validateCapabilities(obj["capabilities"], `${fieldPrefix}.capabilities`);
   }
@@ -979,6 +986,7 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
       }
       const member = memberVal as Record<string, unknown>;
       assertString(member["agent"], `agents.members.${memberId}.agent`);
+      validateOptionalString(member["role"], `agents.members.${memberId}.role`);
     }
   }
 
@@ -988,19 +996,43 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
       throw new WorkflowParseError("agents.tasks must be an array");
     }
 
+    const tasks = obj["tasks"] as unknown[];
+    const usesTaskDependencies = tasks.some((taskVal) => {
+      if (typeof taskVal !== "object" || taskVal === null || Array.isArray(taskVal)) {
+        return false;
+      }
+      const task = taskVal as Record<string, unknown>;
+      return Array.isArray(task["depends_on"]) && task["depends_on"].length > 0;
+    });
+
     // Collect declared member ids for assigned_to validation
     const declaredMembers = new Set<string>(
       obj["members"] && typeof obj["members"] === "object" && !Array.isArray(obj["members"])
         ? Object.keys(obj["members"] as Record<string, unknown>)
         : [],
     );
+    const declaredTaskIds = new Set<string>();
 
-    for (let i = 0; i < obj["tasks"].length; i++) {
-      const taskVal = obj["tasks"][i];
+    for (let i = 0; i < tasks.length; i++) {
+      const taskVal = tasks[i];
       if (typeof taskVal !== "object" || taskVal === null || Array.isArray(taskVal)) {
         throw new WorkflowParseError(`agents.tasks[${i}] must be an object`);
       }
       const task = taskVal as Record<string, unknown>;
+      if (task["id"] !== undefined) {
+        assertPathSegment(task["id"], `agents.tasks[${i}].id`);
+        const taskId = task["id"] as string;
+        if (declaredTaskIds.has(taskId)) {
+          throw new WorkflowParseError(
+            `agents.tasks[${i}].id duplicates "${taskId}"`,
+          );
+        }
+        declaredTaskIds.add(taskId);
+      } else if (usesTaskDependencies) {
+        throw new WorkflowParseError(
+          `agents.tasks[${i}].id is required when agents.tasks uses depends_on`,
+        );
+      }
       assertString(task["title"], `agents.tasks[${i}].title`);
       assertString(task["description"], `agents.tasks[${i}].description`);
 
@@ -1010,6 +1042,30 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
           throw new WorkflowParseError(
             `agents.tasks[${i}].assigned_to references unknown member "${task["assigned_to"]}". Declared members: ${[...declaredMembers].join(", ") || "(none)"}`,
           );
+        }
+      }
+
+      validateOptionalStringArray(task["depends_on"], `agents.tasks[${i}].depends_on`);
+      validateOptionalStringArray(task["tags"], `agents.tasks[${i}].tags`);
+      validateOptionalBoolean(task["requires_plan_approval"], `agents.tasks[${i}].requires_plan_approval`);
+    }
+
+    if (usesTaskDependencies) {
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i] as Record<string, unknown>;
+        const taskId = task["id"] as string;
+        const deps = Array.isArray(task["depends_on"]) ? task["depends_on"] as string[] : [];
+        for (const dep of deps) {
+          if (!declaredTaskIds.has(dep)) {
+            throw new WorkflowParseError(
+              `agents.tasks[${i}].depends_on references unknown task "${dep}". Declared task ids: ${[...declaredTaskIds].join(", ") || "(none)"}`,
+            );
+          }
+          if (dep === taskId) {
+            throw new WorkflowParseError(
+              `agents.tasks[${i}].depends_on must not reference itself ("${taskId}")`,
+            );
+          }
         }
       }
     }

@@ -203,6 +203,21 @@ describe("buildArgs", () => {
     expect(args).toContain("--no-telemetry");
   });
 
+  test("includes task defaultArgs after config defaultArgs", () => {
+    const task = makeTask({ defaultArgs: ["--permission-mode", "bypassPermissions"] });
+    const config = {
+      ...makeDefaultConfig(),
+      defaultArgs: ["--verbose"],
+    };
+    const args = buildArgs(task, config);
+
+    expect(args.slice(0, 3)).toEqual([
+      "--verbose",
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+  });
+
   test("includes --model when task.model is set (overrides defaultArgs)", () => {
     const task = makeTask({ model: "claude-opus-4-6" });
     const config = {

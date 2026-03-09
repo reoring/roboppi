@@ -42,6 +42,7 @@ export interface ResolvedWorkerTaskDef {
   workerKind: WorkerKind;
   workspaceRef: string;
   instructions: string;
+  defaultArgs?: string[];
   model?: string;
   variant?: string;
   capabilities: WorkerCapability[];
@@ -59,6 +60,7 @@ type TaskLikeDef = {
   worker?: StepDefinition["worker"];
   workspace?: string;
   instructions?: string;
+  defaultArgs?: string[];
   capabilities?: StepDefinition["capabilities"];
   timeout?: StepDefinition["timeout"];
   max_steps?: StepDefinition["max_steps"];
@@ -127,6 +129,7 @@ export function resolveTaskLike(
     workerKind: toWorkerKind(def.worker),
     workspaceRef,
     instructions: def.instructions ?? "",
+    ...(Array.isArray(def.defaultArgs) ? { defaultArgs: [...def.defaultArgs] } : {}),
     capabilities: toWorkerCapabilities(def.capabilities ?? []),
     timeoutMs,
     ...(def.model ? { model: def.model } : {}),
@@ -159,6 +162,7 @@ export function buildWorkerTask(
     workerKind: resolved.workerKind,
     workspaceRef: resolved.workspaceRef,
     instructions: resolved.instructions,
+    ...(resolved.defaultArgs ? { defaultArgs: [...resolved.defaultArgs] } : {}),
     capabilities: resolved.capabilities,
     outputMode: OutputMode.BATCH,
     ...(resolved.model ? { model: resolved.model } : {}),

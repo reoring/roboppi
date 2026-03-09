@@ -456,6 +456,7 @@ export class CoreIpcStepRunner implements StepRunner {
       workerKind: task.workerKind,
       workspaceRef: task.workspaceRef,
       instructions: task.instructions,
+      ...(task.defaultArgs ? { defaultArgs: [...task.defaultArgs] } : {}),
       ...(task.model ? { model: task.model } : {}),
       ...(task.variant ? { variant: task.variant } : {}),
       capabilities: task.capabilities,

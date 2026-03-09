@@ -11,8 +11,13 @@ import path from "node:path";
 const TEST_TMP_ROOT = path.join(process.cwd(), ".roboppi-loop", "tmp", "unit-coordinator");
 
 import { AgentCoordinator } from "../../../src/agents/coordinator.js";
-import { initAgentsContext, writeMembersConfig } from "../../../src/agents/store.js";
-import { agentEventsPath } from "../../../src/agents/paths.js";
+import {
+  initAgentsContext,
+  writeMembersConfig,
+  deliverMessage,
+  recvMessages,
+} from "../../../src/agents/store.js";
+import { agentEventsPath, mailboxEventsPath } from "../../../src/agents/paths.js";
 import type { StepRunResult } from "../../../src/workflow/executor.js";
 import type { StepDefinition } from "../../../src/workflow/types.js";
 import type { ExecEventSink, ExecEvent } from "../../../src/tui/exec-event.js";
@@ -412,11 +417,191 @@ describe("AgentCoordinator bounded shutdown (Spec 3.2)", () => {
   });
 });
 
+describe("AgentCoordinator mailbox previews", () => {
+  it("emits in-memory body previews for chat without persisting message bodies", async () => {
+    const { teamId } = await initAgentsContext({
+      contextDir,
+      teamName: "test",
+      leadMemberId: "lead",
+      members: [
+        { member_id: "lead", name: "Lead", role: "team_lead" },
+        { member_id: "worker", name: "Worker", role: "worker" },
+      ],
+    });
+
+    const events: ExecEvent[] = [];
+    const coord = new AgentCoordinator({
+      contextDir,
+      sink: { emit(event: ExecEvent) { events.push(event); } },
+      teamId,
+    });
+
+    await coord.start();
+
+    const body = "hello from lead to worker";
+    const { messageId } = await deliverMessage({
+      contextDir,
+      teamId,
+      fromMemberId: "lead",
+      fromName: "Lead",
+      toMemberId: "worker",
+      topic: "chat",
+      body,
+    });
+
+    await (coord as unknown as { tailEvents(): Promise<void> }).tailEvents();
+
+    const sentEvent = events.find(
+      (event): event is Extract<ExecEvent, { type: "agent_message_sent" }> =>
+        event.type === "agent_message_sent" && event.messageId === messageId,
+    );
+    expect(sentEvent?.bodyPreview).toBe(body);
+
+    await recvMessages({ contextDir, memberId: "worker", claim: true, max: 1 });
+    await (coord as unknown as { tailEvents(): Promise<void> }).tailEvents();
+
+    const receivedEvent = events.find(
+      (event): event is Extract<ExecEvent, { type: "agent_message_received" }> =>
+        event.type === "agent_message_received" && event.messageId === messageId,
+    );
+    expect(receivedEvent?.bodyPreview).toBe(body);
+
+    const mailboxEvents = await readFile(mailboxEventsPath(contextDir), "utf-8");
+    expect(mailboxEvents).not.toContain(body);
+
+    await coord.stop();
+  });
+});
+
 // -------------------------------------------------------------------------
 // Dynamic membership reconcile
 // -------------------------------------------------------------------------
 
 describe("AgentCoordinator reconcile (dynamic membership)", () => {
+  it("respawns a desired member when its ResidentAgent stops unexpectedly", async () => {
+    await initAgentsContext({
+      contextDir,
+      teamName: "test",
+      leadMemberId: "lead",
+      members: [
+        { member_id: "lead", name: "Lead", role: "team_lead" },
+        { member_id: "manual_verifier", name: "Manual Verifier", role: "worker" },
+      ],
+    });
+
+    const events: ExecEvent[] = [];
+    const trackingSink: ExecEventSink = { emit(e: ExecEvent) { events.push(e); } };
+
+    const coord = new AgentCoordinator({
+      contextDir,
+      sink: trackingSink,
+      workspaceDir: process.cwd(),
+      members: {
+        lead: { agent: "lead_agent" },
+        manual_verifier: { agent: "manual_verifier" },
+      },
+      leadMemberId: "lead",
+      teamId: "test-team-id",
+      reconcileIntervalMs: 100,
+      teammateShutdownWaitMs: 200,
+    });
+
+    await coord.start();
+    await new Promise<void>((r) => setTimeout(r, 150));
+
+    const coordInternals = coord as unknown as {
+      residentAgents: Array<{ memberId: string; isRunning: boolean; stop(): void }>;
+    };
+    const originalAgent = coordInternals.residentAgents.find((a) => a.memberId === "manual_verifier");
+    expect(originalAgent).toBeDefined();
+    expect(originalAgent?.isRunning).toBe(true);
+
+    originalAgent!.stop();
+    expect(originalAgent?.isRunning).toBe(false);
+
+    await new Promise<void>((r) => setTimeout(r, 300));
+
+    const runningEvents = events.filter(
+      (e) => e.type === "step_state" && (e as any).stepId === "_agent:manual_verifier" && (e as any).status === "RUNNING",
+    );
+    expect(runningEvents.length).toBeGreaterThanOrEqual(2);
+
+    const liveAgents = coordInternals.residentAgents.filter(
+      (a) => a.memberId === "manual_verifier" && a.isRunning,
+    );
+    expect(liveAgents).toHaveLength(1);
+
+    await coord.stop();
+  });
+
+  it("does not respawn a desired member after shutdown begins mid-reconcile", async () => {
+    await initAgentsContext({
+      contextDir,
+      teamName: "test",
+      leadMemberId: "lead",
+      members: [
+        { member_id: "lead", name: "Lead", role: "team_lead" },
+        { member_id: "manual_verifier", name: "Manual Verifier", role: "worker" },
+      ],
+    });
+
+    const events: ExecEvent[] = [];
+    const trackingSink: ExecEventSink = { emit(e: ExecEvent) { events.push(e); } };
+
+    const coord = new AgentCoordinator({
+      contextDir,
+      sink: trackingSink,
+      workspaceDir: process.cwd(),
+      members: {
+        lead: { agent: "lead_agent" },
+        manual_verifier: { agent: "manual_verifier" },
+      },
+      leadMemberId: "lead",
+      teamId: "test-team-id",
+      reconcileIntervalMs: 1_000,
+      teammateShutdownWaitMs: 200,
+    });
+
+    await coord.start();
+    await new Promise<void>((r) => setTimeout(r, 150));
+
+    const coordInternals = coord as unknown as {
+      stopped: boolean;
+      residentAgents: Array<{ memberId: string; isRunning: boolean; stop(): void }>;
+      removeStoppedResidentAgents(): void;
+      reconcile(): Promise<void>;
+    };
+
+    const originalAgent = coordInternals.residentAgents.find((a) => a.memberId === "manual_verifier");
+    expect(originalAgent).toBeDefined();
+    originalAgent!.stop();
+    expect(originalAgent?.isRunning).toBe(false);
+
+    const runningEventsBefore = events.filter(
+      (e) => e.type === "step_state" && (e as any).stepId === "_agent:manual_verifier" && (e as any).status === "RUNNING",
+    ).length;
+
+    const originalRemoveStopped = coordInternals.removeStoppedResidentAgents.bind(coordInternals);
+    coordInternals.removeStoppedResidentAgents = () => {
+      coordInternals.stopped = true;
+      originalRemoveStopped();
+    };
+
+    await coordInternals.reconcile();
+
+    const runningEventsAfter = events.filter(
+      (e) => e.type === "step_state" && (e as any).stepId === "_agent:manual_verifier" && (e as any).status === "RUNNING",
+    ).length;
+    expect(runningEventsAfter).toBe(runningEventsBefore);
+
+    const liveAgents = coordInternals.residentAgents.filter(
+      (a) => a.memberId === "manual_verifier" && a.isRunning,
+    );
+    expect(liveAgents).toHaveLength(0);
+
+    await coord.stop();
+  });
+
   it("spawns a newly-added member as a ResidentAgent", async () => {
     await initAgentsContext({
       contextDir,
