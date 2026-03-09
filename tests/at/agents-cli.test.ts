@@ -81,7 +81,11 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       : spawn(process.execPath, ["run", "src/cli.ts", "--", "agents", ...args], {
           cwd: REPO_ROOT,
           env: env ?? createCleanEnv(),
-          stdio: ["pipe", "pipe", "pipe"],
+          // On CI, a writable stdin pipe for Bun child processes can occasionally
+          // keep the CLI invocation from closing promptly even though these
+          // commands never read stdin. Use `ignore` unless stdin is explicitly
+          // redirected via the shell path above.
+          stdio: ["ignore", "pipe", "pipe"],
         });
 
     let stdout = "";
@@ -92,10 +96,6 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-
-    if (!stdinPath && child.stdin) {
-      child.stdin.end();
-    }
 
     // Handle process error (e.g. ENOENT, spawn failure)
     child.once("error", (err) => {
