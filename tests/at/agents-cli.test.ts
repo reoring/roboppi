@@ -65,28 +65,30 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
   }
 
   return new Promise<CliResult>((resolve) => {
-    const child = stdinPath
-      ? spawn(
-          "bash",
-          [
-            "-lc",
-            `${shellQuote(process.execPath)} run src/cli.ts -- agents ${args.map(shellQuote).join(" ")} < ${shellQuote(stdinPath)}`,
-          ],
-          {
-            cwd: REPO_ROOT,
-            env: env ?? createCleanEnv(),
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        )
-      : spawn(process.execPath, ["run", "src/cli.ts", "--", "agents", ...args], {
-          cwd: REPO_ROOT,
-          env: env ?? createCleanEnv(),
-          // On CI, a writable stdin pipe for Bun child processes can occasionally
-          // keep the CLI invocation from closing promptly even though these
-          // commands never read stdin. Use `ignore` unless stdin is explicitly
-          // redirected via the shell path above.
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+    const command = [
+      "exec",
+      shellQuote(process.execPath),
+      "run",
+      "src/cli.ts",
+      "--",
+      "agents",
+      ...args.map(shellQuote),
+    ].join(" ");
+    const child = spawn(
+      "bash",
+      [
+        "-lc",
+        stdinPath ? `${command} < ${shellQuote(stdinPath)}` : command,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: env ?? createCleanEnv(),
+        // Always route through `bash -lc exec ...` because Bun 1.3.8 can
+        // intermittently hang when a `bun run ...` process is spawned directly
+        // under this AT harness on CI.
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
 
     let stdout = "";
     let stderr = "";
