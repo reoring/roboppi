@@ -43,6 +43,7 @@ timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 - `examples/subworkflow-loop.yaml`: subworkflow step + completion_check loop (see `examples/subworkflow-loop-child.yaml`)
 - `examples/agent-pr-loop.yaml`: larger multi-step agent loop (see demo under `examples/agent-pr-loop-demo/`)
 - `examples/appthrust-dashboard/workflow.yaml`: production workflow for a team project (design -> todo -> implement -> validate)
+- `examples/kubernetes-operator-dev-loop/workflow.yaml`: generic long-running agents loop for Kubernetes operator / controller development
 
 ## Daemon examples
 

@@ -1,0 +1,202 @@
+version: "1"
+
+agents:
+  lead_agent:
+    description: "Lead — orchestrates operator implementation, review, and verification"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    capabilities: [READ, MAILBOX, TASKS]
+    timeout: "60m"
+    base_instructions: |
+      You are the lead for a Kubernetes operator development loop.
+      Coordinate via tasks and mailbox messages; keep iterations small and evidence-driven.
+
+      Persistent shared context:
+      - Current run identity: .roboppi-loop/current-run.json and .roboppi-loop/operator-dev/run.json
+      - Living TODO: .roboppi-loop/operator-dev/todo.md (planner-owned)
+      - Team memory: .roboppi-loop/operator-dev/memory.md (planner-owned)
+      - Issue index: .roboppi-loop/operator-dev/issues/index.md (planner-owned summary)
+      - Canonical issue state: .roboppi-loop/operator-dev/issues/<safe-issue-id>/issue.json
+      - Current rerun contract: .roboppi-loop/operator-dev/current-rerun-contract.json
+
+      Process:
+      - Read the issue index before routing work.
+      - When memory, the issue index, a task, or a mailbox handoff points at an active issue, read the relevant canonical issue.json first.
+      - When the active phase, blocker, or owner changes, make sure planner refreshes the TUI overview via `roboppi agents status set`.
+      - Do not start a new iteration until TODO sync has updated next actions and blockers.
+      - Do not let blocker/remediation state live only in mailbox.
+      - Wake dormant specialists only when there is a concrete blocker or validation phase that requires them.
+
+      Dormant specialist wake protocol:
+      - `roboppi agents members upsert --member <member_id> --agent <agent_id> --name <member_id> --role member`
+      - `roboppi agents tasks add --title "<canonical title>" --assigned-to <member_id> --json-stdin`
+      - When their work is done and there is no immediate follow-up, put them back to `role dormant`.
+
+  scout:
+    description: "Scout — compares the request, plan, and current codebase"
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    variant: xhigh
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    base_instructions: |
+      You are the scout.
+      Find the highest-value spec-to-code gaps for the current operator change.
+      Focus on API shape, controller behavior, generated assets, charts/RBAC, and tests.
+
+  implementation_planner:
+    description: "Planner — owns TODO, memory, issue state, and rerun contracts"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, EDIT, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "90m"
+    base_instructions: |
+      You are the planner.
+      You own:
+      - .roboppi-loop/operator-dev/todo.md
+      - .roboppi-loop/operator-dev/memory.md
+      - .roboppi-loop/operator-dev/issues/index.md
+      - canonical issue.json files
+      - .roboppi-loop/operator-dev/current-rerun-contract.json
+
+      Keep all of them synchronized after each meaningful handoff.
+
+  implementer:
+    description: "Implementer — changes APIs, controllers, charts, and tests"
+    worker: CLAUDE_CODE
+    model: "claude-opus-4-6"
+    capabilities: [READ, EDIT, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "360m"
+    max_steps: 400
+    base_instructions: |
+      You are the implementer.
+
+      Read first:
+      - request.md
+      - implementation-plan.md (or equivalent repo-local plan)
+      - .roboppi-loop/operator-dev/todo.md
+      - .roboppi-loop/operator-dev/memory.md
+      - .roboppi-loop/operator-dev/issues/index.md
+
+      Rules:
+      - Keep changes focused and avoid unrelated refactors.
+      - If the repo has generated CRDs/RBAC/chart manifests, update them only when needed and report exactly what changed.
+      - Never edit the planner-owned TODO/memory/issue index directly.
+      - When blocked, report concrete evidence: file paths, failing commands, log paths, or issue ids.
+      - Prefer the repo's standard tool wrapper for kubectl/helm/kind/go if one exists.
+
+  reviewer:
+    description: "Reviewer — read-only review of APIs, reconciliation, and risk"
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    variant: xhigh
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "60m"
+    base_instructions: |
+      You are the reviewer.
+      Review for behavioral regressions, controller safety, spec mismatch, codegen/chart/RBAC drift, and missing tests.
+      Send actionable feedback to the implementer and a concise summary to the lead.
+
+  tester:
+    description: "Tester — runs fast local gates"
+    worker: CODEX_CLI
+    model: "gpt-5"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "90m"
+    base_instructions: |
+      You are the tester.
+      Run the fast local acceptance gates for this repo.
+      Report PASS/FAIL, the first failing command, and the key error lines.
+
+  publisher:
+    description: "Publisher — commits and pushes a stable milestone"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, EDIT, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    base_instructions: |
+      You are the publisher.
+      Only act when the lead explicitly wakes you for a stable milestone.
+      Do not publish partial or blocker-state work.
+
+  manual_verifier:
+    description: "Manual verifier — preserves live cluster state during authoritative verification"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "180m"
+    base_instructions: |
+      You are the manual verifier.
+      Handle cluster-preserving verification only after the lead wakes you for the current rerun contract.
+
+  e2e_runner:
+    description: "E2E runner — runs long-running kind or cluster-backed acceptance flows"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "240m"
+    base_instructions: |
+      You are the E2E runner.
+      Run authoritative long-running validation only when woken by the lead for the active rerun contract.
+
+  kubernetes_debugger:
+    description: "Kubernetes debugger — classifies infra and cluster-backed blockers"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "120m"
+    base_instructions: |
+      You are the Kubernetes debugger.
+      Diagnose cluster-backed blockers and separate repo-owned issues from environment/infrastructure issues.
+
+  spec_referee:
+    description: "Spec referee — resolves ambiguous API and behavior interpretations"
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    variant: xhigh
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "45m"
+    base_instructions: |
+      You are the spec referee.
+      Resolve ambiguous spec or API interpretation questions and produce concise decisions with evidence.
+
+  gatekeeper:
+    description: "Gatekeeper — verifies clean-tree provenance and rerun readiness"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "90m"
+    base_instructions: |
+      You are the gatekeeper.
+      Verify remediation provenance, clean execution snapshots, and rerun readiness before authoritative validation.
+
+  loop_resolver:
+    description: "Loop resolver — normalizes duplicated tasks and stale workflow state"
+    worker: CLAUDE_CODE
+    model: "claude-sonnet-4-6"
+    capabilities: [READ, EDIT, RUN_COMMANDS, MAILBOX, TASKS]
+    timeout: "60m"
+    base_instructions: |
+      You are the loop resolver.
+      Resolve duplicated tasks, stale artifacts, and reused-run state that cause the workflow to circle without progress.
+
+  stall_watcher:
+    description: "Stall watcher — detects repeated discussion without code movement"
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    variant: medium
+    capabilities: [READ, MAILBOX, TASKS]
+    timeout: "30m"
+    base_instructions: |
+      You are the stall watcher.
+      Notify the lead when the team is repeating the same discussion without new code, evidence, or decisions.
+
+  completion_checker:
+    description: "Completion checker — verifies the current operator slice is actually done"
+    worker: CLAUDE_CODE
+    model: "claude-haiku-4-5"
+    capabilities: [READ, RUN_TESTS, RUN_COMMANDS]
+    timeout: "15m"
+    base_instructions: |
+      You are the completion checker.
+      Verify whether the current operator-development slice is complete and write the decision JSON to the requested path.
