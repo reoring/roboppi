@@ -8,7 +8,7 @@
  * - max task file size enforcement on claim/complete
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -45,6 +45,13 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(contextDir, { recursive: true, force: true });
 });
+
+async function writeCurrentStatePhase(phase: string, phaseReason = `${phase} reason`): Promise<void> {
+  await writeFile(
+    path.join(contextDir, "current-state.json"),
+    JSON.stringify({ phase, phase_reason: phaseReason }, null, 2),
+  );
+}
 
 describe("addTask / listTasks", () => {
   it("creates a task in pending/ and can be listed", async () => {
@@ -233,6 +240,27 @@ describe("claimTask", () => {
     const blocked = events.find((e: any) => e.type === "task_blocked");
     expect(blocked).toBeTruthy();
   });
+
+  it("blocks claim when the canonical phase is outside the task phase guard", async () => {
+    await writeCurrentStatePhase("awaiting-remediation");
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Proof Task",
+      description: "",
+      phaseGuard: {
+        source_kind: "current_state_phase_v1",
+        source_path: "current-state.json",
+        allowed_phases: ["ready-for-next-e2e"],
+      },
+    });
+
+    const result = await claimTask(contextDir, taskId, "alice");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Current phase "awaiting-remediation"');
+
+    const blockedEntries = await readdir(tasksStatusDir(contextDir, "blocked"));
+    expect(blockedEntries).toContain(`${taskId}.json`);
+  });
 });
 
 describe("completeTask", () => {
@@ -330,6 +358,34 @@ describe("metadata-only task events", () => {
     expect(eventsRaw).not.toContain("SECRET_DESCRIPTION_CONTENT");
     // Title IS included (metadata-only contract allows title)
     expect(eventsRaw).toContain("Public Title");
+  });
+});
+
+describe("hasActionableTaskForMember", () => {
+  it("returns true when member has claimable pending task", async () => {
+    await addTask({ contextDir, title: "Do the thing", description: "", assignedTo: "alice" });
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(true);
+  });
+
+  it("returns false when pending tasks are phase-blocked", async () => {
+    await writeCurrentStatePhase("awaiting-remediation");
+    await addTask({
+      contextDir,
+      title: "Proof Task",
+      description: "",
+      assignedTo: "alice",
+      phaseGuard: {
+        source_kind: "current_state_phase_v1",
+        source_path: "current-state.json",
+        allowed_phases: ["ready-for-next-e2e"],
+      },
+    });
+
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(false);
+
+    const blocked = await listTasks(contextDir, "blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.title).toBe("Proof Task");
   });
 });
 

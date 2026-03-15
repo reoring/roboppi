@@ -20,6 +20,7 @@ import {
 import { DEFAULT_PROCESSING_TTL_MS, MAX_DELIVERY_ATTEMPTS } from "./constants.js";
 import { readMembers } from "./store.js";
 import type { AgentMessage, AgentTask } from "./types.js";
+import { reconcilePhaseGuardedTasks } from "./task-store.js";
 
 export interface HousekeepResult {
   requeued: number;
@@ -192,6 +193,11 @@ export async function housekeepTasksInProgress(
   const ttl = opts.inProgressTtlMs ?? DEFAULT_TASK_IN_PROGRESS_TTL_MS;
   const result: TaskHousekeepResult = { requeued: 0, warnings: [] };
   const now = Date.now();
+
+  const phaseTransitions = await reconcilePhaseGuardedTasks(opts.contextDir);
+  if (phaseTransitions > 0) {
+    result.warnings.push(`Reconciled ${phaseTransitions} phase-guarded task transition(s)`);
+  }
 
   const inProgressDir = tasksStatusDir(opts.contextDir, "in_progress");
   const pendingDir = tasksStatusDir(opts.contextDir, "pending");

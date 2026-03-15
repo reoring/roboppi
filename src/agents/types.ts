@@ -103,6 +103,11 @@ export interface AgentTask {
   created_at: Timestamp;
   updated_at: Timestamp;
   assigned_to: string | null;
+  phase_guard: {
+    source_kind: "current_state_phase_v1";
+    source_path: string;
+    allowed_phases: string[];
+  } | null;
   claimed_by: string | null;
   claimed_at: Timestamp | null;
   completed_at: Timestamp | null;

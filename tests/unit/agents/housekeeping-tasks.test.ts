@@ -36,6 +36,13 @@ afterEach(async () => {
   await rm(contextDir, { recursive: true, force: true });
 });
 
+async function writeCurrentStatePhase(phase: string, phaseReason = `${phase} reason`): Promise<void> {
+  await writeFile(
+    path.join(contextDir, "current-state.json"),
+    JSON.stringify({ phase, phase_reason: phaseReason }, null, 2),
+  );
+}
+
 describe("housekeepTasksInProgress (Spec 3.3)", () => {
   it("does nothing when no tasks are stale", async () => {
     // Create and claim a task (it's fresh, not stale)
@@ -167,5 +174,29 @@ describe("housekeepTasksInProgress (Spec 3.3)", () => {
     // Task should be in pending/ regardless
     const pendingEntries = await readdir(tasksStatusDir(contextDir, "pending"));
     expect(pendingEntries).toContain(`${taskId}.json`);
+  });
+
+  it("blocks in-progress tasks immediately when the canonical phase changes", async () => {
+    await writeCurrentStatePhase("ready-for-next-e2e");
+    const { taskId } = await addTask({
+      contextDir,
+      title: "Proof Task",
+      description: "",
+      phaseGuard: {
+        source_kind: "current_state_phase_v1",
+        source_path: "current-state.json",
+        allowed_phases: ["ready-for-next-e2e"],
+      },
+    });
+    await claimTask(contextDir, taskId, "alice");
+
+    await writeCurrentStatePhase("awaiting-remediation");
+
+    const result = await housekeepTasksInProgress({ contextDir, inProgressTtlMs: 10 * 60 * 1000 });
+    expect(result.requeued).toBe(0);
+    expect(result.warnings.some((warning) => warning.includes("phase-guarded"))).toBe(true);
+
+    const blockedEntries = await readdir(tasksStatusDir(contextDir, "blocked"));
+    expect(blockedEntries).toContain(`${taskId}.json`);
   });
 });

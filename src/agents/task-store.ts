@@ -13,6 +13,11 @@ import { appendTaskEvent } from "./events.js";
 import { tasksStatusDir, tasksTmp } from "./paths.js";
 import { MAX_TASK_BYTES } from "./constants.js";
 import type { AgentTask, TaskStatus } from "./types.js";
+import {
+  readCurrentStatePhaseSnapshot,
+  taskPhaseGuardAllows,
+  type TaskPhaseGuard,
+} from "./current-state-phase.js";
 
 // ---------------------------------------------------------------------------
 // Artifact path validation
@@ -44,6 +49,7 @@ export interface AddTaskOptions {
   description: string;
   dependsOn?: string[];
   assignedTo?: string;
+  phaseGuard?: TaskPhaseGuard;
   tags?: string[];
   requiresPlanApproval?: boolean;
 }
@@ -62,6 +68,7 @@ export async function addTask(opts: AddTaskOptions): Promise<{ taskId: string }>
     created_at: now,
     updated_at: now,
     assigned_to: opts.assignedTo ?? null,
+    phase_guard: opts.phaseGuard ?? null,
     claimed_by: null,
     claimed_at: null,
     completed_at: null,
@@ -196,6 +203,8 @@ async function unblockSatisfiedBlockedTasks(contextDir: string): Promise<number>
 
   let unblocked = 0;
   for (const task of blocked) {
+    const phaseGuard = await evaluateTaskPhaseGuard(contextDir, task);
+    if (!phaseGuard.ok) continue;
     if (!areTaskDependenciesSatisfied(task, taskStates)) continue;
 
     const filename = `${task.task_id}.json`;
@@ -231,11 +240,102 @@ async function unblockSatisfiedBlockedTasks(contextDir: string): Promise<number>
   return unblocked;
 }
 
+async function evaluateTaskPhaseGuard(
+  contextDir: string,
+  task: Pick<AgentTask, "phase_guard">,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!task.phase_guard) {
+    return { ok: true };
+  }
+  try {
+    const snapshot = await readCurrentStatePhaseSnapshot(contextDir, task.phase_guard.source_path);
+    if (taskPhaseGuardAllows(task.phase_guard, snapshot.phase)) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      reason: `Current phase "${snapshot.phase}" is outside allowed phases: ${task.phase_guard.allowed_phases.join(", ")}`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: `Phase guard source is unreadable: ${message}`,
+    };
+  }
+}
+
+async function moveTaskToBlocked(
+  contextDir: string,
+  task: AgentTask,
+  fromStatus: "pending" | "in_progress",
+  reason: string,
+  by?: string,
+): Promise<boolean> {
+  const filename = `${task.task_id}.json`;
+  const fromPath = resolve(tasksStatusDir(contextDir, fromStatus), filename);
+  const blockedPath = resolve(tasksStatusDir(contextDir, "blocked"), filename);
+  const now = Date.now();
+
+  task.status = "blocked";
+  task.updated_at = now;
+  if (fromStatus === "in_progress") {
+    task.claimed_by = null;
+    task.claimed_at = null;
+  }
+
+  try {
+    await mkdir(tasksStatusDir(contextDir, "blocked"), { recursive: true });
+    await atomicJsonWrite(tasksTmp(contextDir), fromPath, task);
+    await rename(fromPath, blockedPath);
+  } catch {
+    return false;
+  }
+
+  await appendTaskEvent(contextDir, {
+    ts: now,
+    type: "task_blocked",
+    task_id: task.task_id,
+    title: task.title,
+    ...(by ? { by } : {}),
+    reason,
+  });
+  return true;
+}
+
+async function readTaskFromStatus(
+  contextDir: string,
+  status: TaskStatus,
+  taskId: string,
+): Promise<AgentTask | null> {
+  try {
+    const raw = await readFile(resolve(tasksStatusDir(contextDir, status), `${taskId}.json`), "utf-8");
+    return JSON.parse(raw) as AgentTask;
+  } catch {
+    return null;
+  }
+}
+
+export async function reconcilePhaseGuardedTasks(contextDir: string): Promise<number> {
+  let transitions = 0;
+  for (const status of ["pending", "in_progress"] as const) {
+    const tasks = await listTasks(contextDir, status);
+    for (const task of tasks) {
+      const phaseGuard = await evaluateTaskPhaseGuard(contextDir, task);
+      if (phaseGuard.ok) continue;
+      const moved = await moveTaskToBlocked(contextDir, task, status, phaseGuard.reason, task.claimed_by ?? undefined);
+      if (moved) transitions++;
+    }
+  }
+  transitions += await unblockSatisfiedBlockedTasks(contextDir);
+  return transitions;
+}
+
 export async function hasActionableTaskForMember(
   contextDir: string,
   memberId: string,
 ): Promise<boolean> {
-  await unblockSatisfiedBlockedTasks(contextDir);
+  await reconcilePhaseGuardedTasks(contextDir);
 
   const inProgress = await listTasks(contextDir, "in_progress");
   if (inProgress.some((task) => task.claimed_by === memberId)) {
@@ -270,6 +370,8 @@ export async function claimTask(
   taskId: string,
   memberId: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  await reconcilePhaseGuardedTasks(contextDir);
+
   const pendingDir = tasksStatusDir(contextDir, "pending");
   const inProgressDir = tasksStatusDir(contextDir, "in_progress");
   const blockedDir = tasksStatusDir(contextDir, "blocked");
@@ -285,6 +387,14 @@ export async function claimTask(
   try {
     await rename(srcPath, destPath);
   } catch {
+    const blockedTask = await readTaskFromStatus(contextDir, "blocked", taskId);
+    if (blockedTask) {
+      const phaseGuard = await evaluateTaskPhaseGuard(contextDir, blockedTask);
+      if (!phaseGuard.ok) {
+        return { ok: false, error: phaseGuard.reason };
+      }
+      return { ok: false, error: "Task is currently blocked" };
+    }
     return { ok: false, error: "Task not found in pending/ or already claimed by another" };
   }
 
@@ -312,6 +422,16 @@ export async function claimTask(
     return { ok: false, error: `Task cannot be claimed by "${memberId}"` };
   }
 
+  const phaseGuard = await evaluateTaskPhaseGuard(contextDir, task);
+  if (!phaseGuard.ok) {
+    try {
+      await moveTaskToBlocked(contextDir, task, "in_progress", phaseGuard.reason, memberId);
+    } catch {
+      // best-effort
+    }
+    return { ok: false, error: phaseGuard.reason };
+  }
+
   // Check dependencies
   if (task.depends_on.length > 0) {
     const taskStates = await readTaskDependencyStates(contextDir);
@@ -335,6 +455,7 @@ export async function claimTask(
         task_id: taskId,
         title: task.title,
         by: memberId,
+        reason: `Unmet dependencies: ${unmet.join(", ")}`,
       });
 
       return { ok: false, error: `Unmet dependencies: ${unmet.join(", ")}` };

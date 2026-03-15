@@ -590,6 +590,7 @@ export class WorkflowExecutor {
             title: taskDef.title,
             description: taskDef.description,
             assignedTo: taskDef.assigned_to,
+            ...(taskDef.phase_guard ? { phaseGuard: taskDef.phase_guard } : {}),
             ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
             ...(taskDef.tags && taskDef.tags.length > 0 ? { tags: taskDef.tags } : {}),
             ...(taskDef.requires_plan_approval !== undefined

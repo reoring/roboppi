@@ -94,6 +94,11 @@ export interface AgentSeedTaskConfig {
   description: string;
   assigned_to?: string;
   depends_on?: string[];
+  phase_guard?: {
+    source_kind: "current_state_phase_v1";
+    source_path: string;
+    allowed_phases: string[];
+  };
   tags?: string[];
   requires_plan_approval?: boolean;
 }

@@ -1045,6 +1045,24 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
         }
       }
 
+      if (task["phase_guard"] !== undefined) {
+        if (typeof task["phase_guard"] !== "object" || task["phase_guard"] === null || Array.isArray(task["phase_guard"])) {
+          throw new WorkflowParseError(`agents.tasks[${i}].phase_guard must be an object`);
+        }
+        const phaseGuard = task["phase_guard"] as Record<string, unknown>;
+        assertString(phaseGuard["source_kind"], `agents.tasks[${i}].phase_guard.source_kind`);
+        if (phaseGuard["source_kind"] !== "current_state_phase_v1") {
+          throw new WorkflowParseError(
+            `agents.tasks[${i}].phase_guard.source_kind must be "current_state_phase_v1"`,
+          );
+        }
+        assertString(phaseGuard["source_path"], `agents.tasks[${i}].phase_guard.source_path`);
+        validateOptionalStringArray(phaseGuard["allowed_phases"], `agents.tasks[${i}].phase_guard.allowed_phases`);
+        if (!Array.isArray(phaseGuard["allowed_phases"]) || phaseGuard["allowed_phases"].length === 0) {
+          throw new WorkflowParseError(`agents.tasks[${i}].phase_guard.allowed_phases must contain at least one phase`);
+        }
+      }
+
       validateOptionalStringArray(task["depends_on"], `agents.tasks[${i}].depends_on`);
       validateOptionalStringArray(task["tags"], `agents.tasks[${i}].tags`);
       validateOptionalBoolean(task["requires_plan_approval"], `agents.tasks[${i}].requires_plan_approval`);

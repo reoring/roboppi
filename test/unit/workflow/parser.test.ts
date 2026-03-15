@@ -1039,6 +1039,48 @@ steps:
       ]);
     });
 
+    it("parses agent seed task phase guards", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+  tasks:
+    - id: prove
+      title: "Proof"
+      description: "Run proof"
+      assigned_to: lead
+      phase_guard:
+        source_kind: current_state_phase_v1
+        source_path: ../current-state.json
+        allowed_phases: [awaiting-manual-verification, ready-for-next-e2e]
+steps:
+  s1:
+    worker: CODEX_CLI
+    instructions: "work"
+    capabilities: [READ]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.agents?.tasks).toEqual([
+        {
+          id: "prove",
+          title: "Proof",
+          description: "Run proof",
+          assigned_to: "lead",
+          phase_guard: {
+            source_kind: "current_state_phase_v1",
+            source_path: "../current-state.json",
+            allowed_phases: ["awaiting-manual-verification", "ready-for-next-e2e"],
+          },
+        },
+      ]);
+    });
+
     it("rejects task dependencies when a seed task id is missing", () => {
       const yaml = `
 name: w
