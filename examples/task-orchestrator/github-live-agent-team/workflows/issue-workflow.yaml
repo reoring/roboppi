@@ -1,0 +1,96 @@
+name: github-live-issue-team
+version: "1"
+timeout: "90m"
+create_branch: true
+branch_transition_step: "branch"
+
+agents:
+  enabled: true
+  team_name: "github-live-issue-team"
+  members:
+    lead:
+      agent: issue_lead
+      roles: [lead, publisher]
+    implementer:
+      agent: issue_implementer
+      roles: [implementer]
+    reporter:
+      agent: github_reporter
+      roles: [publisher, github_reporter]
+  tasks:
+    - title: "Implement the GitHub issue and prepare a PR request"
+      description: |
+        Read `$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json`, implement the requested change,
+        use the prepared branch, commit, push, and prepare the information needed to open a PR.
+        Report milestones to the lead using the documented JSON message format.
+      assigned_to: implementer
+
+reporting:
+  default_publisher: lead
+  sinks:
+    github:
+      enabled: true
+      publisher_member: reporter
+      allowed_members: [reporter]
+      allowed_roles: [publisher]
+      events: [progress, waiting_for_input, commit_created, push_completed, review_required]
+      projection: status_comment
+      aggregate: latest
+
+task_policy:
+  intents:
+    activity:
+      allowed_members: [reporter]
+      allowed_roles: [publisher]
+    pr_open_request:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+    clarification_request:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+
+steps:
+  branch:
+    description: "Prepare a deterministic work branch for the issue instance"
+    worker: CUSTOM
+    instructions: |
+      set -euo pipefail
+      ISSUE_NUMBER=${ROBOPPI_TASK_EXTERNAL_ID##*#}
+      git fetch origin main
+      git checkout main
+      git pull --ff-only origin main
+      BRANCH="roboppi/issue-${ISSUE_NUMBER}-${ROBOPPI_TASK_SLUG}"
+      git checkout -B "$BRANCH"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "2m"
+
+  orchestrate:
+    description: "Lead coordinates issue implementation and records the PR open request"
+    agent: issue_lead
+    depends_on: [branch]
+    instructions: |
+      Coordinate the implementer and reporter until the issue has a valid PR open request.
+      Process current state only, then exit. The workflow engine will re-run you.
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/pr-open-request.json" || \
+          test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/clarification-request.json"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "10s"
+    max_iterations: 20
+    on_iterations_exhausted: abort
+
+  apply-pr-open:
+    description: "Apply the recorded PR open request to GitHub and finalize handoff"
+    worker: CUSTOM
+    depends_on: [orchestrate]
+    instructions: |
+      set -euo pipefail
+      if [[ ! -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/pr-open-request.json" ]]; then
+        exit 0
+      fi
+      bun run --cwd "/home/reoring/project/roboppi" src/cli.ts -- task-orchestrator github apply-pr-open \
+        --context "$ROBOPPI_TASK_CONTEXT_DIR"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "5m"

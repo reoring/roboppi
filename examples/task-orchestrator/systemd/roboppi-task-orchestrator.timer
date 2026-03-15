@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Roboppi Task Orchestrator every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=roboppi-task-orchestrator.service
+
+[Install]
+WantedBy=timers.target

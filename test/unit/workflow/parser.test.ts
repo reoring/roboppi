@@ -149,6 +149,57 @@ steps:
       expect(step.on_iterations_exhausted).toBe("continue");
     });
 
+    it("parses declarative task_policy intent rules", () => {
+      const yaml = `
+name: policy-workflow
+version: "1"
+timeout: "30m"
+agents:
+  enabled: true
+  team_name: "issue-team"
+  members:
+    lead:
+      agent: issue_lead
+      roles: [lead, publisher]
+    reporter:
+      agent: github_reporter
+      roles: [publisher]
+task_policy:
+  intents:
+    activity:
+      allowed_members: [reporter]
+      allowed_roles: [publisher]
+    landing_decision:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+    clarification_request:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.task_policy).toEqual({
+        intents: {
+          activity: {
+            allowed_members: ["reporter"],
+            allowed_roles: ["publisher"],
+          },
+          landing_decision: {
+            allowed_members: ["lead"],
+            allowed_roles: ["lead"],
+          },
+          clarification_request: {
+            allowed_members: ["lead"],
+            allowed_roles: ["lead"],
+          },
+        },
+      });
+    });
+
     it("parses all valid worker kinds", () => {
       const workers = ["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"] as const;
       for (const worker of workers) {
@@ -254,6 +305,32 @@ steps:
   describe("validation errors", () => {
     it("rejects invalid YAML", () => {
       expect(() => parseWorkflow("{{invalid")).toThrow(WorkflowParseError);
+    });
+
+    it("rejects task_policy members that are not declared in agents.members", () => {
+      const yaml = `
+name: bad-policy
+version: "1"
+timeout: "30m"
+agents:
+  enabled: true
+  team_name: "issue-team"
+  members:
+    lead:
+      agent: issue_lead
+task_policy:
+  intents:
+    landing_decision:
+      allowed_members: [reporter]
+steps:
+  s:
+    worker: CODEX_CLI
+    instructions: "x"
+    capabilities: [READ]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(
+        /task_policy\.intents\.landing_decision\.allowed_members references unknown member "reporter"/,
+      );
     });
 
     it("rejects non-object YAML", () => {
@@ -757,6 +834,57 @@ steps:
       expect(wf.agents!.tasks![0]!.assigned_to).toBe("researcher");
     });
 
+    it("parses agent member reporting roles and workflow reporting policy", () => {
+      const yaml = `
+name: agents-wf
+version: "1"
+timeout: "30m"
+agents:
+  enabled: true
+  team_name: "my-team"
+  members:
+    lead:
+      agent: lead-agent
+      roles: [lead, publisher]
+    reporter:
+      agent: reporter-agent
+      roles: [publisher, github_reporter]
+steps:
+  s1:
+    worker: CUSTOM
+    instructions: "echo ok"
+    capabilities: [READ]
+reporting:
+  default_publisher: lead
+  sinks:
+    github:
+      enabled: true
+      publisher_member: reporter
+      allowed_members: [lead]
+      allowed_roles: [publisher]
+      events: [progress, ready_to_land]
+      projection: status_comment
+      aggregate: latest_per_phase
+`;
+      const wf = parseWorkflow(yaml);
+      expect(wf.agents?.members?.lead?.roles).toEqual(["lead", "publisher"]);
+      expect(wf.agents?.members?.reporter?.roles).toEqual(["publisher", "github_reporter"]);
+      expect(wf.reporting).toEqual({
+        default_publisher: "lead",
+        sinks: {
+          github: {
+            enabled: true,
+            publisher_member: "reporter",
+            allowed_members: ["lead"],
+            allowed_roles: ["publisher"],
+            events: ["progress", "ready_to_land"],
+            projection: "status_comment",
+            aggregate: "latest_per_phase",
+          },
+        },
+      });
+    });
+
     it("parses disabled agents config (minimal)", () => {
       const yaml = `
 name: agents-wf
@@ -893,6 +1021,57 @@ steps:
 `;
       expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
       expect(() => parseWorkflow(yaml)).toThrow(/agents.members.lead.agent/);
+    });
+
+    it("rejects reporting.publisher_member that references an unknown member", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+steps:
+  s1:
+    worker: CUSTOM
+    instructions: "echo ok"
+    capabilities: [READ]
+reporting:
+  sinks:
+    github:
+      publisher_member: reporter
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/reporting\.sinks\.github\.publisher_member references unknown member/);
+    });
+
+    it("rejects reporting events with unsupported values", () => {
+      const yaml = `
+name: w
+version: "1"
+timeout: "5m"
+agents:
+  enabled: true
+  team_name: "t"
+  members:
+    lead:
+      agent: a
+steps:
+  s1:
+    worker: CUSTOM
+    instructions: "echo ok"
+    capabilities: [READ]
+reporting:
+  sinks:
+    github:
+      allowed_members: [lead]
+      events: [progress, nonsense]
+`;
+      expect(() => parseWorkflow(yaml)).toThrow(WorkflowParseError);
+      expect(() => parseWorkflow(yaml)).toThrow(/contains invalid event "nonsense"/);
     });
 
     it("rejects tasks that are not an array", () => {

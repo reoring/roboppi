@@ -1,0 +1,22 @@
+name: file-inbox-implement-task
+version: "1"
+timeout: "5m"
+
+steps:
+  implement:
+    worker: CUSTOM
+    instructions: |
+      set -euo pipefail
+      test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json"
+      test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/routing.json"
+      printf "%s" "$ROBOPPI_TASK_ID" > task-id.txt
+      printf "%s\n" "task_id=$ROBOPPI_TASK_ID" > task-summary.txt
+      printf "%s\n" "source_kind=$ROBOPPI_TASK_SOURCE_KIND" >> task-summary.txt
+      printf "%s\n" "requested_action=$ROBOPPI_TASK_REQUESTED_ACTION" >> task-summary.txt
+      cp "$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json" injected-task.json
+    capabilities: [READ]
+    outputs:
+      - name: task-id
+        path: task-id.txt
+      - name: task-summary
+        path: task-summary.txt

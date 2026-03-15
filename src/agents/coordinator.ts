@@ -41,6 +41,7 @@ import type { StepRunner, StepRunResult } from "../workflow/executor.js";
 import type { AgentMemberConfig } from "../workflow/types.js";
 import type { AgentCatalog, AgentProfile } from "../workflow/agent-catalog.js";
 import type { StepDefinition } from "../workflow/types.js";
+import { loadAgentCatalog } from "../workflow/workflow-loader.js";
 
 const DEFAULT_HOUSEKEEP_INTERVAL_MS = 60_000; // 1 minute
 const DEFAULT_TAIL_INTERVAL_MS = 2_000; // 2 seconds
@@ -78,6 +79,7 @@ export interface AgentCoordinatorOptions {
   reconcileIntervalMs?: number;
   maxTeammates?: number;
   maxSpawnsPerMinute?: number;
+  definitionPath?: string;
 }
 
 interface TeammateHandle {
@@ -96,7 +98,7 @@ export class AgentCoordinator {
   // Teammate spawning
   private readonly stepRunner?: StepRunner;
   private readonly workspaceDir?: string;
-  private readonly agentCatalog?: AgentCatalog;
+  private agentCatalog?: AgentCatalog;
   private readonly members?: Record<string, AgentMemberConfig>;
   private readonly leadMemberId?: string;
   private readonly baseEnv?: Record<string, string>;
@@ -119,6 +121,7 @@ export class AgentCoordinator {
   private readonly maxTeammates: number;
   private readonly maxSpawnsPerMinute: number;
   private readonly spawnTimestamps: number[] = [];
+  private readonly definitionPath?: string;
 
   constructor(opts: AgentCoordinatorOptions) {
     this.contextDir = opts.contextDir;
@@ -139,6 +142,7 @@ export class AgentCoordinator {
       Number(process.env.ROBOPPI_AGENTS_MAX_TEAMMATES) || DEFAULT_MAX_TEAMMATES
     );
     this.maxSpawnsPerMinute = opts.maxSpawnsPerMinute ?? DEFAULT_MAX_SPAWNS_PER_MINUTE;
+    this.definitionPath = opts.definitionPath;
   }
 
   /**
@@ -374,6 +378,8 @@ export class AgentCoordinator {
       return; // members.json not readable yet
     }
 
+    await this.refreshAgentCatalog(desiredMembers);
+
     if (this.stopped) return;
 
     // Sort by member_id for determinism
@@ -472,6 +478,43 @@ export class AgentCoordinator {
         this.teammates.splice(i, 1);
       }
     }
+  }
+
+  private async refreshAgentCatalog(desiredMembers: MemberEntry[]): Promise<void> {
+    if (!this.definitionPath) return;
+
+    let nextCatalog: AgentCatalog | undefined;
+    try {
+      nextCatalog = await loadAgentCatalog(this.definitionPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.sink.emit({
+        type: "warning",
+        ts: Date.now(),
+        message: `[agents] agent catalog reload failed: ${message}`,
+      });
+      return;
+    }
+
+    if (JSON.stringify(nextCatalog ?? {}) === JSON.stringify(this.agentCatalog ?? {})) {
+      return;
+    }
+
+    this.agentCatalog = nextCatalog;
+
+    for (const agent of this.residentAgents) {
+      const member = desiredMembers.find((entry) => entry.member_id === agent.memberId);
+      const fallbackAgentId = this.members?.[agent.memberId]?.agent;
+      const agentId = member?.agent ?? fallbackAgentId;
+      const profile = agentId ? this.agentCatalog?.[agentId] : undefined;
+      agent.updateProfile(profile ?? {});
+    }
+
+    this.sink.emit({
+      type: "warning",
+      ts: Date.now(),
+      message: "[agents] reloaded agents.yaml; updated resident agent profiles for future dispatches",
+    });
   }
 
   private removeStoppedResidentAgents(): void {

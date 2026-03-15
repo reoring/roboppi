@@ -596,6 +596,7 @@ ROBOPPI_IPC_REQUEST_TIMEOUT=5m roboppi workflow ...
 
 - [docs/guide/workflow.md](./guide/workflow.md) — ワークフロー YAML の完全なスキーマリファレンス
 - [docs/guide/daemon.md](./guide/daemon.md) — デーモンモード（イベント駆動の自動実行）
+- [docs/guide/task-orchestrator.md](./guide/task-orchestrator.md) — task 駆動の workflow ルーティング
 - [docs/guide/architecture.md](./guide/architecture.md) — 内部アーキテクチャの詳細
 - [docs/guides/branch.md](./guides/branch.md) — ブランチ安全性の詳細
 - [docs/guides/agents.md](./guides/agents.md) — エージェントカタログ（再利用可能なプロファイル）
@@ -605,6 +606,7 @@ ROBOPPI_IPC_REQUEST_TIMEOUT=5m roboppi workflow ...
 
 - **レビューループの追加** — implement ステップに `completion_check` を追加して、AI レビュー → 修正のループを回す（`examples/agent-pr-loop.yaml` を参考）
 - **デーモンモード** — `roboppi/request.md` の変更を検知して自動実行（`examples/daemon/agent-pr-loop.yaml` を参考）
+- **task orchestrator** — issue/inbox から workflow を起動し、`status` や `serve` で運用する（`examples/task-orchestrator/` を参考）
 - **エージェントカタログ** — ワーカーの設定を再利用（`docs/guides/agents.md` を参考）
 - **PR 自動作成** — implement 後に `create_pr` ステップを追加（`examples/agent-pr-loop.yaml` を参考）
 

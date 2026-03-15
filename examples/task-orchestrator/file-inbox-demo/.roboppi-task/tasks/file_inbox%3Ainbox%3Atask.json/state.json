@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "task_id": "file_inbox:inbox:task.json",
+  "lifecycle": "review_required",
+  "created_at": 1773043741024,
+  "updated_at": 1773044174870,
+  "last_transition_at": 1773044174870,
+  "active_run_id": null,
+  "latest_run_id": "2f9d5b19-d525-4279-9463-209322af705e",
+  "last_completed_run_id": "2f9d5b19-d525-4279-9463-209322af705e",
+  "run_count": 1,
+  "source_revision": "1773043741024:368"
+}

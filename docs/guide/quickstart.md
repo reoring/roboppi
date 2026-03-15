@@ -479,6 +479,46 @@ See the [Daemon guide](./daemon.md) for details.
 
 ---
 
+## Usage 8: Run the task orchestrator once
+
+Use this mode when your unit of work is an external task queue rather than a manually selected workflow.
+
+```bash
+./roboppi task-orchestrator run examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+# (dev)
+bun run src/cli.ts -- task-orchestrator run \
+  examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+```
+
+For machine-readable output:
+
+```bash
+./roboppi task-orchestrator run examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml --json
+```
+
+See the [Task Orchestrator guide](./task-orchestrator.md) for config schema, GitHub auth, and cron/systemd operation.
+
+To keep polling in one resident process:
+
+```bash
+./roboppi task-orchestrator serve examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+```
+
+Workflow steps can also emit task activity from inside a run:
+
+```bash
+roboppi task-orchestrator activity emit --context "$ROBOPPI_TASK_CONTEXT_DIR" --kind progress --message "Started work"
+```
+
+Inspect persisted task state:
+
+```bash
+./roboppi task-orchestrator status examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+./roboppi task-orchestrator status examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml --json
+```
+
+---
+
 ## Architecture overview
 
 ```
@@ -522,6 +562,7 @@ make typecheck
 - [Architecture guide](./architecture.md) - internal architecture details
 - [Workflow guide](./workflow.md) - writing YAML workflows
 - [Daemon guide](./daemon.md) - event-driven resident execution
+- [Task Orchestrator guide](./task-orchestrator.md) - task-driven workflow routing
 - [Design doc](../design.md) - design principles and rationale
 - Worker adapter customization: see `src/worker/adapters/`
 - Implementing a custom Scheduler: see `src/scheduler/`

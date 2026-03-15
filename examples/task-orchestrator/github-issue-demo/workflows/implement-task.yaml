@@ -1,0 +1,59 @@
+name: github-issue-implement-task
+version: "1"
+timeout: "5m"
+
+agents:
+  enabled: true
+  team_name: "github-issue-team"
+  members:
+    lead:
+      agent: lead_agent
+      roles: [lead, publisher]
+    reporter:
+      agent: github_reporter
+      roles: [publisher, github_reporter]
+
+reporting:
+  default_publisher: lead
+  sinks:
+    github:
+      enabled: true
+      publisher_member: reporter
+      allowed_members: [reporter]
+      allowed_roles: [publisher]
+      events: [progress, ready_to_land]
+      projection: status_comment
+      aggregate: latest
+
+steps:
+  orchestrate:
+    agent: lead_agent
+    instructions: |
+      set -euo pipefail
+      test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json"
+      for _ in $(seq 1 50); do
+        if [[ -f reporter-progress.txt ]]; then
+          break
+        fi
+        sleep 0.1
+      done
+      test -f reporter-progress.txt
+      printf "%s" "$ROBOPPI_TASK_ID" > github-task-id.txt
+      printf "%s\n" "repo=$ROBOPPI_TASK_REPOSITORY" > github-task-summary.txt
+      printf "%s\n" "requested_by=$ROBOPPI_TASK_REQUESTED_BY" >> github-task-summary.txt
+      cp "$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json" github-task.json
+      cat > "$ROBOPPI_TASK_CONTEXT_DIR/_task/landing.json" <<'EOF'
+      {
+        "version": "1",
+        "lifecycle": "ready_to_land",
+        "rationale": "PR is ready and waiting for maintainer merge",
+        "metadata": {
+          "demo": true
+        }
+      }
+      EOF
+    outputs:
+      - name: task-id
+        path: github-task-id.txt
+      - name: task-summary
+        path: github-task-summary.txt

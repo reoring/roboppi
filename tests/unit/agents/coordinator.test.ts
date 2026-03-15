@@ -5,7 +5,7 @@
  * and dynamic membership reconcile behavior.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const TEST_TMP_ROOT = path.join(process.cwd(), ".roboppi-loop", "tmp", "unit-coordinator");
@@ -174,6 +174,84 @@ describe("AgentCoordinator teammate spawning", () => {
     expect(stepStates.length).toBeGreaterThanOrEqual(1);
 
     await coord.stop();
+  });
+
+  it("reloads resident agent profiles when agents.yaml changes", async () => {
+    await initAgentsContext({
+      contextDir,
+      teamName: "test",
+      leadMemberId: "lead",
+      members: [
+        { member_id: "lead", name: "Lead", role: "team_lead", agent: "lead_agent" },
+        { member_id: "planner", name: "Planner", role: "member", agent: "planner_agent" },
+      ],
+    });
+
+    const workflowDir = await mkdtemp(path.join(TEST_TMP_ROOT, "workflow-"));
+    const workflowPath = path.join(workflowDir, "workflow.yaml");
+    const agentsPath = path.join(workflowDir, "agents.yaml");
+
+    try {
+      await writeFile(workflowPath, "name: test\nversion: \"1\"\nsteps: {}\n");
+      await writeFile(
+        agentsPath,
+        `version: "1"
+
+agents:
+  planner_agent:
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    base_instructions: "planner-v1"
+`,
+      );
+
+      const coord = new AgentCoordinator({
+        contextDir,
+        sink: noopSink(),
+        workspaceDir: process.cwd(),
+        definitionPath: workflowPath,
+        agentCatalog: {
+          planner_agent: {
+            worker: "OPENCODE",
+            model: "openai/gpt-5.4",
+            base_instructions: "planner-v1",
+          },
+        },
+        members: {
+          lead: { agent: "lead_agent" },
+          planner: { agent: "planner_agent" },
+        },
+        leadMemberId: "lead",
+        teamId: "test-team-id",
+        reconcileIntervalMs: 60_000,
+      });
+
+      await coord.start();
+
+      const resident = (coord as any).residentAgents.find((a: any) => a.memberId === "planner");
+      expect(resident).toBeDefined();
+      expect((resident as any).profile.base_instructions).toBe("planner-v1");
+
+      await writeFile(
+        agentsPath,
+        `version: "1"
+
+agents:
+  planner_agent:
+    worker: OPENCODE
+    model: "openai/gpt-5.4"
+    base_instructions: "planner-v2"
+`,
+      );
+
+      await (coord as any).reconcile();
+
+      expect((resident as any).profile.base_instructions).toBe("planner-v2");
+
+      await coord.stop();
+    } finally {
+      await rm(workflowDir, { recursive: true, force: true });
+    }
   });
 });
 

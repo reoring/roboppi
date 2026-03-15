@@ -1,0 +1,49 @@
+name: github-live-agent-team
+version: "1"
+state_dir: ./.roboppi-task
+
+runtime:
+  poll_every: 15s
+
+activity:
+  github:
+    enabled: true
+
+sources:
+  github-issues:
+    type: github_issue
+    repo: YOUR_ORG/YOUR_REPO
+    labels: [roboppi-agent-team-issue]
+    local_path: /abs/path/to/local/repo
+
+  github-prs:
+    type: github_pull_request
+    repo: YOUR_ORG/YOUR_REPO
+    labels: [roboppi-agent-team-pr]
+    local_path: /abs/path/to/local/repo
+
+routes:
+  issue-flow:
+    when:
+      source: github_issue
+      repository: YOUR_ORG/YOUR_REPO
+      labels_any: [roboppi-agent-team-issue]
+      requested_action: implement
+    workflow: /abs/path/to/examples/task-orchestrator/github-live-agent-team/workflows/issue-workflow.yaml
+    workspace_mode: shared
+    env:
+      ROBOPPI_ALLOW_PROTECTED_BRANCH: "1"
+
+  pr-review:
+    when:
+      source: github_pull_request
+      repository: YOUR_ORG/YOUR_REPO
+      labels_any: [roboppi-agent-team-pr]
+      requested_action: review
+    workflow: /abs/path/to/examples/task-orchestrator/github-live-agent-team/workflows/pr-review-workflow.yaml
+    workspace_mode: shared
+    env:
+      ROBOPPI_ALLOW_PROTECTED_BRANCH: "1"
+
+landing:
+  mode: manual

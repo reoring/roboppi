@@ -1,0 +1,21 @@
+version: "1"
+
+agents:
+  lead_agent:
+    worker: CUSTOM
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "5m"
+
+  github_reporter:
+    worker: CUSTOM
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "2m"
+    base_instructions: |
+      set -euo pipefail
+      printf "%s\n" "$ROBOPPI_AGENTS_MEMBER_ID" > reporter-progress.txt
+      bun run --cwd "${ROBOPPI_ROOT:?}" src/cli.ts -- task-orchestrator activity emit \
+        --context "$ROBOPPI_TASK_CONTEXT_DIR" \
+        --kind progress \
+        --message "Reporter published initial implementation status" \
+        --phase implement \
+        --member-id "$ROBOPPI_AGENTS_MEMBER_ID"

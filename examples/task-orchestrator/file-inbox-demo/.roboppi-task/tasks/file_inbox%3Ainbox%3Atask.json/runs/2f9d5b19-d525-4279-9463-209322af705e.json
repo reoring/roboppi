@@ -1,0 +1,21 @@
+{
+  "version": "1",
+  "task_id": "file_inbox:inbox:task.json",
+  "run_id": "2f9d5b19-d525-4279-9463-209322af705e",
+  "attempt": 1,
+  "status": "completed",
+  "workflow": "workflows/implement-task.yaml",
+  "workflow_id": "6f61d4ce-d86f-4adc-9108-dcaa510e9cab",
+  "workflow_status": "SUCCEEDED",
+  "error": null,
+  "source_revision": "1773043741024:368",
+  "artifacts": {
+    "plan": "plan.json",
+    "workflow_result": "workflow-result.json",
+    "summary": "summary.json"
+  },
+  "created_at": 1773044174845,
+  "updated_at": 1773044174872,
+  "started_at": 1773044174858,
+  "completed_at": 1773044174870
+}

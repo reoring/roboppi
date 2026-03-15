@@ -1,0 +1,19 @@
+{
+  "number": 12,
+  "html_url": "https://github.com/acme/widgets/issues/12",
+  "title": "Fix flaky widget test",
+  "body": "Investigate and stabilize the widget integration test.",
+  "labels": [
+    { "name": "bug" },
+    { "name": "roboppi" },
+    { "name": "priority:high" }
+  ],
+  "user": { "login": "octocat" },
+  "assignees": [{ "login": "robot" }],
+  "milestone": { "title": "v0.2" },
+  "comments": 2,
+  "author_association": "MEMBER",
+  "created_at": "2026-03-01T00:00:00Z",
+  "updated_at": "2026-03-02T12:34:56Z",
+  "state": "open"
+}

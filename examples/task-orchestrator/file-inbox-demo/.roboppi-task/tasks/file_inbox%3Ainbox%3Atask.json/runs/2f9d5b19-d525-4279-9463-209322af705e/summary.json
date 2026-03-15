@@ -1,0 +1,15 @@
+{
+  "version": "1",
+  "task_id": "file_inbox:inbox:task.json",
+  "run_id": "2f9d5b19-d525-4279-9463-209322af705e",
+  "generated_at": 1773044174871,
+  "final_lifecycle": "review_required",
+  "workflow_status": "SUCCEEDED",
+  "rationale": "Workflow succeeded; awaiting task-level review.",
+  "metadata": {
+    "route_id": "bugfix",
+    "workflow": "workflows/implement-task.yaml",
+    "context_dir": "/home/reoring/project/roboppi/examples/task-orchestrator/file-inbox-demo/.roboppi-task/tasks/file_inbox%3Ainbox%3Atask.json/runs/2f9d5b19-d525-4279-9463-209322af705e/context",
+    "workspace_dir": "/home/reoring/project/roboppi/examples/task-orchestrator/file-inbox-demo/repo"
+  }
+}

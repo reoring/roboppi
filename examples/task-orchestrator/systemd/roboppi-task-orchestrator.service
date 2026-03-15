@@ -1,0 +1,15 @@
+[Unit]
+Description=Roboppi Task Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/roboppi
+ExecStart=/usr/bin/env bun run src/cli.ts -- task-orchestrator run /path/to/roboppi/examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml --json
+
+# Example for github_issue sources:
+# Environment=GH_TOKEN=...
+
+StandardOutput=journal
+StandardError=journal

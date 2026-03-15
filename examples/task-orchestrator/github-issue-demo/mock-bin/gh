@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+FIXTURES_DIR=$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)
+
+if [[ "${1:-}" != "api" ]]; then
+  echo "fake gh only supports: gh api ..." >&2
+  exit 1
+fi
+shift
+
+if [[ "${1:-}" == "-X" && "${2:-}" == "POST" && "${3:-}" == "repos/acme/widgets/issues/12/comments" && "${4:-}" == "-f" ]]; then
+  body_arg=${5:-}
+  if [[ "${body_arg}" != body=* ]]; then
+    echo "fake gh: expected -f body=..." >&2
+    exit 1
+  fi
+  ACK_DIR="${FIXTURES_DIR}/../github-issue-acks"
+  mkdir -p "${ACK_DIR}"
+  if [[ "${body_arg#body=}" == *"roboppi:issue-status"* ]]; then
+    printf '%s\n' "${body_arg#body=}" > "${ACK_DIR}/issue-12-status.md"
+  else
+    printf '%s\n' "${body_arg#body=}" > "${ACK_DIR}/issue-12-comment.md"
+  fi
+  cat <<'EOF'
+{"id":12345,"html_url":"https://github.com/acme/widgets/issues/12#issuecomment-12345"}
+EOF
+  exit 0
+fi
+
+if [[ "${1:-}" == "-X" && "${2:-}" == "PATCH" && "${3:-}" == "repos/acme/widgets/issues/comments/12345" && "${4:-}" == "-f" ]]; then
+  body_arg=${5:-}
+  if [[ "${body_arg}" != body=* ]]; then
+    echo "fake gh: expected -f body=..." >&2
+    exit 1
+  fi
+  ACK_DIR="${FIXTURES_DIR}/../github-issue-acks"
+  mkdir -p "${ACK_DIR}"
+  printf '%s\n' "${body_arg#body=}" > "${ACK_DIR}/issue-12-status.md"
+  cat <<'EOF'
+{"id":12345,"html_url":"https://github.com/acme/widgets/issues/12#issuecomment-12345"}
+EOF
+  exit 0
+fi
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --paginate|--slurp)
+      shift
+      ;;
+    repos/acme/widgets/issues\?*)
+      cat "${FIXTURES_DIR}/issues-list.json"
+      exit 0
+      ;;
+    repos/acme/widgets/issues/12)
+      cat "${FIXTURES_DIR}/issue-12.json"
+      exit 0
+      ;;
+    repos/acme/widgets/issues/12/comments\?per_page=100)
+      printf '[]\n'
+      exit 0
+      ;;
+    *)
+      echo "fake gh: unsupported args: gh api $*" >&2
+      exit 1
+      ;;
+  esac
+done
+
+echo "fake gh: missing endpoint" >&2
+exit 1

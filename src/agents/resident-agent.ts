@@ -64,6 +64,24 @@ interface SessionEntry {
   summary: string;
 }
 
+function cloneAgentProfile(profile: AgentProfile): AgentProfile {
+  return {
+    ...profile,
+    ...(profile.defaultArgs ? { defaultArgs: [...profile.defaultArgs] } : {}),
+    ...(profile.mcp_configs ? { mcp_configs: [...profile.mcp_configs] } : {}),
+    ...(profile.mcp_servers
+      ? {
+          mcp_servers: profile.mcp_servers.map((server) => ({
+            ...server,
+            ...(server.args ? { args: [...server.args] } : {}),
+            ...(server.env ? { env: { ...server.env } } : {}),
+          })),
+        }
+      : {}),
+    ...(profile.capabilities ? { capabilities: [...profile.capabilities] } : {}),
+  };
+}
+
 function cloneProfileDefaultArgs(profile: AgentProfile): string[] {
   const args = Array.isArray(profile.defaultArgs) ? [...profile.defaultArgs] : [];
   if (profile.worker === "CLAUDE_CODE" && Array.isArray(profile.mcp_configs)) {
@@ -117,7 +135,7 @@ export class ResidentAgent {
 
   private readonly stepId: string;
   private readonly contextDir: string;
-  private readonly profile: AgentProfile;
+  private profile: AgentProfile;
   private readonly workspaceDir: string;
   private readonly sink: ExecEventSink;
   private readonly env: Record<string, string>;
@@ -125,8 +143,9 @@ export class ResidentAgent {
   private readonly dispatchTimeoutMs: number;
   private readonly signal?: AbortSignal;
 
-  private readonly adapter: WorkerAdapter;
+  private adapter: WorkerAdapter;
   private readonly processManager: ProcessManager;
+  private pendingProfile: AgentProfile | null = null;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
@@ -146,7 +165,7 @@ export class ResidentAgent {
     this.stepId = `_agent:${opts.memberId}`;
     this.memberId = opts.memberId;
     this.contextDir = opts.contextDir;
-    this.profile = opts.profile;
+    this.profile = cloneAgentProfile(opts.profile);
     this.workspaceDir = opts.workspaceDir;
     this.sink = opts.sink;
     this.env = opts.env;
@@ -158,7 +177,7 @@ export class ResidentAgent {
 
     // Create adapter based on worker kind
     this.processManager = new ProcessManager();
-    this.adapter = createAdapterForAgentProfile(this.processManager, opts.profile);
+    this.adapter = createAdapterForAgentProfile(this.processManager, this.profile);
 
     this.settled = new Promise<void>((resolve) => {
       this.resolveSettled = resolve;
@@ -243,6 +262,15 @@ export class ResidentAgent {
 
   get isDispatching(): boolean {
     return this.dispatching;
+  }
+
+  updateProfile(nextProfile: AgentProfile): void {
+    const cloned = cloneAgentProfile(nextProfile);
+    if (this.dispatching) {
+      this.pendingProfile = cloned;
+      return;
+    }
+    this.applyProfile(cloned);
   }
 
   // -----------------------------------------------------------------------
@@ -349,6 +377,12 @@ export class ResidentAgent {
     } finally {
       this.dispatching = false;
       this.dispatchAbortController = null;
+
+      if (this.pendingProfile) {
+        const nextProfile = this.pendingProfile;
+        this.pendingProfile = null;
+        this.applyProfile(nextProfile);
+      }
 
       // Emit phase: ready (idle, waiting for next work)
       if (!this.stopped) {
@@ -576,5 +610,10 @@ export class ResidentAgent {
         -DEFAULT_RESIDENT_MAX_HISTORY,
       );
     }
+  }
+
+  private applyProfile(nextProfile: AgentProfile): void {
+    this.profile = nextProfile;
+    this.adapter = createAdapterForAgentProfile(this.processManager, this.profile);
   }
 }

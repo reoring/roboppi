@@ -1,0 +1,3 @@
+task_id=file_inbox:inbox:task.json
+source_kind=file_inbox
+requested_action=implement

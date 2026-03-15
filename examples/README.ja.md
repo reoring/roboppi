@@ -34,6 +34,21 @@ bun run src/daemon/cli.ts examples/daemon/simple-cron.yaml --verbose
 timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 ```
 
+## task orchestrator を実行する
+
+```bash
+./roboppi task-orchestrator run examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+# (dev)
+bun run src/cli.ts -- task-orchestrator run \
+  examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+```
+
+resident poll loop として動かす場合:
+
+```bash
+./roboppi task-orchestrator serve examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+```
+
 ## workflow の例
 
 - `examples/hello-world.yaml`: 最小の 1 ステップ workflow
@@ -50,6 +65,15 @@ timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 - `examples/daemon/smart-reviewer.yaml`: cron + `evaluate`（実行ゲート）+ `analyze`（要約）
 - `examples/daemon/multi-trigger.yaml`: interval + cron + command の複合
 - `examples/daemon/file-watcher.yaml`: fswatch の例（設定リファレンス；実装は planned）
+
+## task orchestrator の例
+
+- `examples/task-orchestrator/file-inbox-demo/`: `file_inbox` source のローカル end-to-end デモ
+- `examples/task-orchestrator/github-issue-demo/`: fake `gh` を使って `github_issue` source と issue comment ack をローカル再現するデモ
+- `examples/task-orchestrator/github-live-agent-team/`: 実際の worker CLI を使って GitHub issue -> PR -> review -> merge を流す手動/live デモ
+- `examples/task-orchestrator/cron/run-task-orchestrator.sh`: cron 用の wrapper 例
+- `examples/task-orchestrator/systemd/`: `.service` / `.timer` のサンプル
+- `examples/task-orchestrator/README.md`: 概要と実行方法
 
 ### ディレクトリを 1 分ごとに精査してレポートする
 

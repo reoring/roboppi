@@ -616,6 +616,7 @@ export class WorkflowExecutor {
         stepRunner: this.stepRunner,
         workspaceDir: this.workspaceDir,
         agentCatalog: this.agentCatalog,
+        definitionPath: this.definitionPath,
         members: agentsConfig.members,
         leadMemberId,
         teamId: agentsTeamId,

@@ -34,6 +34,15 @@ Stop with `Ctrl+C` (graceful shutdown). For a short smoke test, you can use `tim
 timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 ```
 
+## Run the task orchestrator
+
+```bash
+./roboppi task-orchestrator run examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+# (dev)
+bun run src/cli.ts -- task-orchestrator run \
+  examples/task-orchestrator/file-inbox-demo/task-orchestrator.yaml
+```
+
 ## Workflow examples
 
 - `examples/hello-world.yaml`: minimal single-step workflow
@@ -51,6 +60,15 @@ timeout 10s ./roboppi daemon examples/daemon/simple-cron.yaml --verbose
 - `examples/daemon/smart-reviewer.yaml`: cron + `evaluate` gate + `analyze` summary
 - `examples/daemon/multi-trigger.yaml`: interval + cron + command events
 - `examples/daemon/file-watcher.yaml`: fswatch example (config reference; planned)
+
+## Task orchestrator examples
+
+- `examples/task-orchestrator/file-inbox-demo/`: local end-to-end demo for the `file_inbox` source
+- `examples/task-orchestrator/github-issue-demo/`: local end-to-end demo for the `github_issue` source using a fake `gh`, including declarative agent reporting, issue status projection, and issue-comment ack
+- `examples/task-orchestrator/github-live-agent-team/`: manual/live GitHub issue -> PR -> review -> merge example using actual agent teams and authenticated worker CLIs
+- `examples/task-orchestrator/cron/run-task-orchestrator.sh`: cron wrapper example
+- `examples/task-orchestrator/systemd/`: sample `.service` / `.timer` units
+- `examples/task-orchestrator/README.md`: overview and run commands
 
 ### Directory scan + report (every 1 minute)
 

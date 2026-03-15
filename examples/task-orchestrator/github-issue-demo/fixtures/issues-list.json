@@ -1,0 +1,19 @@
+[
+  [
+    {
+      "number": 12,
+      "html_url": "https://github.com/acme/widgets/issues/12",
+      "created_at": "2026-03-01T00:00:00Z",
+      "updated_at": "2026-03-02T00:00:00Z",
+      "title": "Fix flaky widget test"
+    },
+    {
+      "number": 13,
+      "html_url": "https://github.com/acme/widgets/pull/13",
+      "created_at": "2026-03-01T00:00:00Z",
+      "updated_at": "2026-03-02T00:00:00Z",
+      "title": "This PR should be ignored",
+      "pull_request": {}
+    }
+  ]
+]

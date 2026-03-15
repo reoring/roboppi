@@ -1,0 +1,19 @@
+name: file-inbox-demo
+version: "1"
+state_dir: ./.roboppi-task
+
+sources:
+  inbox:
+    type: file_inbox
+    path: ./inbox
+
+routes:
+  bugfix:
+    when:
+      source: file_inbox
+      labels_any: ["bug"]
+    workflow: workflows/implement-task.yaml
+    workspace_mode: shared
+
+landing:
+  mode: manual

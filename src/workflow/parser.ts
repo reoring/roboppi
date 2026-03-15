@@ -1,6 +1,17 @@
 import YAML from "yaml";
 import path from "node:path";
-import type { WorkflowDefinition, StepDefinition, CompletionCheckDef, AgentsWorkflowConfig } from "./types.js";
+import type {
+  WorkflowDefinition,
+  StepDefinition,
+  CompletionCheckDef,
+  AgentsWorkflowConfig,
+  WorkflowReportingConfig,
+  WorkflowReportingEvent,
+  WorkflowReportingAggregate,
+  WorkflowReportingProjection,
+  WorkflowTaskIntentKind,
+  WorkflowTaskPolicyConfig,
+} from "./types.js";
 import type { ManagementConfig, ManagementAgentConfig, StepManagementConfig } from "./management/types.js";
 import { VALID_MANAGEMENT_HOOKS, VALID_ENGINE_TYPES } from "./management/types.js";
 import type { AgentCatalog, AgentProfile } from "./agent-catalog.js";
@@ -9,6 +20,34 @@ import { parseDuration } from "./duration.js";
 
 const VALID_WORKERS = new Set(["CODEX_CLI", "CLAUDE_CODE", "OPENCODE", "CUSTOM"]);
 const VALID_CAPABILITIES = new Set(["READ", "EDIT", "RUN_TESTS", "RUN_COMMANDS", "MAILBOX", "TASKS"]);
+const VALID_REPORTING_EVENTS = new Set<WorkflowReportingEvent>([
+  "progress",
+  "blocker",
+  "waiting_for_input",
+  "review_required",
+  "ready_to_land",
+  "landed",
+  "commit_created",
+  "push_completed",
+]);
+const VALID_REPORTING_PROJECTIONS = new Set<WorkflowReportingProjection>([
+  "status_comment",
+  "comment",
+]);
+const VALID_REPORTING_AGGREGATES = new Set<WorkflowReportingAggregate>([
+  "latest",
+  "latest_per_phase",
+  "summary",
+]);
+const VALID_TASK_INTENT_KINDS = new Set<WorkflowTaskIntentKind>([
+  "activity",
+  "review_verdict",
+  "landing_decision",
+  "clarification_request",
+  "pr_open_request",
+  "merge_request",
+  "external_publish",
+]);
 
 const RESERVED_STEP_IDS = new Set([
   "_subworkflows",
@@ -110,6 +149,16 @@ function validateOptionalStringArray(value: unknown, field: string): void {
     if (typeof v !== "string" || v.trim() === "") {
       throw new WorkflowParseError(`"${field}" must contain only non-empty strings`);
     }
+  }
+}
+
+function validateOptionalIdentifierArray(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new WorkflowParseError(`"${field}" must be an array`);
+  }
+  for (const item of value) {
+    assertPathSegment(item, `${field}[]`);
   }
 }
 
@@ -987,6 +1036,7 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
       const member = memberVal as Record<string, unknown>;
       assertString(member["agent"], `agents.members.${memberId}.agent`);
       validateOptionalString(member["role"], `agents.members.${memberId}.role`);
+      validateOptionalIdentifierArray(member["roles"], `agents.members.${memberId}.roles`);
     }
   }
 
@@ -1092,6 +1142,195 @@ function validateAgents(value: unknown): AgentsWorkflowConfig | undefined {
   return obj as unknown as AgentsWorkflowConfig;
 }
 
+function validateReportingSink(
+  sinkId: "github" | "linear",
+  value: unknown,
+  declaredMembers: ReadonlySet<string>,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`reporting.sinks.${sinkId} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  validateOptionalBoolean(obj["enabled"], `reporting.sinks.${sinkId}.enabled`);
+
+  if (obj["publisher_member"] !== undefined) {
+    assertString(obj["publisher_member"], `reporting.sinks.${sinkId}.publisher_member`);
+    if (
+      declaredMembers.size === 0 ||
+      !declaredMembers.has(obj["publisher_member"] as string)
+    ) {
+      throw new WorkflowParseError(
+        `reporting.sinks.${sinkId}.publisher_member references unknown member "${String(obj["publisher_member"])}"`,
+      );
+    }
+  }
+
+  if (obj["allowed_members"] !== undefined) {
+    validateOptionalIdentifierArray(
+      obj["allowed_members"],
+      `reporting.sinks.${sinkId}.allowed_members`,
+    );
+    for (const memberId of obj["allowed_members"] as string[]) {
+      if (
+        declaredMembers.size === 0 ||
+        !declaredMembers.has(memberId)
+      ) {
+        throw new WorkflowParseError(
+          `reporting.sinks.${sinkId}.allowed_members references unknown member "${memberId}"`,
+        );
+      }
+    }
+  }
+
+  validateOptionalIdentifierArray(obj["allowed_roles"], `reporting.sinks.${sinkId}.allowed_roles`);
+
+  if (obj["events"] !== undefined) {
+    if (!Array.isArray(obj["events"]) || obj["events"].length === 0) {
+      throw new WorkflowParseError(`"reporting.sinks.${sinkId}.events" must be a non-empty array`);
+    }
+    for (const event of obj["events"]) {
+      if (typeof event !== "string" || !VALID_REPORTING_EVENTS.has(event as WorkflowReportingEvent)) {
+        throw new WorkflowParseError(
+          `"reporting.sinks.${sinkId}.events" contains invalid event "${String(event)}"`,
+        );
+      }
+    }
+  }
+
+  if (obj["projection"] !== undefined) {
+    if (
+      typeof obj["projection"] !== "string" ||
+      !VALID_REPORTING_PROJECTIONS.has(obj["projection"] as WorkflowReportingProjection)
+    ) {
+      throw new WorkflowParseError(
+        `reporting.sinks.${sinkId}.projection must be one of: ${[...VALID_REPORTING_PROJECTIONS].join(", ")}`,
+      );
+    }
+  }
+
+  if (obj["aggregate"] !== undefined) {
+    if (
+      typeof obj["aggregate"] !== "string" ||
+      !VALID_REPORTING_AGGREGATES.has(obj["aggregate"] as WorkflowReportingAggregate)
+    ) {
+      throw new WorkflowParseError(
+        `reporting.sinks.${sinkId}.aggregate must be one of: ${[...VALID_REPORTING_AGGREGATES].join(", ")}`,
+      );
+    }
+  }
+}
+
+function validateReporting(
+  value: unknown,
+  agentsConfig: AgentsWorkflowConfig | undefined,
+): WorkflowReportingConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError("reporting must be an object");
+  }
+  const obj = value as Record<string, unknown>;
+  const declaredMembers = new Set<string>(
+    Object.keys(agentsConfig?.members ?? {}),
+  );
+
+  if (obj["default_publisher"] !== undefined) {
+    assertString(obj["default_publisher"], "reporting.default_publisher");
+    if (
+      declaredMembers.size === 0 ||
+      !declaredMembers.has(obj["default_publisher"] as string)
+    ) {
+      throw new WorkflowParseError(
+        `reporting.default_publisher references unknown member "${String(obj["default_publisher"])}"`,
+      );
+    }
+  }
+
+  if (obj["sinks"] !== undefined) {
+    if (typeof obj["sinks"] !== "object" || obj["sinks"] === null || Array.isArray(obj["sinks"])) {
+      throw new WorkflowParseError("reporting.sinks must be an object");
+    }
+    const sinks = obj["sinks"] as Record<string, unknown>;
+    for (const sinkId of Object.keys(sinks)) {
+      if (sinkId !== "github" && sinkId !== "linear") {
+        throw new WorkflowParseError(`reporting.sinks.${sinkId} is not supported`);
+      }
+    }
+    validateReportingSink("github", sinks["github"], declaredMembers);
+    validateReportingSink("linear", sinks["linear"], declaredMembers);
+  }
+
+  return obj as unknown as WorkflowReportingConfig;
+}
+
+function validateTaskIntentRule(
+  kind: WorkflowTaskIntentKind,
+  value: unknown,
+  declaredMembers: ReadonlySet<string>,
+): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError(`task_policy.intents.${kind} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+
+  if (obj["allowed_members"] !== undefined) {
+    validateOptionalIdentifierArray(
+      obj["allowed_members"],
+      `task_policy.intents.${kind}.allowed_members`,
+    );
+    for (const memberId of obj["allowed_members"] as string[]) {
+      if (declaredMembers.size === 0 || !declaredMembers.has(memberId)) {
+        throw new WorkflowParseError(
+          `task_policy.intents.${kind}.allowed_members references unknown member "${memberId}"`,
+        );
+      }
+    }
+  }
+
+  validateOptionalIdentifierArray(
+    obj["allowed_roles"],
+    `task_policy.intents.${kind}.allowed_roles`,
+  );
+}
+
+function validateTaskPolicy(
+  value: unknown,
+  agentsConfig: AgentsWorkflowConfig | undefined,
+): WorkflowTaskPolicyConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowParseError("task_policy must be an object");
+  }
+  const obj = value as Record<string, unknown>;
+  const declaredMembers = new Set<string>(
+    Object.keys(agentsConfig?.members ?? {}),
+  );
+
+  if (obj["intents"] !== undefined) {
+    if (
+      typeof obj["intents"] !== "object" ||
+      obj["intents"] === null ||
+      Array.isArray(obj["intents"])
+    ) {
+      throw new WorkflowParseError("task_policy.intents must be an object");
+    }
+    const intents = obj["intents"] as Record<string, unknown>;
+    for (const kind of Object.keys(intents)) {
+      if (!VALID_TASK_INTENT_KINDS.has(kind as WorkflowTaskIntentKind)) {
+        throw new WorkflowParseError(`task_policy.intents.${kind} is not supported`);
+      }
+    }
+    for (const kind of VALID_TASK_INTENT_KINDS) {
+      if (intents[kind] !== undefined) {
+        validateTaskIntentRule(kind, intents[kind], declaredMembers);
+      }
+    }
+  }
+
+  return obj as unknown as WorkflowTaskPolicyConfig;
+}
+
 const MAX_YAML_SIZE = 1024 * 1024; // 1MB
 
 /**
@@ -1137,6 +1376,8 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
 
   // Validate agents config (opt-in)
   const agentsConfig = validateAgents(doc["agents"]);
+  const reportingConfig = validateReporting(doc["reporting"], agentsConfig);
+  const taskPolicyConfig = validateTaskPolicy(doc["task_policy"], agentsConfig);
 
   if (typeof doc["steps"] !== "object" || doc["steps"] === null || Array.isArray(doc["steps"])) {
     throw new WorkflowParseError('"steps" must be an object');
@@ -1184,6 +1425,8 @@ export function parseWorkflow(yamlContent: string, options: WorkflowParseOptions
       : undefined,
     management: managementConfig,
     agents: agentsConfig,
+    reporting: reportingConfig,
+    task_policy: taskPolicyConfig,
     steps: validatedSteps,
   };
 }

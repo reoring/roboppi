@@ -1,0 +1,26 @@
+name: github-issue-demo
+version: "1"
+state_dir: ./.roboppi-task
+runtime:
+  poll_every: 1s
+activity:
+  github:
+    enabled: true
+
+sources:
+  github-main:
+    type: github_issue
+    repo: acme/widgets
+    labels: ["roboppi"]
+
+routes:
+  bugfix:
+    when:
+      source: github_issue
+      repository: acme/widgets
+      labels_any: ["bug"]
+    workflow: workflows/implement-task.yaml
+    workspace_mode: shared
+
+landing:
+  mode: manual

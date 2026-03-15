@@ -86,6 +86,7 @@ export interface StallPolicy {
 export interface AgentMemberConfig {
   agent: string;
   role?: string;
+  roles?: string[];
 }
 
 export interface AgentSeedTaskConfig {
@@ -108,6 +109,55 @@ export interface AgentsWorkflowConfig {
   team_name?: string;
   members?: Record<string, AgentMemberConfig>;
   tasks?: AgentSeedTaskConfig[];
+}
+
+export type WorkflowReportingEvent =
+  | "progress"
+  | "blocker"
+  | "waiting_for_input"
+  | "review_required"
+  | "ready_to_land"
+  | "landed"
+  | "commit_created"
+  | "push_completed";
+
+export type WorkflowReportingProjection = "status_comment" | "comment";
+export type WorkflowReportingAggregate = "latest" | "latest_per_phase" | "summary";
+
+export interface WorkflowReportingSinkConfig {
+  enabled?: boolean;
+  publisher_member?: string;
+  allowed_members?: string[];
+  allowed_roles?: string[];
+  events?: WorkflowReportingEvent[];
+  projection?: WorkflowReportingProjection;
+  aggregate?: WorkflowReportingAggregate;
+}
+
+export interface WorkflowReportingConfig {
+  default_publisher?: string;
+  sinks?: {
+    github?: WorkflowReportingSinkConfig;
+    linear?: WorkflowReportingSinkConfig;
+  };
+}
+
+export type WorkflowTaskIntentKind =
+  | "activity"
+  | "review_verdict"
+  | "landing_decision"
+  | "clarification_request"
+  | "pr_open_request"
+  | "merge_request"
+  | "external_publish";
+
+export interface WorkflowTaskIntentRuleConfig {
+  allowed_members?: string[];
+  allowed_roles?: string[];
+}
+
+export interface WorkflowTaskPolicyConfig {
+  intents?: Partial<Record<WorkflowTaskIntentKind, WorkflowTaskIntentRuleConfig>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +183,10 @@ export interface WorkflowDefinition {
   management?: ManagementConfig;
   /** Optional: Agents (agent team) configuration (§8.1). */
   agents?: AgentsWorkflowConfig;
+  /** Optional: declarative reporting policy for external sinks. */
+  reporting?: WorkflowReportingConfig;
+  /** Optional: declarative task-intent authorization policy. */
+  task_policy?: WorkflowTaskPolicyConfig;
   steps: Record<string, StepDefinition>;
 }
 

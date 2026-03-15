@@ -1,0 +1,13 @@
+{
+  "title": "Demo bugfix task from file inbox",
+  "body": "Validate that the task orchestrator injects task context into the workflow.",
+  "labels": ["bug", "demo"],
+  "priority": "normal",
+  "repository": {
+    "id": "demo/local-repo",
+    "default_branch": "main",
+    "local_path": "../repo"
+  },
+  "requested_action": "implement",
+  "requested_by": "demo-user"
+}

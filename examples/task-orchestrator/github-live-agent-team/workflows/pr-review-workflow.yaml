@@ -1,0 +1,78 @@
+name: github-live-pr-review-team
+version: "1"
+timeout: "60m"
+
+agents:
+  enabled: true
+  team_name: "github-live-pr-review-team"
+  members:
+    lead:
+      agent: review_lead
+      roles: [lead, publisher]
+    reviewer:
+      agent: pr_reviewer
+      roles: [reviewer]
+    reporter:
+      agent: github_reporter
+      roles: [publisher, github_reporter]
+  tasks:
+    - title: "Review the pull request and report a verdict"
+      description: |
+        Read `$ROBOPPI_TASK_CONTEXT_DIR/_task/task.json`, inspect the PR,
+        decide whether it is acceptable, and send the lead a `review_result` JSON message.
+      assigned_to: reviewer
+
+reporting:
+  default_publisher: lead
+  sinks:
+    github:
+      enabled: true
+      publisher_member: reporter
+      allowed_members: [reporter, lead]
+      allowed_roles: [publisher]
+      events: [progress, blocker, landed]
+      projection: status_comment
+      aggregate: latest
+
+task_policy:
+  intents:
+    activity:
+      allowed_members: [reporter]
+      allowed_roles: [publisher]
+    review_verdict:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+    merge_request:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+    landing_decision:
+      allowed_members: [lead]
+      allowed_roles: [lead]
+
+steps:
+  orchestrate:
+    description: "Lead coordinates PR review and records the verdict"
+    agent: review_lead
+    instructions: |
+      Coordinate the reviewer and reporter until the review verdict is recorded.
+      Process current state only, then exit. The workflow engine will re-run you.
+    completion_check:
+      worker: CUSTOM
+      instructions: |
+        set -euo pipefail
+        test -f "$ROBOPPI_TASK_CONTEXT_DIR/_task/review-verdict.json"
+      capabilities: [READ, RUN_COMMANDS]
+      timeout: "30s"
+    max_iterations: 20
+    on_iterations_exhausted: abort
+
+  apply-review:
+    description: "Apply the recorded review intent to GitHub and finalize landing"
+    worker: CUSTOM
+    depends_on: [orchestrate]
+    instructions: |
+      set -euo pipefail
+      bun run --cwd "/home/reoring/project/roboppi" src/cli.ts -- task-orchestrator github apply-pr-review \
+        --context "$ROBOPPI_TASK_CONTEXT_DIR"
+    capabilities: [READ, RUN_COMMANDS]
+    timeout: "5m"

@@ -1,0 +1,29 @@
+{
+  "version": "1",
+  "task_id": "file_inbox:inbox:task.json",
+  "source": {
+    "kind": "file_inbox",
+    "system_id": "file_inbox",
+    "external_id": "task.json",
+    "url": "file:///home/reoring/project/roboppi/examples/task-orchestrator/file-inbox-demo/inbox/task.json",
+    "revision": "1773043741024:368"
+  },
+  "title": "Demo bugfix task from file inbox",
+  "body": "Validate that the task orchestrator injects task context into the workflow.",
+  "labels": [
+    "bug",
+    "demo"
+  ],
+  "priority": "normal",
+  "repository": {
+    "id": "demo/local-repo",
+    "default_branch": "main",
+    "local_path": "/home/reoring/project/roboppi/examples/task-orchestrator/file-inbox-demo/repo"
+  },
+  "requested_action": "implement",
+  "requested_by": "demo-user",
+  "timestamps": {
+    "created_at": 1773043741024,
+    "updated_at": 1773043741024
+  }
+}

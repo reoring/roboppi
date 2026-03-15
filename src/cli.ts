@@ -7,6 +7,11 @@
  *   roboppi run --worker <kind> ...         One-shot worker task execution
  *   roboppi workflow <workflow.yaml> ...    Workflow runner
  *   roboppi daemon <daemon.yaml> ...        Daemon mode
+ *   roboppi task-orchestrator run <config>  Task orchestrator runner
+ *   roboppi task-orchestrator serve <config>
+ *                                           Resident task orchestrator
+ *   roboppi task-orchestrator status <config>
+ *                                           Task orchestrator status view
  */
 import type { AgentCoreConfig } from "./core/agentcore.js";
 import type { LogLevel } from "./core/observability.js";
@@ -64,6 +69,12 @@ USAGE
   roboppi run [options] <instructions...>    Run a one-shot worker task
   roboppi workflow <workflow.yaml> [options] Run a workflow YAML
   roboppi daemon <daemon.yaml> [options]     Run daemon mode (resident workflows)
+  roboppi task-orchestrator run <config.yaml>
+                                             Run task orchestrator once
+  roboppi task-orchestrator serve <config.yaml>
+                                             Run task orchestrator in resident mode
+  roboppi task-orchestrator status <config.yaml>
+                                             Show task orchestrator status
   roboppi agent [options] <instructions...>  Alias for 'roboppi run'
   roboppi agents <subcommand> [options]       Agent team coordination (JSON-only stdout)
 
@@ -120,6 +131,15 @@ EXAMPLES
 
   # Run daemon mode
   roboppi daemon examples/daemon/simple-cron.yaml --verbose
+
+  # Run task orchestrator once
+  roboppi task-orchestrator run examples/task-orchestrator.yaml
+
+  # Run task orchestrator in resident mode
+  roboppi task-orchestrator serve examples/task-orchestrator.yaml
+
+  # Show persisted task state
+  roboppi task-orchestrator status examples/task-orchestrator.yaml --json
 `.trim();
 
 const VERSION = "0.1.0";
@@ -513,6 +533,12 @@ async function main(): Promise<void> {
   if (argv[0] === "daemon") {
     const { runDaemonCli } = await import("./daemon/cli.js");
     await runDaemonCli(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "task-orchestrator") {
+    const { runTaskOrchestratorCli } = await import("./task-orchestrator/cli.js");
+    await runTaskOrchestratorCli(argv.slice(1));
     return;
   }
 

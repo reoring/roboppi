@@ -1,0 +1,16 @@
+{
+  "workflow": "workflows/implement-task.yaml",
+  "workspaceMode": "shared",
+  "env": {
+    "ROBOPPI_TASK_ID": "file_inbox:inbox:task.json",
+    "ROBOPPI_TASK_SOURCE_KIND": "file_inbox",
+    "ROBOPPI_TASK_EXTERNAL_ID": "task.json",
+    "ROBOPPI_TASK_REQUESTED_ACTION": "implement",
+    "ROBOPPI_TASK_PRIORITY": "normal",
+    "ROBOPPI_TASK_SLUG": "demo-bugfix-task-from-file-inbox",
+    "ROBOPPI_TASK_REPOSITORY": "demo/local-repo",
+    "ROBOPPI_TASK_REQUESTED_BY": "demo-user"
+  },
+  "priorityClass": "normal",
+  "managementEnabled": false
+}

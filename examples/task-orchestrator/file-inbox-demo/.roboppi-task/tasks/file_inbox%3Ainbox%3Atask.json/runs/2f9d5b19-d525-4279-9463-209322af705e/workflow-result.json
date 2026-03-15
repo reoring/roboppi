@@ -1,0 +1,16 @@
+{
+  "workflowId": "6f61d4ce-d86f-4adc-9108-dcaa510e9cab",
+  "name": "file-inbox-implement-task",
+  "status": "SUCCEEDED",
+  "steps": {
+    "implement": {
+      "status": "SUCCEEDED",
+      "iteration": 1,
+      "maxIterations": 1,
+      "startedAt": 1773044174861,
+      "completedAt": 1773044174869
+    }
+  },
+  "startedAt": 1773044174860,
+  "completedAt": 1773044174870
+}
