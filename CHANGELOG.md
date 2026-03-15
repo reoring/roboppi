@@ -12,6 +12,13 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 
 ### Fixed
 
+## [0.1.12] - 2026-03-15
+
+### Fixed
+
+- Hardened acceptance-test cleanup for resident task-orchestrator serve flows so CI does not fail after the functional assertions have already passed.
+- Added a bounded retry in the agents CLI acceptance harness for rare Bun 1.3.8 no-output hangs observed in CI process spawning.
+
 
 ## [0.1.11] - 2026-03-15
 

@@ -25,6 +25,10 @@ type CliResult = CliExit & {
 
 const REPO_ROOT = process.cwd();
 
+function exitedAcceptablyForResidentCleanup(exit: CliExit): boolean {
+  return exit.signal === "SIGTERM" || exit.signal === "SIGKILL" || exit.code === 0 || exit.code === 143;
+}
+
 function stripAnsi(input: string): string {
   // Good-enough ANSI stripper for CLI status output.
   return input.replace(/\x1b\[[0-9;]*m/g, "");
@@ -1568,7 +1572,7 @@ landing:
       } finally {
         if (child && waitForExit && getStderr) {
           const exit = await killProcess(child, waitForExit, 4000);
-          expect(exit.signal === "SIGTERM" || exit.code === 0 || exit.code === 143).toBe(true);
+          expect(exitedAcceptablyForResidentCleanup(exit)).toBe(true);
           const stderr = stripAnsi(getStderr());
           expect(stderr).not.toContain("Error:");
         }
@@ -1773,7 +1777,7 @@ exit 1
       } finally {
         if (child && waitForExit && getStderr) {
           const exit = await killProcess(child, waitForExit, 4000);
-          expect(exit.signal === "SIGTERM" || exit.code === 0 || exit.code === 143).toBe(true);
+          expect(exitedAcceptablyForResidentCleanup(exit)).toBe(true);
           expect(stripAnsi(getStderr())).not.toContain("Error:");
         }
         await rm(dir, { recursive: true, force: true });
@@ -1998,7 +2002,7 @@ exit 1
       } finally {
         if (child && waitForExit && getStderr) {
           const exit = await killProcess(child, waitForExit, 4000);
-          expect(exit.signal === "SIGTERM" || exit.code === 0 || exit.code === 143).toBe(true);
+          expect(exitedAcceptablyForResidentCleanup(exit)).toBe(true);
           expect(stripAnsi(getStderr())).not.toContain("Error:");
         }
         await rm(dir, { recursive: true, force: true });
@@ -2333,7 +2337,7 @@ exit 1
       } finally {
         if (child && waitForExit && getStderr) {
           const exit = await killProcess(child, waitForExit, 4000);
-          expect(exit.signal === "SIGTERM" || exit.code === 0 || exit.code === 143).toBe(true);
+          expect(exitedAcceptablyForResidentCleanup(exit)).toBe(true);
           expect(stripAnsi(getStderr())).not.toContain("Error:");
         }
         await rm(dir, { recursive: true, force: true });

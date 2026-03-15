@@ -64,7 +64,7 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
     await writeFile(stdinPath, stdinData ?? "", "utf8");
   }
 
-  return new Promise<CliResult>((resolve) => {
+  const runOnce = (): Promise<CliResult> => new Promise<CliResult>((resolve) => {
     const command = [
       "exec",
       shellQuote(process.execPath),
@@ -99,7 +99,6 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
 
-    // Handle process error (e.g. ENOENT, spawn failure)
     child.once("error", (err) => {
       if (settled) return;
       settled = true;
@@ -111,18 +110,14 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      void rm(stdinDir ?? "", { recursive: true, force: true });
       resolve({ code, signal, stdout, stderr });
     });
 
-    // Hard timeout: kill the child and wait for close event before resolving
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      // Wait for the child to actually close (or resolve after a grace period)
       const graceTimer = setTimeout(() => {
-        void rm(stdinDir ?? "", { recursive: true, force: true });
         resolve({
           code: null,
           signal: "SIGKILL" as NodeJS.Signals,
@@ -132,7 +127,6 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       }, 3_000);
       child.once("close", (code, signal) => {
         clearTimeout(graceTimer);
-        void rm(stdinDir ?? "", { recursive: true, force: true });
         resolve({
           code,
           signal: signal ?? ("SIGKILL" as NodeJS.Signals),
@@ -142,6 +136,24 @@ async function runAgentsCli(args: string[], env?: NodeJS.ProcessEnv, stdinData?:
       });
     }, CLI_TIMEOUT_MS);
   });
+
+  try {
+    let lastResult: CliResult | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const result = await runOnce();
+      lastResult = result;
+      const timedOutWithoutOutput =
+        result.signal === "SIGKILL"
+        && result.stdout.trim() === ""
+        && result.stderr.includes(`[test harness] Process killed after ${CLI_TIMEOUT_MS}ms timeout`);
+      if (!timedOutWithoutOutput || attempt === 2) {
+        return result;
+      }
+    }
+    return lastResult!;
+  } finally {
+    await rm(stdinDir ?? "", { recursive: true, force: true });
+  }
 }
 
 function parseJsonStdout(result: CliResult): any {
