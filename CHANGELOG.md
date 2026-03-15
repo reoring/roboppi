@@ -13,6 +13,23 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Fixed
 
 
+## [0.1.11] - 2026-03-15
+
+### Added
+
+- Added the Task Orchestrator control plane with `roboppi task-orchestrator run|serve|status`, local activity/intent emission, file inbox polling, GitHub issue ingestion, and workflow routing/state persistence.
+- Added GitHub task automation helpers for issue-to-workflow routing, PR-open/review actuation flows, and example cron/systemd/demo setups for local or resident operation.
+- Added `roboppi agents mcp` plus richer agent runtime visibility, task orchestration examples, and GitHub-backed live agent-team workflows.
+
+### Changed
+
+- Agent coordination now enforces canonical current-state phase routing and keeps task/reporting flows aligned with the new orchestrator integration points.
+
+### Fixed
+
+- Dependent agent tasks now unblock correctly after supersede, and acceptance coverage hardens CLI stdin handling to reduce release-time flakes.
+
+
 ## [0.1.10] - 2026-03-09
 
 ### Added

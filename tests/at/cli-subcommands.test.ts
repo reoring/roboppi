@@ -11,6 +11,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { supportsChildBunStdinPipe } from "../../test/helpers/supervised-ipc-capability.js";
+import { ROBOPPI_VERSION } from "../../src/version.js";
 
 type CliExit = {
   code: number | null;
@@ -294,6 +295,16 @@ describe("CLI E2E (bun run src/cli.ts ...)", () => {
       const res = await runCli(["workflow", "--help"], { timeoutMs: 10_000 });
       expect(res.code).toBe(0);
       expect(res.stdout).toContain("roboppi workflow <workflow.yaml>");
+    },
+    15_000,
+  );
+
+  it(
+    "TC-CLI-02b: version output matches release version",
+    async () => {
+      const res = await runCli(["--version"], { timeoutMs: 10_000 });
+      expect(res.code).toBe(0);
+      expect(res.stdout.trim()).toBe(`roboppi ${ROBOPPI_VERSION}`);
     },
     15_000,
   );

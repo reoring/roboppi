@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { ROBOPPI_VERSION } from "../../src/version.js";
 
 const REPO_ROOT = process.cwd();
 const TEST_TMP_ROOT = path.join(REPO_ROOT, ".roboppi-loop", "tmp", "at-agents-mcp");
@@ -249,6 +250,10 @@ describe("roboppi agents mcp", () => {
     expect(responses).toHaveLength(2);
     expect(responses[0]?.error).toBeUndefined();
     expect((responses[0]?.result as any).capabilities.tools).toEqual({});
+    expect((responses[0]?.result as any).serverInfo).toMatchObject({
+      name: "roboppi-agents-mcp",
+      version: ROBOPPI_VERSION,
+    });
 
     const tools = (responses[1]?.result as any).tools as Array<{ name: string }>;
     expect(tools.some((tool) => tool.name === "agents_specialist_activate")).toBe(true);

@@ -26,6 +26,7 @@ import { OpenCodeAdapter } from "./worker/adapters/opencode-adapter.js";
 import { ClaudeCodeAdapter } from "./worker/adapters/claude-code-adapter.js";
 import { CodexCliAdapter } from "./worker/adapters/codex-cli-adapter.js";
 import type { WorkerAdapter } from "./worker/worker-adapter.js";
+import { ROBOPPI_VERSION } from "./version.js";
 import { generateId } from "./types/common.js";
 import { WorkerKind, WorkerCapability, OutputMode, WorkerStatus, JobType, PriorityClass } from "./types/index.js";
 import type { WorkerTask, Job } from "./types/index.js";
@@ -141,8 +142,6 @@ EXAMPLES
   # Show persisted task state
   roboppi task-orchestrator status examples/task-orchestrator.yaml --json
 `.trim();
-
-const VERSION = "0.1.0";
 
 const VALID_LOG_LEVELS = new Set(["debug", "info", "warn", "error", "fatal"]);
 
@@ -556,7 +555,7 @@ async function main(): Promise<void> {
       process.exit(0);
     }
     if (parsed.opts.version) {
-      console.log(`roboppi ${VERSION}`);
+      console.log(`roboppi ${ROBOPPI_VERSION}`);
       process.exit(0);
     }
     startServer(parsed.opts);
@@ -574,7 +573,7 @@ async function main(): Promise<void> {
   }
 
   if (parsed.opts.version) {
-    console.log(`roboppi ${VERSION}`);
+    console.log(`roboppi ${ROBOPPI_VERSION}`);
     process.exit(0);
   }
 

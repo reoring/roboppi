@@ -3,10 +3,10 @@ import { addTask, claimTask, completeTask, listTasks, supersedeTask } from "./ta
 import { readWorkflowStatus, writeWorkflowStatus, clearWorkflowStatus } from "./status-store.js";
 import { assertAgentsRootSafe, validateIdPath, validateMemberIdPath } from "./path-safety.js";
 import type { MemberEntry, MessageKind, TaskStatus } from "./types.js";
+import { ROBOPPI_VERSION } from "../version.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "roboppi-agents-mcp";
-const SERVER_VERSION = "0.1.0";
 
 type Json =
   | null
@@ -590,7 +590,7 @@ async function dispatchRequest(
           capabilities: { tools: {} },
           serverInfo: {
             name: SERVER_NAME,
-            version: SERVER_VERSION,
+            version: ROBOPPI_VERSION,
           },
         },
       };

@@ -1,6 +1,6 @@
 {
   "name": "roboppi",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "type": "module",
   "bin": {
     "roboppi": "src/cli.ts"
