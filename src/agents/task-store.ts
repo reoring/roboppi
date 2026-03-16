@@ -187,6 +187,27 @@ export async function listTasks(
   return tasks;
 }
 
+export async function getTask(
+  contextDir: string,
+  taskId: string,
+): Promise<AgentTask | null> {
+  const statuses: TaskStatus[] = ["pending", "in_progress", "completed", "blocked", "superseded"];
+
+  for (const status of statuses) {
+    try {
+      const raw = await readFile(
+        resolve(tasksStatusDir(contextDir, status), `${taskId}.json`),
+        "utf-8",
+      );
+      return JSON.parse(raw) as AgentTask;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 interface TaskRoutingHealth {
   actionablePending: number;
   pending: number;

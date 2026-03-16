@@ -1,5 +1,5 @@
 import { readTeam, readMembers, validateMember, deliverMessage, broadcastMessage, recvMessages, ackMessage, ackMessageByClaimToken, upsertMember } from "./store.js";
-import { addTask, claimTask, completeTask, listTasks, supersedeTask } from "./task-store.js";
+import { addTask, claimTask, completeTask, getTask, listTasks, supersedeTask } from "./task-store.js";
 import { readWorkflowStatus, writeWorkflowStatus, clearWorkflowStatus } from "./status-store.js";
 import { assertAgentsRootSafe, validateIdPath, validateMemberIdPath } from "./path-safety.js";
 import type { MemberEntry, MessageKind, TaskStatus } from "./types.js";
@@ -335,6 +335,28 @@ function buildTools(): McpTool[] {
         const status = getOptionalString(args, "status") as TaskStatus | undefined;
         const tasks = await listTasks(contextDir, status);
         return { ok: true, tasks };
+      },
+    },
+    {
+      name: "agents_tasks_get",
+      description: "Read one agent task, including its full description and metadata.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          context_dir: { type: "string" },
+          task_id: { type: "string" },
+        },
+        required: ["task_id"],
+      },
+      handler: async (args, env) => {
+        const contextDir = resolveContextDir(args, env);
+        const taskId = getRequiredString(args, "task_id");
+        validateIdPath(taskId, "task ID");
+        const task = await getTask(contextDir, taskId);
+        if (!task) {
+          throw new JsonRpcError(-32004, "Task not found");
+        }
+        return { ok: true, task };
       },
     },
     {

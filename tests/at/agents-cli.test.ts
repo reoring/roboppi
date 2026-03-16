@@ -433,6 +433,9 @@ describe("roboppi agents CLI roundtrip", () => {
     ], env);
     const claimJson = parseJsonStdout(claimResult);
     expect(claimJson.ok).toBe(true);
+    expect(claimJson.task.title).toBe("Test Task");
+    expect(claimJson.task.description).toBe("Do the thing");
+    expect(claimJson.task.status).toBe("in_progress");
 
     // List in_progress
     const ipResult = await runAgentsCli([
@@ -463,6 +466,35 @@ describe("roboppi agents CLI roundtrip", () => {
     const doneJson = parseJsonStdout(doneResult);
     expect(doneJson.ok).toBe(true);
     expect(doneJson.tasks.length).toBe(1);
+  }, AT_TIMEOUT);
+
+  it("tasks show returns the full task description", async () => {
+    await runAgentsCli(["init", "--context", contextDir, "--team", "test-team"]);
+
+    const env = createCleanEnv({
+      ROBOPPI_AGENTS_CONTEXT_DIR: contextDir,
+      ROBOPPI_AGENTS_MEMBER_ID: "lead",
+    });
+
+    const addResult = await runAgentsCli([
+      "tasks", "add",
+      "--context", contextDir,
+      "--title", "Detailed task",
+      "--description", "full task body for resident agent execution",
+    ], env);
+    const addJson = parseJsonStdout(addResult);
+    expect(addJson.ok).toBe(true);
+
+    const showResult = await runAgentsCli([
+      "tasks", "show",
+      "--context", contextDir,
+      "--task-id", addJson.task_id,
+    ], env);
+    const showJson = parseJsonStdout(showResult);
+    expect(showJson.ok).toBe(true);
+    expect(showJson.task.title).toBe("Detailed task");
+    expect(showJson.task.description).toBe("full task body for resident agent execution");
+    expect(showJson.task.status).toBe("pending");
   }, AT_TIMEOUT);
 
   it("tasks supersede roundtrip", async () => {

@@ -22,6 +22,7 @@ import {
 import {
   addTask,
   listTasks,
+  getTask,
   claimTask,
   completeTask,
   supersedeTask,
@@ -640,6 +641,28 @@ async function handleTasksList(argv: string[]): Promise<void> {
   });
 }
 
+async function handleTasksShow(argv: string[]): Promise<void> {
+  const contextDir = resolveContextDir(argv);
+  let taskId = "";
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--task-id") taskId = requireArg(argv, i, "--task-id");
+  }
+
+  if (!taskId) die("--task-id is required");
+
+  await assertAgentsRootSafe(contextDir);
+  validateIdPath(taskId, "task-id");
+
+  const task = await getTask(contextDir, taskId);
+  if (!task) {
+    jsonOut({ ok: false, error: "Task not found" });
+    process.exit(1);
+  }
+
+  jsonOut({ ok: true, task });
+}
+
 async function handleTasksClaim(argv: string[]): Promise<void> {
   const contextDir = resolveContextDir(argv);
   let taskId = "";
@@ -661,8 +684,13 @@ async function handleTasksClaim(argv: string[]): Promise<void> {
   await validateMember(contextDir, memberId);
 
   const result = await claimTask(contextDir, taskId, memberId);
-  jsonOut(result);
-  if (!result.ok) process.exit(1);
+  if (!result.ok) {
+    jsonOut(result);
+    process.exit(1);
+  }
+
+  const task = await getTask(contextDir, taskId);
+  jsonOut(task ? { ok: true, task } : { ok: true });
 }
 
 async function handleTasksComplete(argv: string[]): Promise<void> {
@@ -933,6 +961,9 @@ export async function runAgentsCli(argv: string[]): Promise<void> {
           case "list":
             await handleTasksList(rest.slice(1));
             break;
+          case "show":
+            await handleTasksShow(rest.slice(1));
+            break;
           case "claim":
             await handleTasksClaim(rest.slice(1));
             break;
@@ -943,7 +974,7 @@ export async function runAgentsCli(argv: string[]): Promise<void> {
             await handleTasksSupersede(rest.slice(1));
             break;
           default:
-            die(`Unknown tasks subcommand: ${rest[0]}. Use: add|list|claim|complete|supersede`);
+            die(`Unknown tasks subcommand: ${rest[0]}. Use: add|list|show|claim|complete|supersede`);
         }
         break;
 
