@@ -12,6 +12,12 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 
 ### Fixed
 
+## [0.1.14] - 2026-03-16
+
+### Fixed
+
+- Removed unused TypeScript symbols that caused the release verify job (`bun x tsc --noEmit`) to fail before GitHub could publish `v0.1.13`.
+
 ## [0.1.13] - 2026-03-16
 
 ### Changed
