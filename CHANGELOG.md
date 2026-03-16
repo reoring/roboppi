@@ -12,6 +12,17 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 
 ### Fixed
 
+## [0.1.13] - 2026-03-16
+
+### Changed
+
+- Completion checks now isolate their decision files per check invocation instead of sharing one mutable decision path across the run.
+- Agent coordination now re-synchronizes workflow status and routed tasks from canonical current-state so new slices regenerate actionable work instead of relying on startup-only task seeding.
+
+### Fixed
+
+- Prevented long-running agent workflows from exhausting 100 completion-check iterations with an empty task queue by detecting routing deadlocks and failing fast with explicit diagnostics.
+
 ## [0.1.12] - 2026-03-15
 
 ### Fixed
