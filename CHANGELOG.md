@@ -12,6 +12,12 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 
 ### Fixed
 
+## [0.1.15] - 2026-03-16
+
+### Fixed
+
+- Treated resident `task-orchestrator serve` shutdown aborts as clean exits so release verification does not fail after the clarification-resume acceptance flow has already passed.
+
 ## [0.1.14] - 2026-03-16
 
 ### Fixed
