@@ -1,3 +1,5 @@
+import { spawn as nodeSpawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 
 const cachedProbes = new Map<string, Promise<boolean>>();
@@ -10,6 +12,20 @@ function isBunExecutable(executablePath: string): boolean {
 }
 
 type RuntimeVersions = NodeJS.ProcessVersions & { bun?: string };
+type SpawnFn = (
+  command: string,
+  args: string[],
+  options: {
+    stdin: "pipe";
+    stdout: "pipe";
+    stderr: "ignore";
+    env: NodeJS.ProcessEnv;
+  },
+) => ChildProcessWithoutNullStreams;
+
+export function resetChildBunStdinPipeProbeCache(): void {
+  cachedProbes.clear();
+}
 
 function isBunScriptEntryPoint(childEntryPoint: string | undefined): boolean {
   if (!childEntryPoint) return false;
@@ -56,6 +72,7 @@ export async function supportsChildBunStdinPipe(
   childEntryPoint?: string,
   executablePath: string = process.execPath,
   versions: RuntimeVersions = process.versions,
+  spawnFn: SpawnFn = nodeSpawn as unknown as SpawnFn,
 ): Promise<boolean> {
   if (!usesBunChildRuntime(childEntryPoint, executablePath, versions)) {
     // The known stdin pipe issue is Bun-runtime specific.
@@ -79,22 +96,19 @@ export async function supportsChildBunStdinPipe(
       "process.stdin.resume();" +
       "setTimeout(() => process.exit(2), 1200);";
 
-    // IMPORTANT: use Bun.spawn here to match the actual supervised runner,
-    // which spawns the Core process via Bun.spawn (ProcessManager).
-    // The stdin-pipe issue can differ between node:child_process.spawn and Bun.spawn.
-    const bunAny = (globalThis as unknown as { Bun?: typeof Bun }).Bun;
-    if (!bunAny) {
-      resolve(false);
-      return;
-    }
-
-    const child = bunAny.spawn({
-      cmd: [...probeCommand, script],
+    // Match the actual supervised stdio path in Supervisor, which uses
+    // node:child_process.spawn for Bun child entrypoints.
+    const child = spawnFn(probeCommand[0]!, [...probeCommand.slice(1), script], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
       env: { ...process.env },
     });
+
+    if (!child.stdin || !child.stdout) {
+      resolve(false);
+      return;
+    }
 
     let stdout = "";
     let settled = false;
@@ -109,35 +123,25 @@ export async function supportsChildBunStdinPipe(
       resolve(value);
     };
 
-    // Read stdout until token observed or timeout.
-    const decoder = new TextDecoder();
-    const reader = child.stdout.getReader();
-    void (async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          stdout += decoder.decode(value, { stream: true });
-          if (stdout.includes(token)) {
-            finish(true);
-            return;
-          }
-        }
-      } catch {
-        finish(false);
-      } finally {
-        try {
-          reader.releaseLock();
-        } catch {
-          // ignore
-        }
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      if (stdout.includes(token)) {
+        finish(true);
       }
+    });
+    child.stdout.on("error", () => {
+      finish(false);
+    });
+    child.once("error", () => {
+      finish(false);
+    });
+    child.once("exit", () => {
       finish(stdout.includes(token));
-    })();
+    });
 
     try {
-      child.stdin.write(new TextEncoder().encode(`${token}\n`));
-      child.stdin.flush();
+      child.stdin.write(`${token}\n`);
       child.stdin.end();
     } catch {
       finish(false);
