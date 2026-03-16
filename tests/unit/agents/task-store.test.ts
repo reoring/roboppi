@@ -19,8 +19,11 @@ import {
   claimTask,
   completeTask,
   hasActionableTaskForMember,
+  readTaskTemplates,
   supersedeTask,
+  syncTasksToCurrentState,
   validateArtifactPath,
+  writeTaskTemplates,
 } from "../../../src/agents/task-store.js";
 import {
   tasksStatusDir,
@@ -103,6 +106,155 @@ describe("addTask / listTasks", () => {
     await expect(
       addTask({ contextDir, title: "Big Task", description: bigDescription }),
     ).rejects.toThrow(/exceeds max size/);
+  });
+});
+
+describe("task template routing sync", () => {
+  it("persists task templates for later routing sync", async () => {
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "implement-main",
+        title: "Implement",
+        description: "desc",
+        assigned_to: "alice",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-reviewer-fast-gates"],
+        },
+        tags: ["repo"],
+        requires_plan_approval: false,
+      },
+    ]);
+
+    const templates = await readTaskTemplates(contextDir);
+    expect(templates).toHaveLength(1);
+    expect(templates[0]?.template_id).toBe("implement-main");
+    expect(templates[0]?.assigned_to).toBe("alice");
+  });
+
+  it("supersedes stale routed tasks and regenerates the current slice task", async () => {
+    await writeCurrentStatePhase("awaiting-reviewer-fast-gates", "current reviewer gate");
+    await writeFile(
+      path.join(contextDir, "current-state.json"),
+      JSON.stringify({
+        phase: "awaiting-reviewer-fast-gates",
+        phase_reason: "current reviewer gate",
+        canonical_issue_id: "issue-current",
+        contract_id: "contract-current",
+        workspace_status_fingerprint: "fp-current",
+      }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "implement-main",
+        title: "Implement",
+        description: "desc",
+        assigned_to: "alice",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-reviewer-fast-gates"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+    const { taskId } = await addTask({
+      contextDir,
+      templateId: "implement-main",
+      routingKey: "stale-route",
+      title: "Implement",
+      description: "desc",
+      assignedTo: "alice",
+      phaseGuard: {
+        source_kind: "current_state_phase_v1",
+        source_path: "current-state.json",
+        allowed_phases: ["awaiting-reviewer-fast-gates"],
+      },
+    });
+
+    const result = await syncTasksToCurrentState(contextDir);
+    expect(result.superseded).toBe(1);
+    expect(result.added).toBe(1);
+
+    const superseded = await listTasks(contextDir, "superseded");
+    expect(superseded.some((task) => task.task_id === taskId)).toBe(true);
+
+    const pending = await listTasks(contextDir, "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.template_id).toBe("implement-main");
+    expect(pending[0]?.routing_key).not.toBe("stale-route");
+  });
+
+  it("reuses the same routing key across review and prove phases of one slice", async () => {
+    await writeFile(
+      path.join(contextDir, "current-state.json"),
+      JSON.stringify({
+        phase: "awaiting-reviewer-fast-gates",
+        phase_reason: "review",
+        canonical_issue_id: "issue-1",
+        contract_id: "contract-1",
+        workspace_status_fingerprint: "fp-1",
+      }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "review-main",
+        title: "Review",
+        description: "desc",
+        assigned_to: "alice",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-reviewer-fast-gates"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+      {
+        template_id: "prove-main",
+        title: "Prove",
+        description: "desc",
+        assigned_to: "alice",
+        depends_on_template_ids: ["review-main"],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-manual-verification", "ready-for-next-e2e"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+
+    await syncTasksToCurrentState(contextDir);
+    const review = (await listTasks(contextDir, "pending")).find((task) => task.template_id === "review-main");
+    expect(review).toBeTruthy();
+    await claimTask(contextDir, review!.task_id, "alice");
+    await completeTask(contextDir, review!.task_id, "alice");
+
+    await writeFile(
+      path.join(contextDir, "current-state.json"),
+      JSON.stringify({
+        phase: "awaiting-manual-verification",
+        phase_reason: "manual verification",
+        canonical_issue_id: "issue-1",
+        contract_id: "contract-1",
+        workspace_status_fingerprint: "fp-1",
+      }, null, 2),
+    );
+
+    const result = await syncTasksToCurrentState(contextDir);
+    expect(result.added).toBe(1);
+
+    const pending = await listTasks(contextDir, "pending");
+    const prove = pending.find((task) => task.template_id === "prove-main");
+    expect(prove).toBeTruthy();
+    expect(prove?.depends_on).toEqual([review!.task_id]);
   });
 });
 
@@ -386,6 +538,53 @@ describe("hasActionableTaskForMember", () => {
     const blocked = await listTasks(contextDir, "blocked");
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.title).toBe("Proof Task");
+  });
+
+  it("recreates the current routed task when only stale tasks remain", async () => {
+    await writeFile(
+      path.join(contextDir, "current-state.json"),
+      JSON.stringify({
+        phase: "awaiting-reviewer-fast-gates",
+        phase_reason: "review",
+        canonical_issue_id: "issue-new",
+        contract_id: "contract-new",
+        workspace_status_fingerprint: "fp-new",
+      }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "implement-main",
+        title: "Implement",
+        description: "desc",
+        assigned_to: "alice",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-reviewer-fast-gates"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+    await addTask({
+      contextDir,
+      templateId: "implement-main",
+      routingKey: "stale-route",
+      title: "Implement",
+      description: "desc",
+      assignedTo: "alice",
+      phaseGuard: {
+        source_kind: "current_state_phase_v1",
+        source_path: "current-state.json",
+        allowed_phases: ["awaiting-reviewer-fast-gates"],
+      },
+    });
+
+    expect(await hasActionableTaskForMember(contextDir, "alice")).toBe(true);
+    const pending = await listTasks(contextDir, "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.routing_key).not.toBe("stale-route");
   });
 });
 

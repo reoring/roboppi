@@ -103,6 +103,10 @@ export function tasksEventsPath(contextDir: string): string {
   return resolve(tasksRoot(contextDir), "_events.jsonl");
 }
 
+export function taskTemplatesPath(contextDir: string): string {
+  return resolve(agentsRoot(contextDir), "task-templates.json");
+}
+
 // -- Inbox summary --------------------------------------------------------
 
 export function inboxSummaryPath(contextDir: string): string {

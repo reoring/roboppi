@@ -20,6 +20,15 @@ export interface CurrentStatePhaseSnapshot {
   mtimeMs: number;
 }
 
+export interface CurrentStateRoutingSnapshot extends CurrentStatePhaseSnapshot {
+  runId: string | null;
+  issueId: string | null;
+  contractId: string | null;
+  workspaceStatusFingerprint: string | null;
+  proofPacketId: string | null;
+  issuePath: string | null;
+}
+
 function assertRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -52,6 +61,57 @@ export async function readCurrentStatePhaseSnapshot(
     sourcePath: resolvedPath,
     mtimeMs: sourceStat.mtimeMs,
   };
+}
+
+function optionalString(record: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+export async function readCurrentStateRoutingSnapshot(
+  contextDir: string,
+  sourcePath: string,
+): Promise<CurrentStateRoutingSnapshot> {
+  const resolvedPath = resolveCurrentStatePhaseSourcePath(contextDir, sourcePath);
+  const [raw, sourceStat] = await Promise.all([
+    readFile(resolvedPath, "utf-8"),
+    stat(resolvedPath),
+  ]);
+  const data = assertRecord(JSON.parse(raw), "current-state.json");
+  const phase = data.phase;
+  if (typeof phase !== "string" || !phase.trim()) {
+    throw new Error(`current-state phase source missing string phase: ${resolvedPath}`);
+  }
+  const phaseReason = typeof data.phase_reason === "string" ? data.phase_reason.trim() : "";
+  return {
+    phase: phase.trim(),
+    phaseReason,
+    sourcePath: resolvedPath,
+    mtimeMs: sourceStat.mtimeMs,
+    runId: optionalString(data, "run_id"),
+    issueId: optionalString(data, "canonical_issue_id", "issue_id"),
+    contractId: optionalString(data, "contract_id"),
+    workspaceStatusFingerprint: optionalString(data, "workspace_status_fingerprint"),
+    proofPacketId: optionalString(data, "proof_packet_id"),
+    issuePath: optionalString(data, "issue_path"),
+  };
+}
+
+export function currentStateRoutingKey(snapshot: CurrentStateRoutingSnapshot): string {
+  return JSON.stringify({
+    source_path: snapshot.sourcePath,
+    run_id: snapshot.runId,
+    issue_id: snapshot.issueId,
+    contract_id: snapshot.contractId,
+    workspace_status_fingerprint: snapshot.workspaceStatusFingerprint,
+    proof_packet_id: snapshot.proofPacketId,
+    issue_path: snapshot.issuePath,
+  });
 }
 
 export function workflowStatusSummaryForPhase(phase: string): string {

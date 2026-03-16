@@ -29,6 +29,8 @@ import {
   inboxDead,
 } from "./paths.js";
 import { ResidentAgent } from "./resident-agent.js";
+import { syncWorkflowStatusToCurrentState } from "./status-store.js";
+import { syncTasksToCurrentState } from "./task-store.js";
 import {
   DEFAULT_RECONCILE_INTERVAL_MS,
   DEFAULT_MAX_TEAMMATES,
@@ -162,10 +164,15 @@ export class AgentCoordinator {
     // Spawn teammate worker tasks for non-lead members
     await this.spawnTeammates();
 
+    await syncTasksToCurrentState(this.contextDir).catch(() => {});
+    await syncWorkflowStatusToCurrentState(this.contextDir, this.leadMemberId ?? "lead").catch(() => {});
+
     // Start periodic housekeeping (mailbox + tasks)
     this.housekeepTimer = setInterval(async () => {
       if (this.stopped) return;
       try {
+        await syncTasksToCurrentState(this.contextDir);
+        await syncWorkflowStatusToCurrentState(this.contextDir, this.leadMemberId ?? "lead");
         const mailboxResult = await housekeepMailbox({ contextDir: this.contextDir });
         const taskResult = await housekeepTasksInProgress({ contextDir: this.contextDir });
         // Emit warnings for dead-lettered messages and requeued tasks

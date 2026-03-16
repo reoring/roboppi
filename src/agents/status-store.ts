@@ -9,6 +9,7 @@ import {
   workflowStatusNextActionsForPhase,
   workflowStatusSummaryForPhase,
 } from "./current-state-phase.js";
+import { listTasks, readTaskTemplates } from "./task-store.js";
 
 export interface WorkflowStatusSummary {
   version: "1";
@@ -73,39 +74,71 @@ function buildDerivedWorkflowStatus(
   };
 }
 
-export async function readWorkflowStatus(
+async function detectWorkflowStatusSourcePath(
   contextDir: string,
+  current: WorkflowStatusSummary | null,
+): Promise<string | null> {
+  if (current?.source?.kind === "current_state_phase_v1" && current.source.path.trim()) {
+    return current.source.path;
+  }
+  const templates = await readTaskTemplates(contextDir);
+  const templateSource = templates.find((template) => template.phase_guard?.source_path)?.phase_guard?.source_path;
+  if (templateSource) return templateSource;
+
+  const tasks = await listTasks(contextDir);
+  const taskSource = tasks.find((task) => task.phase_guard?.source_path)?.phase_guard?.source_path;
+  return taskSource ?? null;
+}
+
+export async function syncWorkflowStatusToCurrentState(
+  contextDir: string,
+  ownerMemberId = "lead",
+  sourcePath?: string | null,
 ): Promise<WorkflowStatusSummary | null> {
+  let current: WorkflowStatusSummary | null = null;
   try {
     const raw = await readFile(workflowStatusPath(contextDir), "utf-8");
     const data = JSON.parse(raw);
     assertWorkflowStatusSummary(data);
-    if (data.source?.kind === "current_state_phase_v1") {
-      try {
-        const snapshot = await readCurrentStatePhaseSnapshot(contextDir, data.source.path);
-        const derived = buildDerivedWorkflowStatus(data.owner_member_id, snapshot);
-        const sourceMatches = data.source.path === derived.source?.path
-          && data.source.mtime_ms === derived.source?.mtime_ms;
-        if (
-          !sourceMatches
-          || data.summary !== derived.summary
-          || !arraysEqual(data.blockers, derived.blockers)
-          || !arraysEqual(data.next_actions, derived.next_actions)
-        ) {
-          const root = agentsRoot(contextDir);
-          const tmpDir = resolve(root, "tmp");
-          await mkdir(dirname(workflowStatusPath(contextDir)), { recursive: true });
-          await atomicJsonWrite(tmpDir, workflowStatusPath(contextDir), derived);
-          return derived;
-        }
-      } catch {
-        // Fall back to the persisted summary if the source is temporarily unreadable.
-      }
-    }
-    return data;
+    current = data;
   } catch {
-    return null;
+    current = null;
   }
+
+  const resolvedSourcePath = sourcePath ?? await detectWorkflowStatusSourcePath(contextDir, current);
+  if (!resolvedSourcePath) {
+    return current;
+  }
+
+  try {
+    const snapshot = await readCurrentStatePhaseSnapshot(contextDir, resolvedSourcePath);
+    const derived = buildDerivedWorkflowStatus(current?.owner_member_id ?? ownerMemberId, snapshot);
+    if (
+      current
+      && current.source?.kind === "current_state_phase_v1"
+      && current.source.path === derived.source?.path
+      && current.source.mtime_ms === derived.source?.mtime_ms
+      && current.summary === derived.summary
+      && arraysEqual(current.blockers, derived.blockers)
+      && arraysEqual(current.next_actions, derived.next_actions)
+    ) {
+      return current;
+    }
+
+    const root = agentsRoot(contextDir);
+    const tmpDir = resolve(root, "tmp");
+    await mkdir(dirname(workflowStatusPath(contextDir)), { recursive: true });
+    await atomicJsonWrite(tmpDir, workflowStatusPath(contextDir), derived);
+    return derived;
+  } catch {
+    return current;
+  }
+}
+
+export async function readWorkflowStatus(
+  contextDir: string,
+): Promise<WorkflowStatusSummary | null> {
+  return await syncWorkflowStatusToCurrentState(contextDir);
 }
 
 export async function writeWorkflowStatus(

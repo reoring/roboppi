@@ -10,11 +10,13 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { atomicJsonWrite } from "./fs-atomic.js";
 import { appendTaskEvent } from "./events.js";
-import { tasksStatusDir, tasksTmp } from "./paths.js";
+import { taskTemplatesPath, tasksStatusDir, tasksTmp } from "./paths.js";
 import { MAX_TASK_BYTES } from "./constants.js";
-import type { AgentTask, TaskStatus } from "./types.js";
+import type { AgentTask, AgentTaskTemplate, TaskStatus } from "./types.js";
 import {
+  currentStateRoutingKey,
   readCurrentStatePhaseSnapshot,
+  readCurrentStateRoutingSnapshot,
   taskPhaseGuardAllows,
   type TaskPhaseGuard,
 } from "./current-state-phase.js";
@@ -45,9 +47,12 @@ export function validateArtifactPath(p: string): void {
 export interface AddTaskOptions {
   contextDir: string;
   taskId?: string;
+  templateId?: string;
+  routingKey?: string | null;
   title: string;
   description: string;
   dependsOn?: string[];
+  dependsOnTemplateIds?: string[];
   assignedTo?: string;
   phaseGuard?: TaskPhaseGuard;
   tags?: string[];
@@ -61,10 +66,13 @@ export async function addTask(opts: AddTaskOptions): Promise<{ taskId: string }>
   const task: AgentTask = {
     version: "1",
     task_id: taskId,
+    template_id: opts.templateId ?? null,
+    routing_key: opts.routingKey ?? null,
     title: opts.title,
     description: opts.description,
     status: "pending",
     depends_on: opts.dependsOn ?? [],
+    depends_on_template_ids: opts.dependsOnTemplateIds ?? [],
     created_at: now,
     updated_at: now,
     assigned_to: opts.assignedTo ?? null,
@@ -101,6 +109,43 @@ export async function addTask(opts: AddTaskOptions): Promise<{ taskId: string }>
   });
 
   return { taskId };
+}
+
+interface TaskTemplatesFile {
+  version: "1";
+  templates: AgentTaskTemplate[];
+}
+
+function sortTemplates(templates: AgentTaskTemplate[]): AgentTaskTemplate[] {
+  return [...templates].sort((left, right) => left.template_id.localeCompare(right.template_id));
+}
+
+export async function writeTaskTemplates(
+  contextDir: string,
+  templates: AgentTaskTemplate[],
+): Promise<void> {
+  const root = resolve(contextDir, "_agents");
+  const tmpDir = tasksTmp(contextDir);
+  await mkdir(root, { recursive: true });
+  await mkdir(tmpDir, { recursive: true });
+  const payload: TaskTemplatesFile = {
+    version: "1",
+    templates: sortTemplates(templates),
+  };
+  await atomicJsonWrite(tmpDir, taskTemplatesPath(contextDir), payload);
+}
+
+export async function readTaskTemplates(contextDir: string): Promise<AgentTaskTemplate[]> {
+  try {
+    const raw = await readFile(taskTemplatesPath(contextDir), "utf-8");
+    const payload = JSON.parse(raw) as TaskTemplatesFile;
+    if (payload.version !== "1" || !Array.isArray(payload.templates)) {
+      return [];
+    }
+    return payload.templates;
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +185,216 @@ export async function listTasks(
   }
 
   return tasks;
+}
+
+interface TaskRoutingHealth {
+  actionablePending: number;
+  pending: number;
+  inProgress: number;
+  blocked: number;
+}
+
+function templateAllowsCurrentPhase(
+  template: AgentTaskTemplate,
+  phase: string,
+): boolean {
+  return template.phase_guard
+    ? taskPhaseGuardAllows(template.phase_guard, phase)
+    : true;
+}
+
+function currentTaskCandidateRank(task: AgentTask): number {
+  switch (task.status) {
+    case "in_progress":
+      return 0;
+    case "pending":
+      return 1;
+    case "completed":
+      return 2;
+    case "blocked":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function pickCurrentTask(tasks: AgentTask[]): AgentTask | null {
+  const currentTasks = tasks.filter((task) => task.status !== "superseded");
+  if (currentTasks.length === 0) return null;
+  return [...currentTasks].sort((left, right) => {
+    const leftRank = currentTaskCandidateRank(left);
+    const rightRank = currentTaskCandidateRank(right);
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return right.updated_at - left.updated_at;
+  })[0] ?? null;
+}
+
+async function readTemplateRoutingState(
+  contextDir: string,
+  templates: AgentTaskTemplate[],
+): Promise<Map<string, { routingKey: string | null; phaseAllowed: boolean }>> {
+  const bySourcePath = new Map<string, Awaited<ReturnType<typeof readCurrentStateRoutingSnapshot>>>();
+  for (const template of templates) {
+    const sourcePath = template.phase_guard?.source_path;
+    if (!sourcePath || bySourcePath.has(sourcePath)) continue;
+    try {
+      bySourcePath.set(
+        sourcePath,
+        await readCurrentStateRoutingSnapshot(contextDir, sourcePath),
+      );
+    } catch {
+      // Unreadable source leaves the template unsynced this pass.
+    }
+  }
+
+  const result = new Map<string, { routingKey: string | null; phaseAllowed: boolean }>();
+  for (const template of templates) {
+    if (!template.phase_guard) {
+      result.set(template.template_id, { routingKey: null, phaseAllowed: true });
+      continue;
+    }
+    const snapshot = bySourcePath.get(template.phase_guard.source_path);
+    if (!snapshot) {
+      result.set(template.template_id, { routingKey: null, phaseAllowed: false });
+      continue;
+    }
+    result.set(template.template_id, {
+      routingKey: currentStateRoutingKey(snapshot),
+      phaseAllowed: templateAllowsCurrentPhase(template, snapshot.phase),
+    });
+  }
+  return result;
+}
+
+function groupTasksByTemplateAndRoutingKey(
+  tasks: AgentTask[],
+): Map<string, Map<string, AgentTask[]>> {
+  const grouped = new Map<string, Map<string, AgentTask[]>>();
+  for (const task of tasks) {
+    if (!task.template_id || !task.routing_key) continue;
+    const templateBucket = grouped.get(task.template_id) ?? new Map<string, AgentTask[]>();
+    const routeBucket = templateBucket.get(task.routing_key) ?? [];
+    routeBucket.push(task);
+    templateBucket.set(task.routing_key, routeBucket);
+    grouped.set(task.template_id, templateBucket);
+  }
+  return grouped;
+}
+
+export async function syncTasksToCurrentState(
+  contextDir: string,
+): Promise<{ added: number; superseded: number; phaseTransitions: number }> {
+  const templates = await readTaskTemplates(contextDir);
+  let phaseTransitions = await reconcilePhaseGuardedTasks(contextDir);
+  if (templates.length === 0) {
+    return { added: 0, superseded: 0, phaseTransitions };
+  }
+
+  const routingState = await readTemplateRoutingState(contextDir, templates);
+  const tasks = await listTasks(contextDir);
+  const tasksByTemplateAndRoute = groupTasksByTemplateAndRoutingKey(tasks);
+  let superseded = 0;
+
+  for (const task of tasks) {
+    if (!task.template_id || task.status === "completed" || task.status === "superseded") continue;
+    const state = routingState.get(task.template_id);
+    const currentRoutingKey = state?.routingKey ?? null;
+    if (!currentRoutingKey) continue;
+    if (task.routing_key === currentRoutingKey) continue;
+    const supersede = await supersedeTask(
+      contextDir,
+      task.task_id,
+      "system",
+      `routing-key drift: ${task.template_id}`,
+    );
+    if (supersede.ok) superseded++;
+  }
+
+  const refreshedTasks = await listTasks(contextDir);
+  const currentTasks = groupTasksByTemplateAndRoutingKey(refreshedTasks);
+  const plannedIds = new Map<string, string>();
+  let added = 0;
+
+  for (const template of templates) {
+    const state = routingState.get(template.template_id);
+    if (!state?.phaseAllowed) continue;
+    const currentRoutingKey = state.routingKey;
+    const existing = currentRoutingKey
+      ? pickCurrentTask(currentTasks.get(template.template_id)?.get(currentRoutingKey) ?? [])
+      : pickCurrentTask(
+        refreshedTasks.filter((task) =>
+          task.template_id === template.template_id && task.status !== "superseded"
+        ),
+      );
+    if (existing) continue;
+    plannedIds.set(template.template_id, randomUUID());
+  }
+
+  for (const template of templates) {
+    const taskId = plannedIds.get(template.template_id);
+    if (!taskId) continue;
+    const state = routingState.get(template.template_id);
+    if (!state?.phaseAllowed) continue;
+
+    const dependsOn: string[] = [];
+    let dependencyMissing = false;
+    for (const depTemplateId of template.depends_on_template_ids) {
+      const depState = routingState.get(depTemplateId);
+      const depRoutingKey = depState?.routingKey ?? null;
+      const existingDependency = depRoutingKey
+        ? pickCurrentTask(currentTasks.get(depTemplateId)?.get(depRoutingKey) ?? [])
+        : pickCurrentTask(
+          refreshedTasks.filter((task) =>
+            task.template_id === depTemplateId && task.status !== "superseded"
+          ),
+        );
+      const dependencyTaskId = existingDependency?.task_id ?? plannedIds.get(depTemplateId);
+      if (!dependencyTaskId) {
+        dependencyMissing = true;
+        break;
+      }
+      dependsOn.push(dependencyTaskId);
+    }
+    if (dependencyMissing) continue;
+
+    await addTask({
+      contextDir,
+      taskId,
+      templateId: template.template_id,
+      routingKey: state.routingKey,
+      title: template.title,
+      description: template.description,
+      assignedTo: template.assigned_to ?? undefined,
+      dependsOn,
+      dependsOnTemplateIds: template.depends_on_template_ids,
+      phaseGuard: template.phase_guard ?? undefined,
+      tags: template.tags,
+      requiresPlanApproval: template.requires_plan_approval,
+    });
+    added++;
+  }
+
+  phaseTransitions += await reconcilePhaseGuardedTasks(contextDir);
+  return { added, superseded, phaseTransitions };
+}
+
+export async function getTaskRoutingHealth(contextDir: string): Promise<TaskRoutingHealth> {
+  await syncTasksToCurrentState(contextDir);
+  const [pending, inProgress, blocked] = await Promise.all([
+    listTasks(contextDir, "pending"),
+    listTasks(contextDir, "in_progress"),
+    listTasks(contextDir, "blocked"),
+  ]);
+  const taskStates = await readTaskDependencyStates(contextDir);
+  const actionablePending = pending.filter((task) =>
+    areTaskDependenciesSatisfied(task, taskStates)
+  ).length;
+  return {
+    actionablePending,
+    pending: pending.length,
+    inProgress: inProgress.length,
+    blocked: blocked.length,
+  };
 }
 
 export function isTaskClaimableBy(
@@ -335,7 +590,7 @@ export async function hasActionableTaskForMember(
   contextDir: string,
   memberId: string,
 ): Promise<boolean> {
-  await reconcilePhaseGuardedTasks(contextDir);
+  await syncTasksToCurrentState(contextDir);
 
   const inProgress = await listTasks(contextDir, "in_progress");
   if (inProgress.some((task) => task.claimed_by === memberId)) {
@@ -370,7 +625,7 @@ export async function claimTask(
   taskId: string,
   memberId: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  await reconcilePhaseGuardedTasks(contextDir);
+  await syncTasksToCurrentState(contextDir);
 
   const pendingDir = tasksStatusDir(contextDir, "pending");
   const inProgressDir = tasksStatusDir(contextDir, "in_progress");

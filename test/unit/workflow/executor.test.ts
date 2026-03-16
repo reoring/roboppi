@@ -14,7 +14,7 @@ import type {
 } from "../../../src/workflow/types.js";
 import { WorkflowStatus, StepStatus } from "../../../src/workflow/types.js";
 import { ErrorClass } from "../../../src/types/common.js";
-import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -682,6 +682,63 @@ describe("WorkflowExecutor", () => {
         expect(result.steps["B"]!.status).toBe(StepStatus.SKIPPED);
       });
     });
+
+    it("fails early on routing deadlock instead of burning all iterations", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async () => ({ complete: false, failed: false }),
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 5,
+            on_iterations_exhausted: "abort",
+          }),
+        }, {
+          agents: {
+            enabled: true,
+            members: {
+              lead: { agent: "lead_agent" },
+            },
+            tasks: [
+              {
+                id: "review-main",
+                title: "Review",
+                description: "desc",
+                assigned_to: "lead",
+                phase_guard: {
+                  source_kind: "current_state_phase_v1",
+                  source_path: "current-state.json",
+                  allowed_phases: ["awaiting-reviewer-fast-gates"],
+                },
+              },
+            ],
+          },
+        });
+
+        const contextDir = path.join(dir, "context");
+        await mkdir(contextDir, { recursive: true });
+        await writeFile(
+          path.join(contextDir, "current-state.json"),
+          JSON.stringify({ phase: "awaiting-manual-verification", phase_reason: "developer-owned gate" }, null, 2),
+        );
+
+        const ctx = new ContextManager(contextDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.FAILED);
+        expect(result.steps["A"]!.status).toBe(StepStatus.FAILED);
+        expect(result.steps["A"]!.error).toContain("Routing deadlock");
+        expect(runner.checkCalls.length).toBe(2);
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -715,6 +772,62 @@ describe("WorkflowExecutor", () => {
         expect(result.status).toBe(WorkflowStatus.SUCCEEDED);
         expect(result.steps["A"]!.status).toBe(StepStatus.INCOMPLETE);
         expect(result.steps["B"]!.status).toBe(StepStatus.SUCCEEDED);
+      });
+    });
+
+    it("does not trigger routing deadlock while agent work remains actionable", async () => {
+      await withTempDir(async (dir) => {
+        const runner = new MockStepRunner(
+          async () => ({ status: "SUCCEEDED" }),
+          async () => ({ complete: false, failed: false }),
+        );
+
+        const wf = makeWorkflow({
+          A: makeStep({
+            completion_check: {
+              worker: "CLAUDE_CODE",
+              instructions: "check",
+              capabilities: ["READ"],
+            },
+            max_iterations: 3,
+            on_iterations_exhausted: "abort",
+          }),
+        }, {
+          agents: {
+            enabled: true,
+            members: {
+              lead: { agent: "lead_agent" },
+            },
+            tasks: [
+              {
+                id: "review-main",
+                title: "Review",
+                description: "desc",
+                assigned_to: "lead",
+                phase_guard: {
+                  source_kind: "current_state_phase_v1",
+                  source_path: "current-state.json",
+                  allowed_phases: ["awaiting-reviewer-fast-gates"],
+                },
+              },
+            ],
+          },
+        });
+
+        const contextDir = path.join(dir, "context");
+        await mkdir(contextDir, { recursive: true });
+        await writeFile(
+          path.join(contextDir, "current-state.json"),
+          JSON.stringify({ phase: "awaiting-reviewer-fast-gates", phase_reason: "review open" }, null, 2),
+        );
+
+        const ctx = new ContextManager(contextDir);
+        const executor = new WorkflowExecutor(wf, ctx, runner, dir);
+        const result = await executor.execute();
+
+        expect(result.status).toBe(WorkflowStatus.FAILED);
+        expect(result.steps["A"]!.error).toBe("Max iterations exhausted");
+        expect(runner.checkCalls.length).toBe(3);
       });
     });
   });

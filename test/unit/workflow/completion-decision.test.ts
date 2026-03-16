@@ -1,9 +1,14 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { resolveCompletionDecision } from "../../../src/workflow/completion-decision.js";
+import {
+  COMPLETION_DECISION_FILE_ENV,
+  interpolateCompletionDecisionFile,
+  prepareCompletionDecisionFile,
+  resolveCompletionDecision,
+} from "../../../src/workflow/completion-decision.js";
 import type { CompletionCheckDef } from "../../../src/workflow/types.js";
 
 let lastTmpDir: string | null = null;
@@ -84,6 +89,25 @@ describe("resolveCompletionDecision (decision_file JSON)", () => {
     expect(res.checkIdMatch).toBe(false);
     expect(res.reason).toContain("check_id mismatch");
   });
+
+  test("reads a run-scoped absolute decision file path", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roboppi-decision-"));
+    lastTmpDir = dir;
+
+    const decisionFile = path.join(dir, ".roboppi-loop", "current", "_completion", "orchestrate", "check-abs", "decision.json");
+    await mkdir(path.dirname(decisionFile), { recursive: true });
+    await writeFile(
+      decisionFile,
+      JSON.stringify({ decision: "incomplete", check_id: "check-abs" }),
+      "utf-8",
+    );
+
+    const check = makeCheck(decisionFile);
+    const res = await resolveCompletionDecision(check, dir, Date.now(), "check-abs");
+    expect(res.decision).toBe("incomplete");
+    expect(res.source).toBe("file-json");
+    expect(res.checkIdMatch).toBe(true);
+  });
 });
 
 describe("resolveCompletionDecision (decision_file text)", () => {
@@ -156,5 +180,40 @@ describe("resolveCompletionDecision (worker output fallback)", () => {
     expect(res.checkIdMatch).toBe(true);
     expect(res.reasons).toEqual(["r1"]);
     expect(res.fingerprints).toEqual(["fp1"]);
+  });
+});
+
+describe("completion decision file preparation", () => {
+  test("materializes a per-check path under the configured decision directory", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "roboppi-decision-"));
+    lastTmpDir = dir;
+
+    const prepared = await prepareCompletionDecisionFile(
+      ".roboppi-loop/current/decision.json",
+      dir,
+      "orchestrate",
+      "check-123",
+    );
+
+    expect(prepared).toBe(
+      path.join(
+        dir,
+        ".roboppi-loop",
+        "current",
+        "_completion",
+        "orchestrate",
+        "check-123",
+        "decision.json",
+      ),
+    );
+  });
+
+  test("interpolates the per-check decision file env token", () => {
+    const decisionFile = "/tmp/decision.json";
+    const rendered = interpolateCompletionDecisionFile(
+      `Write to $${COMPLETION_DECISION_FILE_ENV} and \${${COMPLETION_DECISION_FILE_ENV}}`,
+      decisionFile,
+    );
+    expect(rendered).toBe(`Write to ${decisionFile} and ${decisionFile}`);
   });
 });

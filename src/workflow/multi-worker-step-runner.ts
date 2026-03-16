@@ -13,7 +13,10 @@ import { ShellStepRunner } from "./shell-step-runner.js";
 import {
   extractWorkerText,
   interpolateCompletionCheckId,
+  interpolateCompletionDecisionFile,
+  prepareCompletionDecisionFile,
   resolveCompletionDecision,
+  COMPLETION_DECISION_FILE_ENV,
   COMPLETION_CHECK_ID_ENV,
 } from "./completion-decision.js";
 import { resolveTaskLike, buildWorkerTask } from "./resolve-worker-task.js";
@@ -99,16 +102,28 @@ export class MultiWorkerStepRunner implements StepRunner {
 
     const checkStartedAt = Date.now();
     const checkId = generateId();
+    const decisionFilePath = await prepareCompletionDecisionFile(
+      check.decision_file,
+      workspaceDir,
+      stepId,
+      checkId,
+    );
 
     const checkEnv = {
       ...(env ?? {}),
       [COMPLETION_CHECK_ID_ENV]: checkId,
+      ...(decisionFilePath
+        ? { [COMPLETION_DECISION_FILE_ENV]: decisionFilePath }
+        : {}),
     };
 
     const baseResolved = resolveTaskLike(check, workspaceDir, checkEnv);
+    const interpolatedInstructions = interpolateCompletionCheckId(baseResolved.instructions, checkId);
     const resolved = {
       ...baseResolved,
-      instructions: interpolateCompletionCheckId(baseResolved.instructions, checkId),
+      instructions: decisionFilePath
+        ? interpolateCompletionDecisionFile(interpolatedInstructions, decisionFilePath)
+        : interpolatedInstructions,
     };
 
     const task = buildWorkerTask(resolved, abortSignal);
@@ -125,7 +140,7 @@ export class MultiWorkerStepRunner implements StepRunner {
     }
 
     const decision = await resolveCompletionDecision(
-      check,
+      decisionFilePath ? { ...check, decision_file: decisionFilePath } : check,
       workspaceDir,
       checkStartedAt,
       checkId,

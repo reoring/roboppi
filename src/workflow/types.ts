@@ -402,6 +402,10 @@ export interface StepState {
   completionInfraFailureCount?: number;
   lastCompletionInfraFailure?: string;
 
+  /** Consecutive incomplete checks with no actionable agent work. */
+  routingDeadlockCount?: number;
+  lastRoutingDeadlockReason?: string;
+
   /** Convergence Controller stage (1 = normal). */
   convergenceStage?: number;
 

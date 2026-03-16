@@ -93,13 +93,31 @@ export interface AgentMessage {
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked" | "superseded";
 
+export interface AgentTaskTemplate {
+  template_id: string;
+  title: string;
+  description: string;
+  assigned_to: string | null;
+  depends_on_template_ids: string[];
+  phase_guard: {
+    source_kind: "current_state_phase_v1";
+    source_path: string;
+    allowed_phases: string[];
+  } | null;
+  tags: string[];
+  requires_plan_approval: boolean;
+}
+
 export interface AgentTask {
   version: "1";
   task_id: UUID;
+  template_id?: string | null;
+  routing_key?: string | null;
   title: string;
   description: string;
   status: TaskStatus;
   depends_on: UUID[];
+  depends_on_template_ids?: string[] | null;
   created_at: Timestamp;
   updated_at: Timestamp;
   assigned_to: string | null;

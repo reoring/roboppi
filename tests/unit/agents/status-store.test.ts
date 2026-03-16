@@ -1,20 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
   readWorkflowStatus,
+  syncWorkflowStatusToCurrentState,
   writeWorkflowStatus,
   clearWorkflowStatus,
 } from "../../../src/agents/status-store.js";
-
-const TEST_TMP_ROOT = path.join(process.cwd(), ".roboppi-loop", "tmp", "unit-status-store");
+import { writeTaskTemplates } from "../../../src/agents/task-store.js";
 
 let contextDir: string;
 
 beforeEach(async () => {
-  await mkdir(TEST_TMP_ROOT, { recursive: true });
-  contextDir = await mkdtemp(path.join(TEST_TMP_ROOT, "status-store-"));
+  contextDir = await mkdtemp(path.join(tmpdir(), "status-store-"));
 });
 
 afterEach(async () => {
@@ -102,5 +102,36 @@ describe("workflow status store", () => {
     );
     expect(persisted.summary).toBe(healed?.summary);
     expect(persisted.blockers).toEqual(["label gap"]);
+  });
+
+  it("materializes derived workflow status from task templates even when no status file exists", async () => {
+    const currentStatePath = path.join(contextDir, "current-state.json");
+    await writeFile(
+      currentStatePath,
+      JSON.stringify({ phase: "awaiting-manual-verification", phase_reason: "fresh bootstrap required" }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "prove-main",
+        title: "Proof",
+        description: "desc",
+        assigned_to: "developer",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["awaiting-manual-verification", "ready-for-next-e2e"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+
+    const status = await syncWorkflowStatusToCurrentState(contextDir, "lead");
+    expect(status?.summary).toBe(
+      "Current phase: awaiting-manual-verification. Developer-owned manual verification is the next gate for cluster-backed work.",
+    );
+    expect(status?.blockers).toEqual(["fresh bootstrap required"]);
+    expect(status?.source?.kind).toBe("current_state_phase_v1");
   });
 });

@@ -37,7 +37,11 @@ import { ManagementTelemetrySink } from "./management/management-telemetry.js";
 import type { ManagementHook, ManagementConfig, ManagementAgentConfig } from "./management/types.js";
 import type { AgentProfile } from "./agent-catalog.js";
 import { initAgentsContext } from "../agents/store.js";
-import { addTask as addAgentsTask } from "../agents/task-store.js";
+import {
+  addTask as addAgentsTask,
+  getTaskRoutingHealth,
+  writeTaskTemplates,
+} from "../agents/task-store.js";
 import { membersJsonPath } from "../agents/paths.js";
 import { AgentCoordinator } from "../agents/coordinator.js";
 import { LeadInboxBroker } from "../agents/lead-inbox-broker.js";
@@ -73,6 +77,7 @@ export interface CheckResult {
 }
 
 const COMPLETION_INFRA_FAILURE_LIMIT = 2;
+const ROUTING_DEADLOCK_LIMIT = 2;
 
 const DEFAULT_CONVERGENCE_STALL_THRESHOLD = 2;
 const DEFAULT_CONVERGENCE_MAX_STAGE = 3;
@@ -570,11 +575,22 @@ export class WorkflowExecutor {
 
       // Seed initial tasks from DSL config
       if (agentsConfig.tasks) {
+        await writeTaskTemplates(
+          this.contextManager.contextDir,
+          agentsConfig.tasks.map((taskDef) => ({
+            template_id: taskDef.id ?? taskDef.title,
+            title: taskDef.title,
+            description: taskDef.description,
+            assigned_to: taskDef.assigned_to ?? null,
+            depends_on_template_ids: taskDef.depends_on ?? [],
+            phase_guard: taskDef.phase_guard ?? null,
+            tags: taskDef.tags ?? [],
+            requires_plan_approval: taskDef.requires_plan_approval ?? false,
+          })),
+        );
         const seededTaskIds = new Map<string, string>();
         for (const taskDef of agentsConfig.tasks) {
-          if (taskDef.id) {
-            seededTaskIds.set(taskDef.id, randomUUID());
-          }
+          seededTaskIds.set(taskDef.id ?? taskDef.title, randomUUID());
         }
         for (const taskDef of agentsConfig.tasks) {
           const dependsOn = taskDef.depends_on?.map((dep) => {
@@ -586,12 +602,16 @@ export class WorkflowExecutor {
           });
           await addAgentsTask({
             contextDir: this.contextManager.contextDir,
-            ...(taskDef.id ? { taskId: seededTaskIds.get(taskDef.id) } : {}),
+            taskId: seededTaskIds.get(taskDef.id ?? taskDef.title),
+            templateId: taskDef.id ?? taskDef.title,
             title: taskDef.title,
             description: taskDef.description,
             assignedTo: taskDef.assigned_to,
             ...(taskDef.phase_guard ? { phaseGuard: taskDef.phase_guard } : {}),
             ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
+            ...(taskDef.depends_on && taskDef.depends_on.length > 0
+              ? { dependsOnTemplateIds: taskDef.depends_on }
+              : {}),
             ...(taskDef.tags && taskDef.tags.length > 0 ? { tags: taskDef.tags } : {}),
             ...(taskDef.requires_plan_approval !== undefined
               ? { requiresPlanApproval: taskDef.requires_plan_approval }
@@ -1661,6 +1681,14 @@ export class WorkflowExecutor {
           }
         }
 
+        if (await this.detectRoutingDeadlock(stepId, state)) {
+          const onFailure = stepDef.on_failure ?? "abort";
+          if (onFailure === "abort" || onFailure === "retry") {
+            this.skipDependents(stepId);
+          }
+          return;
+        }
+
         // Not complete — check iteration limit
         if (state.iteration >= state.maxIterations) {
           const onExhausted = stepDef.on_iterations_exhausted ?? "abort";
@@ -2148,6 +2176,14 @@ export class WorkflowExecutor {
             }
           }
 
+          if (await this.detectRoutingDeadlock(stepId, state)) {
+            const onFailure = stepDef.on_failure ?? "abort";
+            if (onFailure === "abort" || onFailure === "retry") {
+              this.skipDependents(stepId);
+            }
+            return;
+          }
+
           // Not complete — check iteration limit
           if (state.iteration >= state.maxIterations) {
             const onExhausted = stepDef.on_iterations_exhausted ?? "abort";
@@ -2389,6 +2425,40 @@ export class WorkflowExecutor {
       parts.push(`reason=${checkResult.reason.trim()}`);
     }
     return parts.length > 0 ? parts.join(" ") : "unknown";
+  }
+
+  private async detectRoutingDeadlock(
+    stepId: string,
+    state: StepState,
+  ): Promise<boolean> {
+    if (!this.definition.agents?.enabled || !this.definition.agents.tasks?.length) {
+      state.routingDeadlockCount = 0;
+      state.lastRoutingDeadlockReason = undefined;
+      return false;
+    }
+
+    const health = await getTaskRoutingHealth(this.contextManager.contextDir);
+    if (health.inProgress > 0 || health.actionablePending > 0) {
+      state.routingDeadlockCount = 0;
+      state.lastRoutingDeadlockReason = undefined;
+      return false;
+    }
+
+    const count = (state.routingDeadlockCount ?? 0) + 1;
+    state.routingDeadlockCount = count;
+    state.lastRoutingDeadlockReason =
+      `no actionable agent work (pending=${health.pending}, in_progress=${health.inProgress}, blocked=${health.blocked})`;
+
+    if (count < ROUTING_DEADLOCK_LIMIT) {
+      return false;
+    }
+
+    this.markStepFailed(
+      stepId,
+      `Routing deadlock: ${state.lastRoutingDeadlockReason}`,
+      ErrorClass.FATAL,
+    );
+    return true;
   }
 
   // -----------------------------------------------------------------------

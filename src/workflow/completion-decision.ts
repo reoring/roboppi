@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import type { WorkerResult } from "../types/index.js";
 import type { CompletionCheckDef } from "./types.js";
 
@@ -32,6 +32,7 @@ export interface CompletionDecisionResolution {
 
 // Completion-check correlation id.
 export const COMPLETION_CHECK_ID_ENV = "ROBOPPI_COMPLETION_CHECK_ID";
+export const COMPLETION_DECISION_FILE_ENV = "ROBOPPI_COMPLETION_DECISION_FILE";
 const STALE_DECISION_FILE_GRACE_MS = 2_000;
 
 export function interpolateCompletionCheckId(instructions: string, checkId: string): string {
@@ -39,6 +40,32 @@ export function interpolateCompletionCheckId(instructions: string, checkId: stri
   const a = `$${COMPLETION_CHECK_ID_ENV}`;
   const b = "${" + COMPLETION_CHECK_ID_ENV + "}";
   return instructions.replaceAll(a, checkId).replaceAll(b, checkId);
+}
+
+export function interpolateCompletionDecisionFile(instructions: string, decisionFile: string): string {
+  if (!instructions) return instructions;
+  const a = `$${COMPLETION_DECISION_FILE_ENV}`;
+  const b = "${" + COMPLETION_DECISION_FILE_ENV + "}";
+  return instructions.replaceAll(a, decisionFile).replaceAll(b, decisionFile);
+}
+
+export async function prepareCompletionDecisionFile(
+  decisionFile: string | undefined,
+  workspaceDir: string,
+  stepId: string,
+  checkId: string,
+): Promise<string | undefined> {
+  if (!decisionFile) return undefined;
+
+  const configuredPath = resolveWithin(workspaceDir, decisionFile);
+  const invocationDir = path.join(
+    path.dirname(configuredPath),
+    "_completion",
+    sanitizePathSegment(stepId),
+    checkId,
+  );
+  await mkdir(invocationDir, { recursive: true });
+  return path.join(invocationDir, path.basename(configuredPath));
 }
 
 type StructuredDecisionFile = {
@@ -341,6 +368,11 @@ function parseStructuredDecisionFromJsonText(content: string): {
     ...(reasons ? { reasons } : {}),
     ...(fingerprints ? { fingerprints } : {}),
   };
+}
+
+function sanitizePathSegment(value: string): string {
+  const normalized = value.trim().replace(/[^A-Za-z0-9._-]+/g, "_");
+  return normalized.length > 0 ? normalized : "step";
 }
 
 function normalizeStructuredStringList(value: unknown): string[] | undefined {
