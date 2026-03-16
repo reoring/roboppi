@@ -123,6 +123,15 @@ export function agentEventsPath(contextDir: string): string {
   return resolve(agentsRoot(contextDir), "_events.jsonl");
 }
 
+export function agentDebugDir(contextDir: string): string {
+  return resolve(agentsRoot(contextDir), "debug");
+}
+
+export function agentDebugLogPath(contextDir: string, memberId: string): string {
+  const p = resolve(agentDebugDir(contextDir), `${memberId}.jsonl`);
+  return assertWithin(agentsRoot(contextDir), p);
+}
+
 // -- Locks -----------------------------------------------------------------
 
 export function locksDir(contextDir: string): string {

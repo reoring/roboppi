@@ -134,4 +134,79 @@ describe("workflow status store", () => {
     expect(status?.blockers).toEqual(["fresh bootstrap required"]);
     expect(status?.source?.kind).toBe("current_state_phase_v1");
   });
+
+  it("derives actionable startup guidance from initializing current-state", async () => {
+    const currentStatePath = path.join(contextDir, "current-state.json");
+    await writeFile(
+      currentStatePath,
+      JSON.stringify({ phase: "initializing" }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "implement-main",
+        title: "Implement",
+        description: "desc",
+        assigned_to: "developer",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["initializing", "awaiting-remediation"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+
+    const status = await syncWorkflowStatusToCurrentState(contextDir, "lead");
+    expect(status?.summary).toBe(
+      "Current phase: initializing. Developer must replace startup stubs with canonical state before repo-side work continues.",
+    );
+    expect(status?.blockers).toEqual(["Developer-owned canonical startup sync is still pending."]);
+    expect(status?.next_actions).toEqual([
+      "Use developer_sync_bundle or state_promote_attempt to replace startup stubs in current-state.json, todo.md, memory.md, and issues/index.md.",
+      "Record the active blocker or first repo-side slice, then republish workflow status from canonical current-state.",
+    ]);
+    expect(status?.source?.kind).toBe("current_state_phase_v1");
+  });
+
+  it("derives post-startup guidance from initializing current-state once startup sync is complete", async () => {
+    const currentStatePath = path.join(contextDir, "current-state.json");
+    await writeFile(
+      currentStatePath,
+      JSON.stringify({
+        phase: "initializing",
+        state_version: 1,
+        phase_reason: "Startup sync is complete; define the first repo-side slice.",
+      }, null, 2),
+    );
+    await writeTaskTemplates(contextDir, [
+      {
+        template_id: "implement-main",
+        title: "Implement",
+        description: "desc",
+        assigned_to: "developer",
+        depends_on_template_ids: [],
+        phase_guard: {
+          source_kind: "current_state_phase_v1",
+          source_path: "current-state.json",
+          allowed_phases: ["initializing", "awaiting-remediation"],
+        },
+        tags: [],
+        requires_plan_approval: false,
+      },
+    ]);
+
+    const status = await syncWorkflowStatusToCurrentState(contextDir, "lead");
+    expect(status?.summary).toBe(
+      "Current phase: initializing. Startup sync is complete; define the first repo-side slice and canonical issue before broader work continues.",
+    );
+    expect(status?.blockers).toEqual(["Startup sync is complete; define the first repo-side slice."]);
+    expect(status?.next_actions).toEqual([
+      "Read request.md and apthctl-plan.md to define the first concrete repo-side slice.",
+      "Read ARCHITECTURE.md and AGENTS.md, then establish the canonical issue and workspace fingerprint for that slice.",
+      "Refresh canonical current-state and workflow status after the first repo-side slice is named.",
+    ]);
+    expect(status?.source?.kind).toBe("current_state_phase_v1");
+  });
 });

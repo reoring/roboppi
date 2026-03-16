@@ -16,6 +16,7 @@ export interface TaskPhaseGuard {
 export interface CurrentStatePhaseSnapshot {
   phase: string;
   phaseReason: string;
+  stateVersion: number | null;
   sourcePath: string;
   mtimeMs: number;
 }
@@ -55,9 +56,11 @@ export async function readCurrentStatePhaseSnapshot(
     throw new Error(`current-state phase source missing string phase: ${resolvedPath}`);
   }
   const phaseReason = typeof data.phase_reason === "string" ? data.phase_reason.trim() : "";
+  const stateVersion = Number.isFinite(data.state_version) ? Number(data.state_version) : null;
   return {
     phase: phase.trim(),
     phaseReason,
+    stateVersion,
     sourcePath: resolvedPath,
     mtimeMs: sourceStat.mtimeMs,
   };
@@ -88,9 +91,11 @@ export async function readCurrentStateRoutingSnapshot(
     throw new Error(`current-state phase source missing string phase: ${resolvedPath}`);
   }
   const phaseReason = typeof data.phase_reason === "string" ? data.phase_reason.trim() : "";
+  const stateVersion = Number.isFinite(data.state_version) ? Number(data.state_version) : null;
   return {
     phase: phase.trim(),
     phaseReason,
+    stateVersion,
     sourcePath: resolvedPath,
     mtimeMs: sourceStat.mtimeMs,
     runId: optionalString(data, "run_id"),
@@ -114,8 +119,26 @@ export function currentStateRoutingKey(snapshot: CurrentStateRoutingSnapshot): s
   });
 }
 
+export const INITIALIZING_STARTUP_STUB_SUMMARY =
+  "Current phase: initializing. Developer must replace startup stubs with canonical state before repo-side work continues.";
+
+export const INITIALIZING_STARTUP_STUB_BLOCKER =
+  "Developer-owned canonical startup sync is still pending.";
+
+export function isInitializingStartupStub(snapshot: Pick<CurrentStatePhaseSnapshot, "phase" | "phaseReason" | "stateVersion">): boolean {
+  if (snapshot.phase !== "initializing") {
+    return false;
+  }
+  if (snapshot.phaseReason.trim()) {
+    return false;
+  }
+  return (snapshot.stateVersion ?? 0) === 0;
+}
+
 export function workflowStatusSummaryForPhase(phase: string): string {
   switch (phase) {
+    case "initializing":
+      return INITIALIZING_STARTUP_STUB_SUMMARY;
     case "awaiting-reviewer-fast-gates":
       return "Current phase: awaiting-reviewer-fast-gates. Reviewer fast gates must pass before the next cluster-backed spend.";
     case "awaiting-manual-verification":
@@ -129,8 +152,23 @@ export function workflowStatusSummaryForPhase(phase: string): string {
   }
 }
 
+export function workflowStatusSummaryForSnapshot(snapshot: CurrentStatePhaseSnapshot): string {
+  if (isInitializingStartupStub(snapshot)) {
+    return INITIALIZING_STARTUP_STUB_SUMMARY;
+  }
+  if (snapshot.phase === "initializing") {
+    return "Current phase: initializing. Startup sync is complete; define the first repo-side slice and canonical issue before broader work continues.";
+  }
+  return workflowStatusSummaryForPhase(snapshot.phase);
+}
+
 export function workflowStatusNextActionsForPhase(phase: string): string[] {
   switch (phase) {
+    case "initializing":
+      return [
+        "Use developer_sync_bundle or state_promote_attempt to replace startup stubs in current-state.json, todo.md, memory.md, and issues/index.md.",
+        "Record the active blocker or first repo-side slice, then republish workflow status from canonical current-state.",
+      ];
     case "awaiting-reviewer-fast-gates":
       return ["Run reviewer fast gates on the current workspace fingerprint."];
     case "awaiting-manual-verification":
@@ -142,6 +180,20 @@ export function workflowStatusNextActionsForPhase(phase: string): string[] {
     default:
       return [];
   }
+}
+
+export function workflowStatusNextActionsForSnapshot(snapshot: CurrentStatePhaseSnapshot): string[] {
+  if (isInitializingStartupStub(snapshot)) {
+    return workflowStatusNextActionsForPhase(snapshot.phase);
+  }
+  if (snapshot.phase === "initializing") {
+    return [
+      "Read request.md and apthctl-plan.md to define the first concrete repo-side slice.",
+      "Read ARCHITECTURE.md and AGENTS.md, then establish the canonical issue and workspace fingerprint for that slice.",
+      "Refresh canonical current-state and workflow status after the first repo-side slice is named.",
+    ];
+  }
+  return workflowStatusNextActionsForPhase(snapshot.phase);
 }
 
 export function taskPhaseGuardAllows(guard: TaskPhaseGuard, phase: string): boolean {

@@ -13,11 +13,18 @@
  *     ├── context: accumulates session history across dispatches
  *     └── events: streams worker events to ExecEventSink for TUI visibility
  */
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { recvMessages } from "./store.js";
-import { hasActionableTaskForMember } from "./task-store.js";
-import { allDirs } from "./paths.js";
+import { hasActionableTaskForMember, listTasks } from "./task-store.js";
+import { agentDebugLogPath, allDirs } from "./paths.js";
+import { readWorkflowStatus, type WorkflowStatusSummary } from "./status-store.js";
+import {
+  INITIALIZING_STARTUP_STUB_BLOCKER,
+  INITIALIZING_STARTUP_STUB_SUMMARY,
+} from "./current-state-phase.js";
+import type { AgentTask } from "./types.js";
 import {
   DEFAULT_RESIDENT_POLL_INTERVAL_MS,
   DEFAULT_RESIDENT_DISPATCH_TIMEOUT_MS,
@@ -62,6 +69,26 @@ interface SessionEntry {
   ts: number;
   type: "message_received" | "task_completed" | "dispatch_result";
   summary: string;
+}
+
+interface DispatchContextSnapshot {
+  workflowStatus: WorkflowStatusSummary | null;
+  ownedTasks: AgentTask[];
+}
+
+function isDeveloperStartupStubStatus(status: WorkflowStatusSummary | null): boolean {
+  return status?.summary === INITIALIZING_STARTUP_STUB_SUMMARY
+    && status.blockers.includes(INITIALIZING_STARTUP_STUB_BLOCKER);
+}
+
+function formatTaskForInstructions(task: AgentTask): string[] {
+  const lines = [`- ${task.task_id}: ${task.title}`];
+  const description = task.description.trim();
+  if (!description) return lines;
+  for (const line of description.split("\n")) {
+    lines.push(`  ${line}`);
+  }
+  return lines;
 }
 
 function cloneAgentProfile(profile: AgentProfile): AgentProfile {
@@ -153,6 +180,7 @@ export class ResidentAgent {
   private dispatching = false;
   private dispatchAbortController: AbortController | null = null;
   private abortHandler: (() => void) | null = null;
+  private debugWriteChain: Promise<void> = Promise.resolve();
 
   // Context accumulation across dispatches
   private sessionHistory: SessionEntry[] = [];
@@ -328,6 +356,45 @@ export class ResidentAgent {
     }
   }
 
+  private async readDispatchContextSnapshot(): Promise<DispatchContextSnapshot> {
+    let workflowStatus: WorkflowStatusSummary | null = null;
+    try {
+      workflowStatus = await readWorkflowStatus(this.contextDir);
+    } catch {
+      workflowStatus = null;
+    }
+
+    let ownedTasks: AgentTask[] = [];
+    try {
+      const inProgress = await listTasks(this.contextDir, "in_progress");
+      ownedTasks = inProgress
+        .filter((task) => task.claimed_by === this.memberId)
+        .sort((left, right) => right.updated_at - left.updated_at || left.task_id.localeCompare(right.task_id));
+    } catch {
+      ownedTasks = [];
+    }
+
+    return { workflowStatus, ownedTasks };
+  }
+
+  private isDebugLoggingEnabled(): boolean {
+    return this.env.ROBOPPI_AGENT_DEBUG_LOG === "1" || process.env.ROBOPPI_AGENT_DEBUG_LOG === "1";
+  }
+
+  private appendDebugEvent(event: Record<string, unknown>): void {
+    if (!this.isDebugLoggingEnabled()) {
+      return;
+    }
+
+    const logPath = agentDebugLogPath(this.contextDir, this.memberId);
+    this.debugWriteChain = this.debugWriteChain
+      .then(async () => {
+        await mkdir(dirname(logPath), { recursive: true });
+        await appendFile(logPath, JSON.stringify(event) + "\n");
+      })
+      .catch(() => {});
+  }
+
   // -----------------------------------------------------------------------
   // CLI agent dispatch
   // -----------------------------------------------------------------------
@@ -338,7 +405,20 @@ export class ResidentAgent {
   ): Promise<void> {
     this.dispatching = true;
     this.dispatchAbortController = new AbortController();
-    const instructions = this.buildInstructions(pendingMessages, hasTasks);
+    const dispatchId = generateId();
+    const dispatchContext = await this.readDispatchContextSnapshot();
+    const instructions = this.buildInstructions(pendingMessages, hasTasks, dispatchContext);
+    this.appendDebugEvent({
+      ts: Date.now(),
+      type: "dispatch_started",
+      dispatch_id: dispatchId,
+      member_id: this.memberId,
+      has_tasks: hasTasks,
+      pending_message_count: pendingMessages.length,
+      workflow_status_summary: dispatchContext.workflowStatus?.summary ?? null,
+      owned_task_ids: dispatchContext.ownedTasks.map((task) => task.task_id),
+      instructions,
+    });
 
     // Emit phase: executing
     this.sink.emit({
@@ -352,7 +432,7 @@ export class ResidentAgent {
     });
 
     try {
-      const result = await this.runCliAgent(instructions);
+      const result = await this.runCliAgent(instructions, dispatchId);
 
       // Record dispatch result in session history
       this.addToHistory({
@@ -372,7 +452,13 @@ export class ResidentAgent {
           summary: `From ${msg.message.from.member_id}: ${msg.message.body.slice(0, 100)}`,
         });
       }
-    } catch {
+    } catch (err) {
+      this.appendDebugEvent({
+        ts: Date.now(),
+        type: "dispatch_error",
+        dispatch_id: dispatchId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       // Dispatch failed — will retry on next poll
     } finally {
       this.dispatching = false;
@@ -396,7 +482,10 @@ export class ResidentAgent {
     }
   }
 
-  private async runCliAgent(instructions: string): Promise<WorkerResult> {
+  private async runCliAgent(
+    instructions: string,
+    dispatchId: string,
+  ): Promise<WorkerResult> {
     const instructionBytes = new TextEncoder().encode(instructions).length;
     const task: WorkerTask = {
       workerTaskId: generateId(),
@@ -423,10 +512,17 @@ export class ResidentAgent {
     const streamDone = (async () => {
       try {
         for await (const ev of this.adapter.streamEvents(handle)) {
+          const ts = Date.now();
           this.sink.emit({
             type: "worker_event",
             stepId: this.stepId,
-            ts: Date.now(),
+            ts,
+            event: ev,
+          });
+          this.appendDebugEvent({
+            ts,
+            type: "worker_event",
+            dispatch_id: dispatchId,
             event: ev,
           });
         }
@@ -444,10 +540,17 @@ export class ResidentAgent {
     };
 
     // Emit final result
+    const resultTs = Date.now();
     this.sink.emit({
       type: "worker_result",
       stepId: this.stepId,
-      ts: Date.now(),
+      ts: resultTs,
+      result,
+    });
+    this.appendDebugEvent({
+      ts: resultTs,
+      type: "worker_result",
+      dispatch_id: dispatchId,
       result,
     });
 
@@ -461,12 +564,36 @@ export class ResidentAgent {
   private buildInstructions(
     pendingMessages: ReceivedMessage[],
     hasTasks: boolean,
+    dispatchContext: DispatchContextSnapshot = { workflowStatus: null, ownedTasks: [] },
   ): string {
     const parts: string[] = [];
+    const capabilities = this.resolveCapabilities();
+    const canEdit = capabilities.includes(WorkerCapability.EDIT);
+    const canRunCommands = capabilities.includes(WorkerCapability.RUN_COMMANDS);
+    const canRunTests = capabilities.includes(WorkerCapability.RUN_TESTS);
 
-    // Base instructions from agent profile
+    const isDeveloperStartupSync =
+      this.memberId === "developer"
+      && isDeveloperStartupStubStatus(dispatchContext.workflowStatus);
+
+    // Base instructions from agent profile. For the developer startup stub, keep
+    // the first dispatch compact so the worker gets to the bounded canonical-sync
+    // write set before spending time on the full repo-wide rulebook.
     if (this.profile.base_instructions) {
-      parts.push(this.profile.base_instructions);
+      if (isDeveloperStartupSync) {
+        parts.push("You are the developer.");
+        parts.push(
+          "This dispatch is limited to the initial canonical-state sync that replaces startup stubs.",
+        );
+        parts.push(
+          "Own and update current-state.json, todo.md, memory.md, issues/index.md, current-rerun-contract.json, and workflow status before broader planning.",
+        );
+        parts.push(
+          "Defer broad repo planning, implementation, verification, and git sync until after that bounded startup write lands.",
+        );
+      } else {
+        parts.push(this.profile.base_instructions);
+      }
     }
 
     // Role identity
@@ -475,6 +602,70 @@ export class ResidentAgent {
       "Use `roboppi agents` commands to communicate with your team and manage tasks.",
     );
     parts.push("");
+
+    parts.push("## Permissions");
+    parts.push("You already have the permissions implied by your capabilities for this dispatch.");
+    if (canEdit) {
+      parts.push(
+        "- You may edit workspace files and workflow state files that belong to your role without asking the lead first.",
+      );
+    }
+    if (canRunCommands || canRunTests) {
+      parts.push(
+        "- You may run repo-local commands and test scripts needed for your task without asking the lead first.",
+      );
+    }
+    parts.push(
+      "- Do not ask the lead for approval for routine repo-local work. Only message the lead when you are blocked by missing external, network, destructive, or policy-sensitive permissions.",
+    );
+    parts.push("");
+
+    if (dispatchContext.workflowStatus) {
+      parts.push("## Canonical Workflow Status");
+      parts.push(dispatchContext.workflowStatus.summary);
+      if (dispatchContext.workflowStatus.blockers.length > 0) {
+        parts.push("Blockers:");
+        for (const blocker of dispatchContext.workflowStatus.blockers) {
+          parts.push(`- ${blocker}`);
+        }
+      }
+      if (dispatchContext.workflowStatus.next_actions.length > 0) {
+        parts.push("Next actions:");
+        for (const action of dispatchContext.workflowStatus.next_actions) {
+          parts.push(`- ${action}`);
+        }
+      }
+      parts.push("");
+    }
+
+    if (
+      this.memberId === "developer"
+      && isDeveloperStartupStubStatus(dispatchContext.workflowStatus)
+    ) {
+      parts.push("## Startup Sync First");
+      parts.push(
+        "You are still on the startup stub. Before broader planning, repo changes, or more task triage, perform the bounded canonical-state sync now.",
+      );
+      parts.push(
+        "Treat that startup sync as your current implementation slice, not as optional background hygiene.",
+      );
+      parts.push(
+        "For this dispatch, defer broad repo scans and repo-wide planning until after the startup-sync write lands.",
+      );
+      parts.push("Limit the first pass to the startup-sync write set and the minimum reads needed to fill it:");
+      parts.push("- `.roboppi-loop/apthctl/current-state.json`");
+      parts.push("- `.roboppi-loop/apthctl/todo.md`");
+      parts.push("- `.roboppi-loop/apthctl/memory.md`");
+      parts.push("- `.roboppi-loop/apthctl/issues/index.md`");
+      parts.push("- the owned implement-main task body shown below");
+      parts.push(
+        "If the MCP tool `developer_sync_bundle` is available, call it before any broader repo scan.",
+      );
+      parts.push(
+        "Success for this dispatch is to replace the null startup stub and publish actionable workflow status, not to finish the entire repo-side plan.",
+      );
+      parts.push("");
+    }
 
     // Mailbox instructions
     parts.push("## Mailbox");
@@ -518,15 +709,24 @@ export class ResidentAgent {
 
     // Task instructions
     parts.push("## Tasks");
+    if (dispatchContext.ownedTasks.length > 0) {
+      parts.push("Currently owned IN-PROGRESS tasks (treat these descriptions as your immediate source of truth):");
+      for (const task of dispatchContext.ownedTasks.slice(0, 3)) {
+        parts.push(...formatTaskForInstructions(task));
+      }
+      parts.push("");
+    }
     if (hasTasks) {
       parts.push(
-        "There are PENDING TASKS assigned to you. Check and claim them:",
+        "You may already own IN-PROGRESS tasks or have new PENDING tasks. Continue owned work before claiming more:",
       );
     } else {
       parts.push("Check for any pending tasks:");
     }
+    parts.push("  roboppi agents tasks list --status in_progress");
     parts.push("  roboppi agents tasks list --status pending");
-    parts.push("  roboppi agents tasks claim --task-id <id>");
+    parts.push("  roboppi agents tasks show --task-id <id>   # read the full task title/description before acting");
+    parts.push("  roboppi agents tasks claim --task-id <id>   # claim output includes the full task body");
     parts.push(
       "  roboppi agents tasks complete --task-id <id>   # when done",
     );

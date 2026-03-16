@@ -4,10 +4,12 @@ import { dirname, resolve } from "node:path";
 import { atomicJsonWrite } from "./fs-atomic.js";
 import { agentsRoot, workflowStatusPath } from "./paths.js";
 import {
+  INITIALIZING_STARTUP_STUB_BLOCKER,
+  isInitializingStartupStub,
   readCurrentStatePhaseSnapshot,
   type WorkflowStatusCurrentStateSource,
-  workflowStatusNextActionsForPhase,
-  workflowStatusSummaryForPhase,
+  workflowStatusNextActionsForSnapshot,
+  workflowStatusSummaryForSnapshot,
 } from "./current-state-phase.js";
 import { listTasks, readTaskTemplates } from "./task-store.js";
 
@@ -55,6 +57,15 @@ function arraysEqual(left: readonly string[], right: readonly string[]): boolean
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function workflowStatusDefaultBlockersForSnapshot(
+  snapshot: Awaited<ReturnType<typeof readCurrentStatePhaseSnapshot>>,
+): string[] {
+  if (isInitializingStartupStub(snapshot)) {
+    return [INITIALIZING_STARTUP_STUB_BLOCKER];
+  }
+  return [];
+}
+
 function buildDerivedWorkflowStatus(
   ownerMemberId: string,
   snapshot: Awaited<ReturnType<typeof readCurrentStatePhaseSnapshot>>,
@@ -63,9 +74,9 @@ function buildDerivedWorkflowStatus(
     version: "1",
     updated_at: Date.now(),
     owner_member_id: ownerMemberId,
-    summary: workflowStatusSummaryForPhase(snapshot.phase),
-    blockers: snapshot.phaseReason ? [snapshot.phaseReason] : [],
-    next_actions: workflowStatusNextActionsForPhase(snapshot.phase),
+    summary: workflowStatusSummaryForSnapshot(snapshot),
+    blockers: snapshot.phaseReason ? [snapshot.phaseReason] : workflowStatusDefaultBlockersForSnapshot(snapshot),
+    next_actions: workflowStatusNextActionsForSnapshot(snapshot),
     source: {
       kind: "current_state_phase_v1",
       path: snapshot.sourcePath,
