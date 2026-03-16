@@ -2278,6 +2278,12 @@ exit 1
         const waitingState = await readTaskState();
         const waitingRunId = waitingState?.latest_run_id;
         expect(waitingRunId).toBeTruthy();
+
+        await waitForCondition(async () => {
+          const text = await readFile(clarificationCommentPath, "utf-8").catch(() => "");
+          return text.includes("Need clarification before implementation can proceed");
+        }, 20_000, 100);
+
         const clarificationComment = await readFile(clarificationCommentPath, "utf-8");
         expect(clarificationComment).toContain("Need clarification before implementation can proceed");
 

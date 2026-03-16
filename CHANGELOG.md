@@ -14,18 +14,6 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 
 ## [0.1.15] - 2026-03-16
 
-### Fixed
-
-- Treated resident `task-orchestrator serve` shutdown aborts as clean exits so release verification does not fail after the clarification-resume acceptance flow has already passed.
-
-## [0.1.14] - 2026-03-16
-
-### Fixed
-
-- Removed unused TypeScript symbols that caused the release verify job (`bun x tsc --noEmit`) to fail before GitHub could publish `v0.1.13`.
-
-## [0.1.13] - 2026-03-16
-
 ### Changed
 
 - Completion checks now isolate their decision files per check invocation instead of sharing one mutable decision path across the run.
@@ -34,6 +22,9 @@ The format is based on Keep a Changelog, and this project follows SemVer where p
 ### Fixed
 
 - Prevented long-running agent workflows from exhausting 100 completion-check iterations with an empty task queue by detecting routing deadlocks and failing fast with explicit diagnostics.
+- Removed unused TypeScript symbols that caused the release verify job (`bun x tsc --noEmit`) to fail before GitHub could publish the release.
+- Treated resident `task-orchestrator serve` shutdown aborts as clean exits so release verification does not fail after the clarification-resume acceptance flow has already passed.
+- Hardened the clarification-resume acceptance test to wait for clarification-comment materialization before asserting the waiting-state handoff.
 
 ## [0.1.12] - 2026-03-15
 
