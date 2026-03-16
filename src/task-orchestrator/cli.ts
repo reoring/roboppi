@@ -362,14 +362,24 @@ async function runServeCommand(args: string[]): Promise<void> {
       console.log("Press Ctrl+C to stop.");
     }
 
-    await server.serve();
-    process.exit(0);
+    try {
+      await server.serve();
+    } catch (err) {
+      // Resident shutdown can interrupt in-flight source/bridge polling. Once
+      // SIGINT/SIGTERM has been requested, treat those late abort errors as a
+      // normal stop instead of surfacing a cleanup-only non-zero exit.
+      if (!abortController.signal.aborted) {
+        throw err;
+      }
+    }
   } finally {
     cleanupSignals();
     if (runner instanceof CoreIpcStepRunner) {
       await runner.shutdown().catch(() => {});
     }
   }
+
+  process.exit(0);
 }
 
 async function runStatusCommand(args: string[]): Promise<void> {
