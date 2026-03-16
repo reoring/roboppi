@@ -722,7 +722,10 @@ describe("roboppi agents CLI roundtrip", () => {
       "message", "recv",
       "--context", contextDir,
       "--for", "lead",
-      "--wait-ms", "10000",
+      // CI can spend multiple seconds in process startup before the polling
+      // loop begins. Keep the receive window well below the CLI harness timeout
+      // but large enough to absorb slow startup jitter.
+      "--wait-ms", "30000",
     ], env);
 
     // After a short delay, send a message
