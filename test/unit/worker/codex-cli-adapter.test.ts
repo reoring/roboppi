@@ -152,7 +152,7 @@ describe("CodexCliAdapter", () => {
       ]);
     });
 
-    test("should include task default args from workflow-resolved profiles", () => {
+    test("should drop unsupported approval flags while preserving explicit sandbox mode", () => {
       const task = createTask({
         capabilities: [WorkerCapability.READ],
         defaultArgs: ["--sandbox", "danger-full-access", "--ask-for-approval", "never"],
@@ -161,7 +161,8 @@ describe("CodexCliAdapter", () => {
       expect(command).toEqual([
         "codex",
         "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
+        "--sandbox",
+        "danger-full-access",
         "--json",
         "--cd",
         "/tmp/test-workspace",
@@ -249,6 +250,30 @@ describe("CodexCliAdapter", () => {
       });
       const command = adapter.buildCommand(task);
       expect(command).toContain("--full-auto");
+    });
+
+    test("should not append full-auto when an explicit sandbox mode is already provided", () => {
+      const task = createTask({
+        capabilities: [
+          WorkerCapability.READ,
+          WorkerCapability.EDIT,
+          WorkerCapability.RUN_COMMANDS,
+        ],
+        defaultArgs: ["--sandbox", "danger-full-access"],
+      });
+      const command = adapter.buildCommand(task);
+
+      expect(command).toEqual([
+        "codex",
+        "exec",
+        "--sandbox",
+        "danger-full-access",
+        "--json",
+        "--cd",
+        "/tmp/test-workspace",
+        "Fix the bug in main.ts",
+      ]);
+      expect(command).not.toContain("--full-auto");
     });
 
     test("should set auto-edit approval mode for EDIT without RUN_COMMANDS", () => {

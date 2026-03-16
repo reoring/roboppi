@@ -57,45 +57,22 @@ function buildCodexMcpOverrides(servers: McpServerConfig[]): string[] {
 }
 
 function normalizeLegacyCodexArgs(args: string[]): string[] {
-  let needsBypass = false;
   const preserved: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--dangerously-bypass-approvals-and-sandbox") {
-      needsBypass = true;
+      preserved.push(arg);
       continue;
     }
     if (arg === "--ask-for-approval") {
       const value = args[i + 1];
-      if (value === "never") {
-        needsBypass = true;
-        i++;
-        continue;
-      }
+      if (typeof value === "string") i++;
+      continue;
     }
     preserved.push(arg);
   }
-
-  if (!needsBypass) {
-    return preserved;
-  }
-
-  const normalized: string[] = [];
-  for (let i = 0; i < preserved.length; i++) {
-    const arg = preserved[i]!;
-    if (arg === "--full-auto") {
-      continue;
-    }
-    if (arg === "--sandbox") {
-      i++; // drop the sandbox value as well; bypass supersedes sandbox selection
-      continue;
-    }
-    normalized.push(arg);
-  }
-
-  normalized.push("--dangerously-bypass-approvals-and-sandbox");
-  return normalized;
+  return preserved;
 }
 
 export class CodexCliAdapter extends BaseProcessAdapter {
@@ -163,17 +140,18 @@ export class CodexCliAdapter extends BaseProcessAdapter {
       task.capabilities.includes(WorkerCapability.RUN_COMMANDS) ||
       task.capabilities.includes(WorkerCapability.RUN_TESTS);
     const hasBypass = args.includes("--dangerously-bypass-approvals-and-sandbox");
+    const hasSandbox = args.includes("--sandbox") || args.includes("-s");
+    const hasFullAuto = args.includes("--full-auto");
 
     if (hasBypass) {
       // Current Codex CLI bypass mode already implies no sandbox / no approvals.
     } else if (hasWrite && hasRunCommands) {
       // Low-friction sandboxed auto execution.
-      if (!args.includes("--full-auto")) {
+      if (!hasFullAuto && !hasSandbox) {
         args.push("--full-auto");
       }
     } else {
       // Stay sandboxed and align with capability intent.
-      const hasSandbox = args.includes("--sandbox") || args.includes("-s");
       if (!hasSandbox) {
         args.push("--sandbox", hasWrite ? "workspace-write" : "read-only");
       }
