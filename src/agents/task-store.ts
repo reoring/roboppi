@@ -292,7 +292,6 @@ export async function syncTasksToCurrentState(
 
   const routingState = await readTemplateRoutingState(contextDir, templates);
   const tasks = await listTasks(contextDir);
-  const tasksByTemplateAndRoute = groupTasksByTemplateAndRoutingKey(tasks);
   let superseded = 0;
 
   for (const task of tasks) {

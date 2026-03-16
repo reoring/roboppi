@@ -8,7 +8,6 @@ import type { CompletionCheckDef } from "../../../src/workflow/types.js";
 import type { WorkerAdapter, WorkerEvent, WorkerHandle } from "../../../src/worker/worker-adapter.js";
 import type { WorkerResult, WorkerTask } from "../../../src/types/index.js";
 import {
-  WorkerCapability,
   WorkerKind,
   WorkerStatus,
 } from "../../../src/types/index.js";
