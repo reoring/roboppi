@@ -4,6 +4,8 @@ dist
 .DS_Store
 /agentcore
 /roboppi
+.bun/
+.claude/
 
 # Local Roboppi workflow state
 .roboppi-loop/
